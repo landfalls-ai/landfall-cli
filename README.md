@@ -50,8 +50,13 @@ warroom join  "https://…/agent?ticket=…"          # presence-only keep-alive
   The agent then pulls it with `get_updates` (durable cursor: only what's new since it
   last looked). Pull is authoritative; the push is a nudge.
 
+- **Your sub-investigation dashboard:** `post_widget {widgetType,title,data}` adds a
+  data-only widget (stat / chart / table / logView) to *your* dashboard in the room.
+  Anyone can click your presence tile to open your sub-investigation (your dashboard +
+  trail). Data-only by design — you pass the values you computed; no code runs.
+
 Tools: `join_war_room`, `get_updates`, `get_brief`, `read_timeline`, `search_context`,
-`post_finding`, `note`, `propose_action`, `record_activity`.
+`post_finding`, `post_widget`, `note`, `propose_action`, `record_activity`.
 
 ## Env-config setup (012, still supported)
 

@@ -52,6 +52,28 @@ test('narration maps tool calls to a "doing" + a contribution for durable artifa
   assert.equal(contributionFor('get_brief'), null); // reads don't spam the timeline
 });
 
+test('post_widget (022) contributes a widget to the member sub-investigation dashboard', async () => {
+  assert.match(narrateDoing('post_widget', { title: 'Checkout tasks' }), /dashboard widget/);
+  const contrib = contributionFor('post_widget', { widgetType: 'stat', title: 'Checkout tasks', data: { value: 0 } });
+  assert.equal(contrib.kind, 'widget');
+  assert.deepEqual(contrib.body, { widgetType: 'stat', title: 'Checkout tasks', data: { value: 0 } });
+
+  const posted = [];
+  const fakeClient = {
+    agentInstanceId: 'a-9',
+    async heartbeat() {},
+    async contribute(kind, body) { posted.push([kind, body]); },
+    async getBrief() { return []; },
+  };
+  const tools = buildBridgeTools(fakeClient);
+  const res = await handleMcpMessage(
+    { jsonrpc: '2.0', id: 9, method: 'tools/call', params: { name: 'post_widget', arguments: { widgetType: 'stat', title: 'Checkout tasks', data: { value: 0 } } } },
+    { tools },
+  );
+  assert.match(res.result.content[0].text, /added to your sub-investigation dashboard/i);
+  assert.ok(posted.some(([kind, body]) => kind === 'widget' && body.title === 'Checkout tasks'));
+});
+
 test('MCP: initialize + tools/list + tools/call', async () => {
   const tools = buildBridgeTools(new EdgeBridgeClient(CFG, fakeFetch({ '/o/acme/incidents/inc-1/edge/join': { status: 201, json: { agentInstanceId: 'a-9' } } })));
   const init = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' }, { tools });

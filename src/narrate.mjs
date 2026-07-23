@@ -15,6 +15,7 @@ export function narrateDoing(toolName, args = {}) {
     case 'post_finding': return `posting a finding${a.text ? `: ${truncate(a.text)}` : ''}`;
     case 'note': return `noting: ${truncate(a.text ?? '')}`;
     case 'propose_action': return `proposing a remediation${a.description ? `: ${truncate(a.description)}` : ''}`;
+    case 'post_widget': return `building a dashboard widget${a.title ? `: ${truncate(a.title)}` : ''}`;
     case 'record_activity': return String(a.doing ?? 'investigating');
     default: return `using ${toolName}`;
   }
@@ -36,6 +37,8 @@ export function contributionFor(toolName, args = {}) {
       return { kind: 'query', body: { source: 'edge', operation: 'search', resource: String(a.query ?? '') } };
     case 'propose_action':
       return { kind: 'action', body: { description: String(a.description ?? ''), dryRunPreview: String(a.dryRunPreview ?? '') } };
+    case 'post_widget':
+      return { kind: 'widget', body: { widgetType: a.widgetType, title: String(a.title ?? ''), data: a.data } };
     default:
       return null; // get_brief / read_timeline / record_activity → presence only
   }

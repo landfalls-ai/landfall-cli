@@ -160,6 +160,23 @@ export function buildBridgeTools(sessionOrClient) {
       handler: narrated('note', () => 'Note posted.'),
     },
     {
+      name: 'post_widget',
+      description:
+        'Add a data widget to YOUR sub-investigation dashboard in the war room (visible to everyone who clicks your tile). ' +
+        'Data-only — pass the values you computed. Shapes: stat {value:number, unit?, delta?, trend?:"up"|"down"|"flat"}; ' +
+        'chart {series:[{label, points:[{t,v:number}]}]}; table {columns:[{key,label}], rows:[{...}]}; logView {lines:[{message}]}.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          widgetType: { type: 'string', enum: ['stat', 'chart', 'table', 'logView'] },
+          title: { type: 'string' },
+          data: { type: 'object' },
+        },
+        required: ['widgetType', 'title', 'data'],
+      },
+      handler: narrated('post_widget', (a) => `Widget "${a.title}" added to your sub-investigation dashboard.`),
+    },
+    {
       name: 'propose_action',
       description: 'Propose a remediation (propose-only; a human approves — you cannot execute).',
       inputSchema: { type: 'object', properties: { description: { type: 'string' }, dryRunPreview: { type: 'string' } }, required: ['description'] },

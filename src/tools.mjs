@@ -4,28 +4,125 @@
 // artifacts). This is the seam that makes an edge investigation self-narrate with
 // zero extra effort: the agent just uses its tools; the war room shows who's doing
 // what, live.
+//
+// Feature 021 adds the live-investigation loop:
+//   join_war_room(shareUrl) — join from a magic link (no tokens/IDs by hand), and
+//   get_updates(sinceSeq?) — durable-cursor pull of what OTHER investigators found.
 
 import { contributionFor, narrateDoing } from './narrate.mjs';
+import { EdgeBridgeClient } from './client.mjs';
+import { redeemShareLink } from './link.mjs';
 
-/** Build the MCP tool set bound to a joined EdgeBridgeClient. */
-export function buildBridgeTools(client) {
+/**
+ * A bridge session: the (possibly not-yet-joined) client plus the durable
+ * update cursor. `joinWarRoom` redeems a share link, joins, and fires
+ * `onJoined(session)` so the host process can start presence/live-watch.
+ */
+export function createBridgeSession({
+  client = null,
+  agentLabel = 'edge-agent',
+  baseUrl,
+  fetchImpl,
+  redeemImpl = redeemShareLink,
+  clientFactory = (cfg, f) => new EdgeBridgeClient(cfg, f),
+  onJoined,
+} = {}) {
+  const session = {
+    client,
+    cursor: -1,
+    agentLabel,
+    async joinWarRoom(shareUrl) {
+      const cfg = await redeemImpl(shareUrl, { baseUrl, fetchImpl });
+      const next = clientFactory({ ...cfg, agentLabel }, fetchImpl);
+      await next.join();
+      if (session.client && session.client !== next) {
+        try { await session.client.leave(); } catch { /* best-effort */ }
+      }
+      session.client = next;
+      session.cursor = -1;
+      await onJoined?.(session, cfg);
+      return cfg;
+    },
+  };
+  return session;
+}
+
+/** Advance the session cursor past every event in `events`. */
+function advanceCursor(session, events) {
+  for (const e of Array.isArray(events) ? events : []) {
+    if (typeof e?.seq === 'number' && e.seq > session.cursor) session.cursor = e.seq;
+  }
+}
+
+/** One compact line per shared event, attributed to human · agent. */
+function formatEvent(e) {
+  const p = (e?.payload && typeof e.payload === 'object' ? e.payload : {});
+  const who = [p.humanActorId, p.edgeAgentLabel].filter(Boolean).join(' · ');
+  const what = p.text ?? p.description ?? p.doing ?? p.summary ?? '';
+  return `#${e.seq} ${e.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
+}
+
+/**
+ * Build the MCP tool set. Accepts a session from {@link createBridgeSession},
+ * or (legacy, feature 012) a bare joined EdgeBridgeClient.
+ */
+export function buildBridgeTools(sessionOrClient) {
+  const session =
+    sessionOrClient && typeof sessionOrClient.joinWarRoom === 'function'
+      ? sessionOrClient
+      : createBridgeSession({ client: sessionOrClient });
+
+  const requireClient = () => {
+    if (!session.client) throw new Error('not connected — call join_war_room with a Landfall agent share link first');
+    return session.client;
+  };
+
   // wrap a handler so EVERY tool call heartbeats a "doing" + posts a contribution
   // if the action produced a durable artifact.
   const narrated = (name, run) => async (args) => {
+    const client = requireClient();
     const doing = narrateDoing(name, args);
     try { await client.heartbeat(doing); } catch { /* narration is best-effort */ }
     const contrib = contributionFor(name, args);
     if (contrib) { try { await client.contribute(contrib.kind, contrib.body); } catch { /* best-effort */ } }
-    return run(args, doing);
+    return run(args, doing, client);
   };
 
   return [
     {
+      name: 'join_war_room',
+      description:
+        'Join a Landfall war room from an agent share link (magic link). Do this first; afterwards read get_brief and investigate.',
+      inputSchema: { type: 'object', properties: { shareUrl: { type: 'string' } }, required: ['shareUrl'] },
+      handler: async (a) => {
+        const cfg = await session.joinWarRoom(String(a.shareUrl ?? ''));
+        return (
+          `Joined war room for incident ${cfg.incidentId} (workspace ${cfg.slug}) as "${session.agentLabel}". ` +
+          'You are now a live investigator: read get_brief for context, publish with post_finding, ' +
+          'and call get_updates at task boundaries to pull what other investigators found.'
+        );
+      },
+    },
+    {
+      name: 'get_updates',
+      description:
+        'Pull shared war-room events newer than your cursor (what other investigators found since you last looked). Call at task boundaries and before concluding.',
+      inputSchema: { type: 'object', properties: { sinceSeq: { type: 'number' } }, required: [] },
+      handler: narrated('get_updates', async (a, _doing, client) => {
+        const since = typeof a.sinceSeq === 'number' ? a.sinceSeq : session.cursor;
+        const events = await client.getUpdates(since);
+        advanceCursor(session, events);
+        if (!Array.isArray(events) || !events.length) return `No new shared context since seq ${since}.`;
+        return `${events.length} new event(s) since seq ${since}:\n${events.map(formatEvent).join('\n')}`;
+      }),
+    },
+    {
       name: 'get_brief',
       description: 'Get the current incident brief (the shared war-room timeline).',
       inputSchema: { type: 'object', properties: {} },
-      handler: narrated('get_brief', async () => {
+      handler: narrated('get_brief', async (_a, _doing, client) => {
         const events = await client.getBrief();
+        advanceCursor(session, events);
         return `Incident timeline: ${Array.isArray(events) ? events.length : 0} events. ${summarize(events)}`;
       }),
     },
@@ -33,13 +130,17 @@ export function buildBridgeTools(client) {
       name: 'read_timeline',
       description: 'Read the full incident timeline (raw events).',
       inputSchema: { type: 'object', properties: {} },
-      handler: narrated('read_timeline', async () => JSON.stringify(await client.getBrief())),
+      handler: narrated('read_timeline', async (_a, _doing, client) => {
+        const events = await client.getBrief();
+        advanceCursor(session, events);
+        return JSON.stringify(events);
+      }),
     },
     {
       name: 'search_context',
       description: 'Search the incident context for a term (narrated to the room).',
       inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
-      handler: narrated('search_context', async (a) => {
+      handler: narrated('search_context', async (a, _doing, client) => {
         const events = await client.getBrief();
         const q = String(a.query ?? '').toLowerCase();
         const hits = (Array.isArray(events) ? events : []).filter((e) => JSON.stringify(e).toLowerCase().includes(q));

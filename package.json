@@ -6,5 +6,8 @@
   "main": "src/index.mjs",
   "bin": {
     "warroom": "./bin/warroom.mjs"
+  },
+  "dependencies": {
+    "socket.io-client": "^4.7.5"
   }
 }

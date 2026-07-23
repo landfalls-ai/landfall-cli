@@ -52,4 +52,9 @@ export class EdgeBridgeClient {
   getBrief() {
     return this.#get('/events');
   }
+  /** Durable-cursor delta read (021): only events with seq > sinceSeq. */
+  getUpdates(sinceSeq) {
+    const since = Number.isFinite(sinceSeq) ? sinceSeq : -1;
+    return this.#get(`/events?sinceSeq=${encodeURIComponent(since)}`);
+  }
 }

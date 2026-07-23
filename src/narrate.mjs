@@ -9,6 +9,7 @@ export function narrateDoing(toolName, args = {}) {
   const a = args ?? {};
   switch (toolName) {
     case 'get_brief': return 'reviewing the incident brief';
+    case 'get_updates': return 'checking for new shared context';
     case 'read_timeline': return 'reading the incident timeline';
     case 'search_context': return `searching context${a.query ? ` for "${a.query}"` : ''}`;
     case 'post_finding': return `posting a finding${a.text ? `: ${truncate(a.text)}` : ''}`;

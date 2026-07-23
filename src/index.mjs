@@ -8,3 +8,5 @@ export * from './client.mjs';
 export * from './narrate.mjs';
 export * from './mcp.mjs';
 export * from './tools.mjs';
+export * from './link.mjs';
+export * from './live.mjs';

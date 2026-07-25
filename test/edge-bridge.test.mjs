@@ -176,8 +176,8 @@ test('join_war_room tool joins via the magic link and unlocks the other tools', 
 test('get_updates pulls only past the durable cursor and advances it', async () => {
   const all = [
     { seq: 0, type: 'edge.participant.joined', payload: {} },
-    { seq: 1, type: 'edge.finding', payload: { humanActorId: 'u-2', edgeAgentLabel: 'Codex', text: 'origin pool unhealthy' } },
-    { seq: 2, type: 'edge.hypothesis', payload: { humanActorId: 'u-2', text: 'bad rollout' } },
+    { seq: 1, type: 'edge.finding', payload: { humanActorId: 'u-2', displayName: 'Dana', edgeAgentLabel: 'Codex', text: 'origin pool unhealthy' } },
+    { seq: 2, type: 'edge.hypothesis', payload: { humanActorId: 'u-2', displayName: 'Dana', text: 'bad rollout' } },
   ];
   const fakeClient = {
     agentInstanceId: 'a-1',
@@ -192,7 +192,9 @@ test('get_updates pulls only past the durable cursor and advances it', async () 
   const first = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_updates' } }, { tools });
   assert.match(first.result.content[0].text, /3 new event\(s\)/);
   assert.match(first.result.content[0].text, /origin pool unhealthy/);
-  assert.match(first.result.content[0].text, /u-2 · Codex/);
+  // feature 024: attribution uses the resolved display name, never the raw id.
+  assert.match(first.result.content[0].text, /Dana · Codex/);
+  assert.doesNotMatch(first.result.content[0].text, /u-2/);
   assert.equal(session.cursor, 2);
 
   const second = await handleMcpMessage({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_updates' } }, { tools });

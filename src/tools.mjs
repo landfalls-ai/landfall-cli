@@ -83,7 +83,8 @@ function advanceCursor(session, events) {
 /** One compact line per shared event, attributed to human · agent. */
 function formatEvent(e) {
   const p = (e?.payload && typeof e.payload === 'object' ? e.payload : {});
-  const who = [p.humanActorId, p.edgeAgentLabel].filter(Boolean).join(' · ');
+  // feature 024: attribute by the human name, never the raw humanActorId.
+  const who = [p.displayName || null, p.edgeAgentLabel].filter(Boolean).join(' · ');
   const what = p.text ?? p.description ?? p.doing ?? p.summary ?? '';
   return `#${e.seq} ${e.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
 }

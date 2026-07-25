@@ -22,7 +22,13 @@ export class EdgeBridgeClient {
   }
   async #post(path, body) {
     const r = await this.fetch(`${this.#base}${path}`, { method: 'POST', headers: this.#headers, body: JSON.stringify(body ?? {}) });
-    if (!r.ok) throw new Error(`${path} → HTTP ${r.status}`);
+    if (!r.ok) {
+      // Surface a server-provided `reason`/`message` (e.g. the artifact policy
+      // rejection) so the caller can relay a clear cause, not just a status.
+      let reason = '';
+      try { const b = await r.json(); reason = b?.reason ?? b?.message ?? ''; } catch { /* no body */ }
+      throw new Error(`${path} → HTTP ${r.status}${reason ? `: ${reason}` : ''}`);
+    }
     return r.status === 202 ? {} : r.json();
   }
   async #get(path) {
@@ -44,6 +50,15 @@ export class EdgeBridgeClient {
   /** Consolidate a contribution (finding | query | hypothesis | action) onto the shared timeline. */
   contribute(kind, body) {
     return this.#post('/edge/contributions', { agentInstanceId: this.agentInstanceId, kind, ...(body ?? {}) });
+  }
+  /**
+   * Share a locally-created artifact into the incident (feature 025). Bytes are
+   * base64. The server enforces the size/type policy, stores the bytes, and
+   * appends the durable `artifact.shared` event — this is NOT an execution
+   * channel (FR-007). Reuses the incident-scoped bearer via `#post`.
+   */
+  uploadArtifact(filename, contentType, dataBase64) {
+    return this.#post('/artifacts', { filename, contentType, dataBase64, edgeAgentLabel: this.cfg.agentLabel, agentInstanceId: this.agentInstanceId });
   }
   leave() {
     return this.#post('/edge/leave', { agentInstanceId: this.agentInstanceId });

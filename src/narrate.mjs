@@ -16,6 +16,7 @@ export function narrateDoing(toolName, args = {}) {
     case 'note': return `noting: ${truncate(a.text ?? '')}`;
     case 'propose_action': return `proposing a remediation${a.description ? `: ${truncate(a.description)}` : ''}`;
     case 'post_widget': return `building a dashboard widget${a.title ? `: ${truncate(a.title)}` : ''}`;
+    case 'upload_artifact': return `sharing an artifact${a.filename ? `: "${truncate(a.filename)}"` : ''}`;
     case 'record_activity': return String(a.doing ?? 'investigating');
     default: return `using ${toolName}`;
   }
@@ -39,6 +40,11 @@ export function contributionFor(toolName, args = {}) {
       return { kind: 'action', body: { description: String(a.description ?? ''), dryRunPreview: String(a.dryRunPreview ?? '') } };
     case 'post_widget':
       return { kind: 'widget', body: { widgetType: a.widgetType, title: String(a.title ?? ''), data: a.data } };
+    case 'upload_artifact':
+      // The upload endpoint itself appends the durable `artifact.shared` event
+      // (feature 025), so the generic contribution path MUST NOT double-post.
+      // The heartbeat still narrates presence ("sharing an artifact: …").
+      return null;
     default:
       return null; // get_brief / read_timeline / record_activity → presence only
   }

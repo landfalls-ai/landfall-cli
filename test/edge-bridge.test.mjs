@@ -74,6 +74,57 @@ test('post_widget (022) contributes a widget to the member sub-investigation das
   assert.ok(posted.some(([kind, body]) => kind === 'widget' && body.title === 'Checkout tasks'));
 });
 
+test('upload_artifact (025) narrates presence but does NOT double-post a contribution', () => {
+  assert.match(narrateDoing('upload_artifact', { filename: 'report.html' }), /sharing an artifact: "report\.html"/);
+  // the /artifacts endpoint appends artifact.shared itself — the generic
+  // contribution path must stay null so the event is not posted twice.
+  assert.equal(contributionFor('upload_artifact', { filename: 'report.html' }), null);
+});
+
+test('upload_artifact (025) shares inline content: heartbeats, posts to /artifacts, no double contribution', async () => {
+  const posted = [];
+  const fakeClient = {
+    agentInstanceId: 'a-9',
+    async heartbeat(doing) { posted.push(['heartbeat', doing]); },
+    async contribute(kind) { posted.push(['contribute', kind]); },
+    async uploadArtifact(filename, contentType, dataBase64) {
+      posted.push(['upload', filename, contentType, dataBase64]);
+      return { artifactId: 'art-1', filename, contentType, size: Buffer.from(dataBase64, 'base64').length, safeRenderMode: 'sandboxed-iframe' };
+    },
+    async getBrief() { return []; },
+  };
+  const tools = buildBridgeTools(fakeClient);
+  const res = await handleMcpMessage(
+    { jsonrpc: '2.0', id: 11, method: 'tools/call', params: { name: 'upload_artifact', arguments: { content: '<html>hi</html>', filename: 'report.html' } } },
+    { tools },
+  );
+  assert.match(res.result.content[0].text, /Shared "report\.html" \(text\/html/);
+  assert.ok(posted.some(([k]) => k === 'heartbeat'));
+  // it uploaded via the dedicated endpoint...
+  const up = posted.find(([k]) => k === 'upload');
+  assert.ok(up && up[2] === 'text/html');
+  // ...and did NOT also post a generic contribution (no double-post).
+  assert.ok(!posted.some(([k]) => k === 'contribute'));
+});
+
+test('upload_artifact (025) client-side pre-check refuses oversized/disallowed, sharing nothing', async () => {
+  let uploaded = false;
+  const fakeClient = {
+    agentInstanceId: 'a-9',
+    async heartbeat() {},
+    async uploadArtifact() { uploaded = true; return {}; },
+    async getBrief() { return []; },
+  };
+  const tools = buildBridgeTools(fakeClient);
+  // disallowed type (inferred from extension)
+  const bad = await handleMcpMessage(
+    { jsonrpc: '2.0', id: 12, method: 'tools/call', params: { name: 'upload_artifact', arguments: { content: 'x', filename: 'evil.exe', contentType: 'application/x-msdownload' } } },
+    { tools },
+  );
+  assert.match(bad.result.content[0].text, /not allowed.*Nothing shared/i);
+  assert.equal(uploaded, false); // never reached the server
+});
+
 test('MCP: initialize + tools/list + tools/call', async () => {
   const tools = buildBridgeTools(new EdgeBridgeClient(CFG, fakeFetch({ '/o/acme/incidents/inc-1/edge/join': { status: 201, json: { agentInstanceId: 'a-9' } } })));
   const init = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' }, { tools });

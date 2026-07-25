@@ -1,4 +1,4 @@
-# @landfall/edge-bridge — `warroom` CLI
+# @landfall/edge-bridge — `landfall` CLI
 
 Join a Landfall war room from your own computer and have your **favorite MCP-capable
 agent** (Claude Code, Codex, Cursor, …) become a **live investigator** in the shared
@@ -13,7 +13,7 @@ Configure the MCP server ONCE, with no tokens or IDs:
 ```json
 {
   "mcpServers": {
-    "warroom": { "command": "warroom", "args": ["serve"] }
+    "landfall": { "command": "landfall", "args": ["serve"] }
   }
 }
 ```
@@ -34,8 +34,8 @@ possessing the URL without it grants nothing.
 You can also pre-join from the terminal:
 
 ```
-warroom serve --link "https://…/agent?ticket=…"   # or WARROOM_LINK env
-warroom join  "https://…/agent?ticket=…"          # presence-only keep-alive
+landfall serve --link "https://…/agent?ticket=…"   # or LANDFALL_LINK env
+landfall join  "https://…/agent?ticket=…"          # presence-only keep-alive
 ```
 
 ## The live-investigation loop
@@ -43,7 +43,7 @@ warroom join  "https://…/agent?ticket=…"          # presence-only keep-alive
 - **You → the room:** every tool call narrates (presence heartbeat + timeline
   contributions for durable artifacts). `post_finding` / `propose_action` appear in the
   main incident window **instantly** (realtime fan-out), attributed to you + your agent.
-- **The room → you:** while `warroom serve` runs it holds an outbound realtime
+- **The room → you:** while `landfall serve` runs it holds an outbound realtime
   connection; when other investigators (humans, the central agent crew, or other edge
   agents) publish something, you get a stderr nudge —
   `⚡ edge.finding from dana · Codex: "origin pool unhealthy" — call get_updates.`
@@ -62,23 +62,23 @@ Tools: `join_war_room`, `get_updates`, `get_brief`, `read_timeline`, `search_con
 
 ```json
 "env": {
-  "WARROOM_BASE_URL": "https://api.landfall.example.com",
-  "WARROOM_TOKEN": "<session or edge token>",
-  "WARROOM_SLUG": "<org slug>",
-  "WARROOM_INCIDENT": "<incident id>",
-  "WARROOM_AGENT_LABEL": "Claude Code"
+  "LANDFALL_BASE_URL": "https://api.landfall.example.com",
+  "LANDFALL_TOKEN": "<session or edge token>",
+  "LANDFALL_SLUG": "<org slug>",
+  "LANDFALL_INCIDENT": "<incident id>",
+  "LANDFALL_AGENT_LABEL": "Claude Code"
 }
 ```
 
-`WARROOM_BASE_URL` also overrides a share link's origin (useful when the API is not on
+`LANDFALL_BASE_URL` also overrides a share link's origin (useful when the API is not on
 the link's host, e.g. local dev).
 
 ## Direct CLI
 ```
-warroom serve [--link URL]   # (default) join + expose the incident MCP tools over stdio
-warroom join [URL]           # join + keep presence alive (no MCP) — Ctrl-C to leave
-warroom note "origin pool is unhealthy"   # post a one-off finding
-warroom leave                # leave the incident
+landfall serve [--link URL]   # (default) join + expose the incident MCP tools over stdio
+landfall join [URL]           # join + keep presence alive (no MCP) — Ctrl-C to leave
+landfall note "origin pool is unhealthy"   # post a one-off finding
+landfall leave                # leave the incident
 ```
 
 ## Guarantees

@@ -6,6 +6,6 @@
   "targets": {
     "lint": { "executor": "nx:run-commands", "options": { "command": "echo \"lint edge-bridge (placeholder)\"" } },
     "test": { "executor": "nx:run-commands", "options": { "command": "node --test 'libs/edge-bridge/test/**/*.test.mjs'" } },
-    "serve": { "executor": "nx:run-commands", "options": { "command": "node libs/edge-bridge/bin/warroom.mjs serve" } }
+    "serve": { "executor": "nx:run-commands", "options": { "command": "node libs/edge-bridge/bin/landfall.mjs serve" } }
   }
 }

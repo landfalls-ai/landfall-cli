@@ -5,7 +5,7 @@
   "type": "module",
   "main": "src/index.mjs",
   "bin": {
-    "warroom": "./bin/warroom.mjs"
+    "landfall": "./bin/landfall.mjs"
   },
   "dependencies": {
     "socket.io-client": "^4.7.5"

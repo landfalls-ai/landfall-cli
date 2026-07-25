@@ -1,5 +1,5 @@
 // live.mjs — the bridge's outbound realtime connection (feature 021,
-// EDGE_AGENT_INTEGRATION §8.1). While `warroom serve` runs, it subscribes to the
+// EDGE_AGENT_INTEGRATION §8.1). While `landfall serve` runs, it subscribes to the
 // incident's Socket.IO room so the teammate is NUDGED (stderr) the moment other
 // investigators publish shared context; the agent then pulls it with
 // `get_updates` at its next task boundary (pull stays authoritative — an MCP

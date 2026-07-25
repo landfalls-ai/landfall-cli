@@ -1,5 +1,5 @@
 // @landfall/edge-bridge — the local Edge Bridge (feature 012, EDGE_AGENT_INTEGRATION
-// §5.1). A teammate runs `warroom serve`; their favorite MCP-capable agent connects
+// §5.1). A teammate runs `landfall serve`; their favorite MCP-capable agent connects
 // over stdio and gets incident-scoped tools. Every tool call narrates their edge
 // investigation into the shared war room (presence heartbeat + timeline
 // contributions), so the room shows who is doing what — live, with zero extra

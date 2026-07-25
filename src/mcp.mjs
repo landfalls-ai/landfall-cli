@@ -1,6 +1,6 @@
 // mcp.mjs — a minimal, dependency-free MCP server over stdio (newline-delimited
 // JSON-RPC 2.0). Enough for an MCP-capable local agent (Claude Code, Cursor, …) to
-// connect to `warroom serve`, list the incident-scoped tools, and call them. The
+// connect to `landfall serve`, list the incident-scoped tools, and call them. The
 // message handler is pure (request → response) so it is node-testable without any
 // stream. (No @modelcontextprotocol/sdk dependency — the protocol surface we need
 // is small and stable.)
@@ -12,7 +12,7 @@ const PROTOCOL_VERSION = '2024-11-05';
  * notifications (no id / initialized). `tools` = [{name, description, inputSchema,
  * handler(args)->Promise<string>}].
  */
-export async function handleMcpMessage(msg, { tools, serverInfo }) {
+export async function handleMcpMessage(msg, { tools, serverInfo, instructions } = {}) {
   if (!msg || msg.jsonrpc !== '2.0') return errorResponse(msg?.id ?? null, -32600, 'invalid request');
   const { id, method, params } = msg;
   const isNotification = id === undefined || id === null;
@@ -22,7 +22,11 @@ export async function handleMcpMessage(msg, { tools, serverInfo }) {
       return result(id, {
         protocolVersion: PROTOCOL_VERSION,
         capabilities: { tools: {} },
-        serverInfo: serverInfo ?? { name: 'landfall-warroom', version: '0.1.0' },
+        serverInfo: serverInfo ?? { name: 'landfall', version: '0.1.0' },
+        // MCP `instructions`: the client folds this into the model's context, so
+        // the standing operating guidance lives WITH the server (injected on
+        // connect) instead of in the pasted share-with-agent prompt.
+        ...(instructions ? { instructions } : {}),
       });
     case 'notifications/initialized':
     case 'initialized':
@@ -52,9 +56,9 @@ function errorResponse(id, code, message) { return { jsonrpc: '2.0', id, error: 
 
 /**
  * Run the stdio MCP server: read newline-delimited JSON-RPC from `input`, write
- * responses to `output`. Returns a stop() function. Used by `warroom serve`.
+ * responses to `output`. Returns a stop() function. Used by `landfall serve`.
  */
-export function runStdioServer(tools, { input = process.stdin, output = process.stdout, serverInfo } = {}) {
+export function runStdioServer(tools, { input = process.stdin, output = process.stdout, serverInfo, instructions } = {}) {
   let buffer = '';
   const onData = async (chunk) => {
     buffer += chunk.toString('utf8');
@@ -65,7 +69,7 @@ export function runStdioServer(tools, { input = process.stdin, output = process.
       if (!line) continue;
       let msg;
       try { msg = JSON.parse(line); } catch { continue; }
-      const res = await handleMcpMessage(msg, { tools, serverInfo });
+      const res = await handleMcpMessage(msg, { tools, serverInfo, instructions });
       if (res) output.write(`${JSON.stringify(res)}\n`);
     }
   };

@@ -4,7 +4,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EdgeBridgeClient } from '../src/client.mjs';
 import { handleMcpMessage } from '../src/mcp.mjs';
-import { buildBridgeTools, createBridgeSession } from '../src/tools.mjs';
+import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
 import { narrateDoing, contributionFor } from '../src/narrate.mjs';
 import { parseShareLink, redeemShareLink } from '../src/link.mjs';
 
@@ -85,6 +85,22 @@ test('MCP: initialize + tools/list + tools/call', async () => {
   assert.equal(notif, null);
   const unknown = await handleMcpMessage({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'nope' } }, { tools });
   assert.equal(unknown.error.code, -32602);
+});
+
+test('MCP: initialize injects server instructions when provided (so the share paste can stay minimal)', async () => {
+  const tools = buildBridgeTools(new EdgeBridgeClient(CFG, fakeFetch()));
+  // no instructions passed → field omitted
+  const bare = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'initialize' }, { tools });
+  assert.equal(bare.result.instructions, undefined);
+  // instructions passed → surfaced on the initialize result for the client to inject
+  const withInstr = await handleMcpMessage(
+    { jsonrpc: '2.0', id: 2, method: 'initialize' },
+    { tools, instructions: EDGE_AGENT_INSTRUCTIONS },
+  );
+  assert.equal(withInstr.result.instructions, EDGE_AGENT_INSTRUCTIONS);
+  // the guidance moved off the paste and onto the server: it covers the loop + guardrails
+  assert.match(EDGE_AGENT_INSTRUCTIONS, /get_brief/);
+  assert.match(EDGE_AGENT_INSTRUCTIONS, /propose-only/);
 });
 
 test('MCP tools/call narrates: a post_finding call heartbeats + posts a finding contribution', async () => {

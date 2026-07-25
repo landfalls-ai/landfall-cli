@@ -17,15 +17,31 @@
 // LANDFALL_BASE_URL overrides the link origin (dev/tests where web ≠ API origin).
 //
 // Commands:
+//   landfall login                OAuth 2.1 + PKCE sign-in (browser); caches the session
+//   landfall logout               clear the cached session
 //   landfall serve [--link URL]   MCP tools over stdio (default; auto-joins if configured)
 //   landfall join [URL]           join + heartbeat (keep-alive presence, no MCP)
 //   landfall note "<text>"        post a one-off finding, then exit
 //   landfall leave                leave the incident
+//
+// Auth (024): once `landfall login` has cached a token, `serve`/`join` can join a
+// war room from a plain incident URL or LANDFALL_SLUG+LANDFALL_INCIDENT with NO
+// share link — you join as your authenticated member identity.
 import { EdgeBridgeClient } from '../src/client.mjs';
 import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
 import { runStdioServer } from '../src/mcp.mjs';
 import { redeemShareLink } from '../src/link.mjs';
 import { watchIncident, describeEvent } from '../src/live.mjs';
+import { login, logout, getCachedAccessToken } from '../src/auth.mjs';
+
+/** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
+function parseIncidentUrl(url) {
+  try {
+    const m = new URL(url).pathname.match(/\/o\/([^/]+)\/incidents\/([^/]+)/);
+    if (m) return { slug: m[1], incidentId: m[2] };
+  } catch { /* not a URL */ }
+  return null;
+}
 
 // log to STDERR so stdout stays a clean MCP JSON-RPC channel
 function log(...a) { process.stderr.write(`[landfall] ${a.join(' ')}\n`); }
@@ -56,15 +72,39 @@ function envConfig() {
   return cfg.slug && cfg.incidentId && cfg.token ? cfg : null;
 }
 
-/** Resolve a joinable config from the link (redeemed) or the env, else null. */
+/**
+ * Resolve a joinable config, in priority order:
+ *  1. a share link WITH a ticket → redeem it (guest / non-member path, 021);
+ *  2. explicit env config (WARROOM/LANDFALL_TOKEN, 012);
+ *  3. OAuth (024): a cached login token + an incident target (a plain incident
+ *     URL or LANDFALL_SLUG+LANDFALL_INCIDENT) → join as the authenticated member
+ *     with NO share link.
+ * Returns null when none apply.
+ */
 async function resolveConfig(link) {
   const agentLabel = process.env.LANDFALL_AGENT_LABEL ?? 'edge-agent';
-  if (link) {
-    const cfg = await redeemShareLink(link, { baseUrl: process.env.LANDFALL_BASE_URL });
+  const baseUrl = process.env.LANDFALL_BASE_URL;
+  if (link && /[?&]ticket=/.test(link)) {
+    const cfg = await redeemShareLink(link, { baseUrl });
     log(`magic link redeemed — incident ${cfg.incidentId} (workspace ${cfg.slug}).`);
     return { ...cfg, agentLabel };
   }
-  return envConfig();
+  const env = envConfig();
+  if (env) return env;
+  const target =
+    (link && parseIncidentUrl(link)) ||
+    (process.env.LANDFALL_SLUG && process.env.LANDFALL_INCIDENT
+      ? { slug: process.env.LANDFALL_SLUG, incidentId: process.env.LANDFALL_INCIDENT }
+      : null);
+  if (target) {
+    const token = await getCachedAccessToken();
+    if (token) {
+      log(`authenticated (OAuth) — joining incident ${target.incidentId} (workspace ${target.slug}) with no share link.`);
+      return { baseUrl: baseUrl ?? 'http://localhost:3001', slug: target.slug, incidentId: target.incidentId, token, agentLabel };
+    }
+    log('not signed in — run `landfall login`, or paste a share link.');
+  }
+  return null;
 }
 
 /** Presence keep-alive + live watch for a joined client. Returns stop(). */
@@ -80,6 +120,18 @@ function keepLive(client, cfg) {
 
 async function main() {
   const { cmd, link, rest } = parseArgs(process.argv.slice(2));
+
+  if (cmd === 'login') {
+    await login(log);
+    log('signed in — session cached. You can now join a war room with no share link.');
+    return;
+  }
+
+  if (cmd === 'logout') {
+    await logout();
+    log('signed out — cleared the cached session.');
+    return;
+  }
 
   if (cmd === 'leave') {
     const cfg = await resolveConfig(link);

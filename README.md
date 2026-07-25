@@ -6,7 +6,7 @@ room: its findings land on the incident timeline in realtime, and it pulls every
 else's discoveries between tasks. (Features 012 + 021; `EDGE_AGENT_INTEGRATION.md`
 §5.1, §7–8.)
 
-## Magic-link setup (recommended)
+## Sign in once (OAuth), then join with no share link (feature 024)
 
 Configure the MCP server ONCE, with no tokens or IDs:
 
@@ -17,6 +17,20 @@ Configure the MCP server ONCE, with no tokens or IDs:
   }
 }
 ```
+
+If you're a Landfall member, sign in once via your browser and the CLI caches your
+session — after that you join any war room in your org directly, no share link:
+
+```
+landfall login       # OAuth 2.1 + PKCE against your Keycloak; caches the session
+landfall logout      # clear the cached session
+# then, with a plain incident URL or LANDFALL_SLUG + LANDFALL_INCIDENT set:
+landfall serve       # joins as your authenticated identity — no share link needed
+```
+
+Non-members / guests keep using the single-use **share link** below. If an org admin
+has turned on **Guest join**, an unauthenticated person can redeem a share link as a
+named guest (they must provide a name); otherwise only authenticated members can join.
 
 Then, when an incident happens, any room member clicks **Share with agent** in the war
 room and sends you the instruction block. Paste it into your agent — it contains a

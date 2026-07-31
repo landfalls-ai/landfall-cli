@@ -32,7 +32,7 @@ import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '
 import { runStdioServer } from '../src/mcp.mjs';
 import { redeemShareLink } from '../src/link.mjs';
 import { watchIncident, describeEvent } from '../src/live.mjs';
-import { login, logout, getCachedAccessToken } from '../src/auth.mjs';
+import { login, logout, getCachedAccessToken, explainExpiredCredential } from '../src/auth.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -99,10 +99,15 @@ async function resolveConfig(link) {
   if (target) {
     const token = await getCachedAccessToken();
     if (token) {
-      log(`authenticated (OAuth) — joining incident ${target.incidentId} (workspace ${target.slug}) with no share link.`);
+      log(`authenticated — joining incident ${target.incidentId} (workspace ${target.slug}) with no share link.`);
       return { baseUrl: baseUrl ?? 'http://localhost:3001', slug: target.slug, incidentId: target.incidentId, token, agentLabel };
     }
-    log('not signed in — run `landfall login`, or paste a share link.');
+    // Feature 043 (T061, FR-055): an EXPIRED credential — including a legacy
+    // Keycloak one this CLI can no longer refresh — produces an explicit
+    // instruction, never a silent failure. A CLI that quietly stops working
+    // during an incident is worse than one that says what to do.
+    const expired = await explainExpiredCredential();
+    log(expired ?? 'not signed in — run `landfall login`, or paste a share link.');
   }
   return null;
 }

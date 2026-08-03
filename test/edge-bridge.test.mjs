@@ -277,6 +277,80 @@ test('get_brief advances the cursor so get_updates only returns genuinely new ev
   assert.match(upd.result.content[0].text, /No new shared context/);
 });
 
+// ---- feature 188/#217: live events park on the session between tool calls ----
+
+test('enqueueEvent parks live events, deduped by seq, dropping ones at/below the cursor', () => {
+  const session = createBridgeSession({ client: {} });
+  session.cursor = 4;
+
+  assert.equal(session.enqueueEvent({ seq: 4, type: 'edge.finding' }), false); // already delivered
+  assert.equal(session.enqueueEvent({ seq: 2, type: 'edge.finding' }), false);
+  assert.equal(session.enqueueEvent({ seq: 6, type: 'edge.finding' }), true);
+  assert.equal(session.enqueueEvent({ seq: 6, type: 'edge.finding' }), false); // duplicate seq
+  assert.equal(session.enqueueEvent({ seq: 5, type: 'edge.hypothesis' }), true);
+  assert.equal(session.enqueueEvent({ type: 'edge.finding' }), false); // no seq to dedupe on
+
+  assert.deepEqual(session.pending.map((e) => e.seq), [5, 6]); // held, in seq order
+});
+
+test('the pending queue is bounded, keeping the newest and counting what it dropped', () => {
+  const session = createBridgeSession({ client: {} });
+  for (let seq = 0; seq < 60; seq += 1) session.enqueueEvent({ seq, type: 'edge.finding' });
+
+  assert.equal(session.pending.length, 50);
+  assert.equal(session.pending[0].seq, 10);
+  assert.equal(session.pending.at(-1).seq, 59);
+  assert.equal(session.pendingDropped, 10);
+});
+
+test('a pull the agent made itself clears what the queue was holding below the new cursor', async () => {
+  const all = [
+    { seq: 0, type: 'edge.finding', payload: { text: 'first' } },
+    { seq: 1, type: 'edge.finding', payload: { text: 'second' } },
+  ];
+  const fakeClient = {
+    agentInstanceId: 'a-1',
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() { return all; },
+    async getUpdates(since) { return all.filter((e) => e.seq > since); },
+  };
+  const session = createBridgeSession({ client: fakeClient });
+  const tools = buildBridgeTools(session);
+
+  session.enqueueEvent({ seq: 1, type: 'edge.finding' });
+  session.enqueueEvent({ seq: 2, type: 'edge.finding' });
+  await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_updates' } }, { tools });
+
+  assert.equal(session.cursor, 1);
+  assert.deepEqual(session.pending.map((e) => e.seq), [2]); // seq 1 was just pulled; seq 2 still owed
+});
+
+test('parked events survive tool calls until something flushes them, and a rejoin clears them', async () => {
+  const fakeClient = {
+    agentInstanceId: 'a-1',
+    async join() {},
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() { return []; },
+    async leave() {},
+  };
+  const session = createBridgeSession({
+    client: fakeClient,
+    redeemImpl: async () => ({ baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-1', token: 'edge-tok' }),
+    clientFactory: () => fakeClient,
+  });
+  const tools = buildBridgeTools(session);
+
+  session.enqueueEvent({ seq: 7, type: 'edge.finding' });
+  await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'post_finding', arguments: { text: 'x' } } }, { tools });
+  assert.deepEqual(session.pending.map((e) => e.seq), [7]);
+
+  await session.joinWarRoom(SHARE_URL);
+  assert.deepEqual(session.pending, []);
+  assert.equal(session.pendingDropped, 0);
+});
+
 test('client.getUpdates hits the sinceSeq delta endpoint', async () => {
   const f = fakeFetch({ '/o/acme/incidents/inc-1/events': { status: 200, json: [] } });
   const c = new EdgeBridgeClient(CFG, f);

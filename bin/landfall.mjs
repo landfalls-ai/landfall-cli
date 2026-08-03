@@ -117,12 +117,20 @@ async function resolveConfig(link) {
   return null;
 }
 
-/** Presence keep-alive + live watch for a joined client. Returns stop(). */
-function keepLive(client, cfg) {
+/**
+ * Presence keep-alive + live watch for a joined client. Returns stop().
+ * When a bridge session is given, each pushed event is also parked on it so the
+ * agent's next tool call can carry it — the stderr line only reaches a human
+ * who happens to be watching the terminal.
+ */
+function keepLive(client, cfg, session) {
   const beat = setInterval(() => { client.heartbeat('investigating').catch(() => {}); }, HEARTBEAT_MS);
   const unwatch = watchIncident(cfg, {
     ownInstanceId: () => client.agentInstanceId,
-    onEvent: (evt) => log(describeEvent(evt)),
+    onEvent: (evt) => {
+      session?.enqueueEvent(evt);
+      log(describeEvent(evt));
+    },
     log,
   });
   return () => { clearInterval(beat); unwatch(); };
@@ -228,7 +236,7 @@ async function main() {
     baseUrl: process.env.LANDFALL_BASE_URL,
     onJoined: (s, cfg) => {
       stopLive?.();
-      stopLive = keepLive(s.client, cfg);
+      stopLive = keepLive(s.client, cfg, s);
       log(`joined incident ${cfg.incidentId} as "${s.agentLabel}" (instance ${s.client.agentInstanceId}).`);
     },
   });
@@ -238,7 +246,7 @@ async function main() {
     const client = new EdgeBridgeClient(cfg);
     await client.join();
     session.client = client;
-    stopLive = keepLive(client, cfg);
+    stopLive = keepLive(client, cfg, session);
     log(`joined incident ${cfg.incidentId} as "${cfg.agentLabel}" (instance ${client.agentInstanceId}).`);
   } else {
     log('not joined yet — the agent should call join_war_room with a Landfall share link.');

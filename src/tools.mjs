@@ -73,9 +73,16 @@ export const EDGE_AGENT_INSTRUCTIONS = [
 ].join('\n');
 
 /**
+ * Upper bound on parked live events. The queue exists to be flushed onto the
+ * next tool result, and a tool result is not a place to dump a timeline.
+ */
+const PENDING_MAX = 50;
+
+/**
  * A bridge session: the (possibly not-yet-joined) client plus the durable
- * update cursor. `joinWarRoom` redeems a share link, joins, and fires
- * `onJoined(session)` so the host process can start presence/live-watch.
+ * update cursor and the queue of live room events waiting to reach the agent.
+ * `joinWarRoom` redeems a share link, joins, and fires `onJoined(session)` so
+ * the host process can start presence/live-watch.
  */
 export function createBridgeSession({
   client = null,
@@ -90,6 +97,32 @@ export function createBridgeSession({
     client,
     cursor: -1,
     agentLabel,
+    // Live events that arrived while the agent was between tool calls. The
+    // bridge's socket delivers in milliseconds but the agent is only reachable
+    // in-band, on a tool result — so events wait here until one flushes them.
+    pending: [],
+    // Events discarded because the queue was full. The cursor is never advanced
+    // for them, so `get_updates` can still fetch them; the count is what keeps
+    // the overflow visible instead of silent.
+    pendingDropped: 0,
+    /**
+     * Park a live room event for delivery. Returns true when it was queued.
+     * A numeric `seq` is required: it is both the dedupe key and how an event
+     * the agent has already seen is recognised.
+     */
+    enqueueEvent(evt) {
+      const seq = evt?.seq;
+      if (typeof seq !== 'number') return false;
+      if (seq <= session.cursor) return false;
+      if (session.pending.some((e) => e.seq === seq)) return false;
+      session.pending.push(evt);
+      session.pending.sort((a, b) => a.seq - b.seq);
+      while (session.pending.length > PENDING_MAX) {
+        session.pending.shift();
+        session.pendingDropped += 1;
+      }
+      return true;
+    },
     async joinWarRoom(shareUrl) {
       const cfg = await redeemImpl(shareUrl, { baseUrl, fetchImpl });
       const next = clientFactory({ ...cfg, agentLabel }, fetchImpl);
@@ -99,6 +132,8 @@ export function createBridgeSession({
       }
       session.client = next;
       session.cursor = -1;
+      session.pending.length = 0;
+      session.pendingDropped = 0;
       await onJoined?.(session, cfg);
       return cfg;
     },
@@ -106,10 +141,18 @@ export function createBridgeSession({
   return session;
 }
 
-/** Advance the session cursor past every event in `events`. */
+/**
+ * Advance the session cursor past every event in `events`, and drop anything the
+ * queue was still holding at or below the new cursor — a pull the agent made
+ * itself has already delivered those, and delivering them again would be a
+ * duplicate.
+ */
 function advanceCursor(session, events) {
   for (const e of Array.isArray(events) ? events : []) {
     if (typeof e?.seq === 'number' && e.seq > session.cursor) session.cursor = e.seq;
+  }
+  if (Array.isArray(session.pending)) {
+    session.pending = session.pending.filter((e) => e.seq > session.cursor);
   }
 }
 

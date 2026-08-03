@@ -128,8 +128,31 @@ function keepLive(client, cfg) {
   return () => { clearInterval(beat); unwatch(); };
 }
 
+const HELP_TEXT = `landfall — join a Landfall war room from your terminal
+
+Usage: landfall <command> [options]
+
+Commands:
+  login                                                  sign in (browser); caches the session
+  logout                                                 clear the cached session
+  serve [--link URL]                                     (default) join + expose incident MCP tools over stdio
+  join [URL]                                             join + keep presence alive (no MCP) — Ctrl-C to leave
+  note "<text>"                                          post a one-off finding, then exit
+  leave                                                   leave the incident
+  install [--yes] [--only <ids>] [--dry-run]              register this machine's coding agents
+  uninstall [--yes] [--only <ids>]                        remove that registration
+
+Run 'landfall <command>' with no further arguments for command-specific behavior.
+Docs: https://github.com/landfalls-ai/landfall-cli`;
+
 async function main() {
-  const { cmd, link, rest } = parseArgs(process.argv.slice(2));
+  const argv = process.argv.slice(2);
+  if (argv.includes('--help') || argv.includes('-h') || argv[0] === 'help') {
+    console.log(HELP_TEXT);
+    return;
+  }
+
+  const { cmd, link, rest } = parseArgs(argv);
 
   if (cmd === 'login') {
     await login(log);

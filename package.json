@@ -1,6 +1,6 @@
 {
   "name": "landfall-cli",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Join a Landfall war room from your terminal and have your coding agent become a live investigator over MCP.",
   "type": "module",
   "main": "src/index.mjs",

@@ -21,8 +21,9 @@ Follow these steps in order for every release.
    - `url` → the new tag's tarball URL
    - `sha256` → step 4's output
 6. Commit and push the Formula change.
-7. Verify: `brew upgrade landfall` (or a fresh `brew install landfall` in a container)
-   picks up the new version.
+7. Verify: `brew update` first (Homebrew caches the tap locally and won't see the new
+   commit until this runs), then `brew upgrade landfall` (or a fresh `brew install
+   landfall` in a container) — confirm it picks up the new version.
 
 If any step above needed something not written down here, add it before closing out the
 release — this file is the whole process, not a summary of it.

@@ -6,7 +6,26 @@ room: its findings land on the incident timeline in realtime, and it pulls every
 else's discoveries between tasks. (Features 012 + 021; `EDGE_AGENT_INTEGRATION.md`
 §5.1, §7–8.)
 
-## Sign in once (OAuth), then join with no share link (feature 024)
+## Zero-config: auto-registered per harness from this checkout
+
+If you have this monorepo checked out, the `landfall` MCP server is **already wired
+up** for the harnesses below via checked-in, repo-local config — nothing to add to a
+personal MCP config, and nothing to `npm install -g`. Each points straight at
+`libs/edge-bridge/bin/landfall.mjs serve`, so there's exactly one implementation to
+keep in sync.
+
+| Harness | Mechanism | File |
+|---|---|---|
+| **Claude Code** | native plugin, auto-enabled for this repo | `.claude/settings.json` (`extraKnownMarketplaces` + `enabledPlugins`) → `.claude-plugin/marketplace.json` → `libs/edge-bridge/.claude-plugin/plugin.json` |
+| **Cursor** | project MCP config | `.cursor/mcp.json` |
+| **VS Code** (Copilot/agent mode) | workspace MCP config | `.vscode/mcp.json` (carved out of the otherwise-gitignored `.vscode/`) |
+| **Codex CLI** | project-scoped config | `.codex/config.toml` — only loads once you've marked this repo **trusted** in Codex; if it doesn't prompt automatically on first run, check your Codex version's trust workflow |
+
+Windsurf, Claude Desktop, and any other MCP client that only reads a **global**
+(not per-project) config can't be auto-wired this way — use the manual snippet below
+for those.
+
+## Any other MCP client, or a global CLI install: sign in once (OAuth), then join with no share link (feature 024)
 
 Configure the MCP server ONCE, with no tokens or IDs:
 

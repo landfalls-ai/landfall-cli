@@ -23,6 +23,9 @@
 //   landfall join [URL]           join + heartbeat (keep-alive presence, no MCP)
 //   landfall note "<text>"        post a one-off finding, then exit
 //   landfall leave                leave the incident
+//   landfall install [--yes] [--only <ids>] [--dry-run]   register this machine's coding
+//                                 agents (feature 049 — see contracts/cli.md)
+//   landfall uninstall [--yes] [--only <ids>]              remove that registration
 //
 // Auth (024): once `landfall login` has cached a token, `serve`/`join` can join a
 // war room from a plain incident URL or LANDFALL_SLUG+LANDFALL_INCIDENT with NO
@@ -33,6 +36,8 @@ import { runStdioServer } from '../src/mcp.mjs';
 import { redeemShareLink } from '../src/link.mjs';
 import { watchIncident, describeEvent } from '../src/live.mjs';
 import { login, logout, getCachedAccessToken, explainExpiredCredential } from '../src/auth.mjs';
+import { runInstall, runUninstall } from '../src/install/commands.mjs';
+import { formatOutcomeLine } from '../src/install/report.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -173,6 +178,24 @@ async function main() {
     process.on('SIGTERM', shutdown);
     log('presence keep-alive running (Ctrl-C to leave).');
     return; // heartbeat interval keeps the process alive
+  }
+
+  if (cmd === 'install' || cmd === 'uninstall') {
+    const run = cmd === 'install' ? runInstall : runUninstall;
+    const result = await run(rest, { log });
+    if (result.usageError) {
+      log(result.usageError);
+      process.exitCode = result.exitCode;
+      return;
+    }
+    for (const o of result.outcomes) console.log(formatOutcomeLine(o));
+    // NOT process.exit(): stdout is a pipe when scripted/tested, and exiting
+    // immediately after console.log can truncate the write before it flushes
+    // (worse right after a readline prompt, which leaves the stream in a
+    // state where this raced reliably). Setting exitCode and returning lets
+    // Node drain stdout before the process actually exits.
+    process.exitCode = result.exitCode;
+    return;
   }
 
   // default: serve — expose incident MCP tools over stdio; each call narrates.

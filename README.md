@@ -6,24 +6,44 @@ room: its findings land on the incident timeline in realtime, and it pulls every
 else's discoveries between tasks. (Features 012 + 021; `EDGE_AGENT_INTEGRATION.md`
 §5.1, §7–8.)
 
-## Zero-config: auto-registered per harness from this checkout
+## `landfall install`: auto-register every coding agent on your machine (feature 049)
 
-If you have this monorepo checked out, the `landfall` MCP server is **already wired
-up** for the harnesses below via checked-in, repo-local config — nothing to add to a
-personal MCP config, and nothing to `npm install -g`. Each points straight at
-`libs/edge-bridge/bin/landfall.mjs serve`, so there's exactly one implementation to
-keep in sync.
+Once the `landfall` CLI itself is installed globally, one command detects which
+supported coding agents are on **this machine** and wires each one up with its own
+**native, global** MCP registration — no per-repo config file, and it works the same
+whichever repo (or no repo at all) you're sitting in:
 
-| Harness | Mechanism | File |
-|---|---|---|
-| **Claude Code** | native plugin, auto-enabled for this repo | `.claude/settings.json` (`extraKnownMarketplaces` + `enabledPlugins`) → `.claude-plugin/marketplace.json` → `libs/edge-bridge/.claude-plugin/plugin.json` |
-| **Cursor** | project MCP config | `.cursor/mcp.json` |
-| **VS Code** (Copilot/agent mode) | workspace MCP config | `.vscode/mcp.json` (carved out of the otherwise-gitignored `.vscode/`) |
-| **Codex CLI** | project-scoped config | `.codex/config.toml` — only loads once you've marked this repo **trusted** in Codex; if it doesn't prompt automatically on first run, check your Codex version's trust workflow |
+```
+landfall login       # sign in once (needed the first time — install registers YOUR machine)
+landfall install      # detects installed harnesses, lets you pick which to configure
+```
 
-Windsurf, Claude Desktop, and any other MCP client that only reads a **global**
-(not per-project) config can't be auto-wired this way — use the manual snippet below
-for those.
+| Harness | Mechanism |
+|---|---|
+| **Claude Code** | `claude mcp add-json … --scope user` (Claude Code's own user-scope MCP registration) |
+| **Codex CLI** | `codex mcp add landfall -- landfall serve` (Codex's own MCP registration) |
+| **VS Code** (Copilot/agent mode) | `code --add-mcp`, or a direct merge into your user-profile `mcp.json` if the `code` CLI isn't on PATH |
+| **Cursor** | merged into your global `~/.cursor/mcp.json` |
+| **Claude Desktop** | merged into your `claude_desktop_config.json` (macOS/Windows) |
+| **Windsurf** | merged into your global `~/.codeium/windsurf/mcp_config.json` |
+
+`landfall install` only touches a harness you select, never overwrites an existing
+differently-configured `landfall` entry (reports a conflict instead), and is safe to
+re-run — an already-configured harness is reported as such rather than duplicated.
+Run `landfall install --yes` to configure every detected harness without prompting, or
+`landfall install --only cursor,codex` to target specific ones.
+
+To remove the registration:
+
+```
+landfall uninstall
+```
+
+This only removes an entry that still matches exactly what `landfall install` wrote —
+if you've hand-edited it since, it's left in place and reported as such.
+
+Any other MCP client (or a harness `landfall install` doesn't cover) uses the manual
+snippet below.
 
 ## Any other MCP client, or a global CLI install: sign in once (OAuth), then join with no share link (feature 024)
 
@@ -112,6 +132,8 @@ landfall serve [--link URL]   # (default) join + expose the incident MCP tools o
 landfall join [URL]           # join + keep presence alive (no MCP) — Ctrl-C to leave
 landfall note "origin pool is unhealthy"   # post a one-off finding
 landfall leave                # leave the incident
+landfall install [--yes] [--only <ids>] [--dry-run]   # register this machine's coding agents
+landfall uninstall [--yes] [--only <ids>]              # remove that registration
 ```
 
 ## Guarantees

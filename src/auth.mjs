@@ -9,8 +9,8 @@
 // Landfall-personnel-only. A CLI hard-coded to Keycloak would work for exactly
 // one population — Landfall staff — and would be a second, divergent place
 // where "which authentication branch does this organization use?" gets decided.
-// FR-056 and SC-010 say there must be exactly one such place, and it is
-// `resolveAuthBranch()` in `libs/auth`.
+// FR-056 and SC-010 say there must be exactly one such place, and it lives in
+// the core API's own auth-branch resolver — this CLI never re-implements it.
 //
 // So the CLI now does the least it possibly can: bind a loopback listener, open
 // the Landfall web app, and wait for a session to be handed back. The browser

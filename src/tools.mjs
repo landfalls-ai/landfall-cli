@@ -17,7 +17,7 @@ import { redeemShareLink } from './link.mjs';
 
 // Client-side pre-check policy (feature 025) — a FAST local error mirroring the
 // server. The SERVER remains the source of truth (FR-005); this just avoids a
-// wasted round-trip. Keep in sync with libs/artifacts/src/policy.ts.
+// wasted round-trip. Keep in sync with the server-side artifact upload policy.
 const ARTIFACT_MAX_BYTES = 5 * 1024 * 1024; // 5 MiB
 const ARTIFACT_ALLOWED_TYPES = new Set([
   'text/html', 'image/png', 'image/jpeg', 'image/gif', 'image/webp',

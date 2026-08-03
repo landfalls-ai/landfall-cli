@@ -1,17 +1,30 @@
-# @landfall/edge-bridge — `landfall` CLI
+# `landfall` CLI
 
-Join a Landfall war room from your own computer and have your **favorite MCP-capable
-agent** (Claude Code, Codex, Cursor, …) become a **live investigator** in the shared
-room: its findings land on the incident timeline in realtime, and it pulls everyone
-else's discoveries between tasks. (Features 012 + 021; `EDGE_AGENT_INTEGRATION.md`
-§5.1, §7–8.)
+Join a [Landfall](https://landfalls.ai) war room from your own computer and have your
+**favorite MCP-capable agent** (Claude Code, Codex, Cursor, VS Code, Claude Desktop,
+Windsurf, …) become a **live investigator** in the shared room: its findings land on
+the incident timeline in realtime, and it pulls everyone else's discoveries between
+tasks.
 
-## `landfall install`: auto-register every coding agent on your machine (feature 049)
+## Installation
 
-Once the `landfall` CLI itself is installed globally, one command detects which
-supported coding agents are on **this machine** and wires each one up with its own
-**native, global** MCP registration — no per-repo config file, and it works the same
-whichever repo (or no repo at all) you're sitting in:
+```
+brew tap landfalls-ai/landfall
+brew install landfall
+```
+
+Or without Homebrew, install directly from a tagged release:
+
+```
+npm install -g "github:landfalls-ai/landfall-cli#v0.1.0"
+```
+
+## `landfall install`: auto-register every coding agent on your machine
+
+Once the `landfall` CLI itself is installed, one command detects which supported
+coding agents are on **this machine** and wires each one up with its own **native,
+global** MCP registration — no per-repo config file needed, and it works the same
+whichever directory (or none at all) you're sitting in:
 
 ```
 landfall login       # sign in once (needed the first time — install registers YOUR machine)
@@ -45,7 +58,7 @@ if you've hand-edited it since, it's left in place and reported as such.
 Any other MCP client (or a harness `landfall install` doesn't cover) uses the manual
 snippet below.
 
-## Any other MCP client, or a global CLI install: sign in once (OAuth), then join with no share link (feature 024)
+## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 
 Configure the MCP server ONCE, with no tokens or IDs:
 
@@ -61,7 +74,7 @@ If you're a Landfall member, sign in once via your browser and the CLI caches yo
 session — after that you join any war room in your org directly, no share link:
 
 ```
-landfall login       # OAuth 2.1 + PKCE against your Keycloak; caches the session
+landfall login       # opens your browser; you sign in however your org normally does
 landfall logout      # clear the cached session
 # then, with a plain incident URL or LANDFALL_SLUG + LANDFALL_INCIDENT set:
 landfall serve       # joins as your authenticated identity — no share link needed
@@ -111,7 +124,7 @@ landfall join  "https://…/agent?ticket=…"          # presence-only keep-aliv
 Tools: `join_war_room`, `get_updates`, `get_brief`, `read_timeline`, `search_context`,
 `post_finding`, `post_widget`, `note`, `propose_action`, `record_activity`.
 
-## Env-config setup (012, still supported)
+## Env-config setup
 
 ```json
 "env": {
@@ -143,5 +156,18 @@ landfall uninstall [--yes] [--only <ids>]              # remove that registratio
 - Join tickets are single-use, short-lived, and bound to tenant + incident + member.
 - Stdio only — the bridge never listens on a public interface; the realtime connection
   is outbound.
-- Presence/summary/sub-tabs are projected server-side (feature 006) from what the
-  bridge posts; nothing here bypasses the war room's approval gate.
+- Presence/summary/sub-tabs are projected server-side from what the bridge posts;
+  nothing here bypasses the war room's approval gate.
+
+## Releasing
+
+See [RELEASING.md](./RELEASING.md).
+
+## Development
+
+```
+npm install
+npm test
+```
+
+No build step — plain ESM, Node ≥22.

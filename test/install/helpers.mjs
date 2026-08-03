@@ -77,7 +77,7 @@ export async function stubExecutable(pathDir, name, { exitCode = 0, stdout = '' 
   const scriptPath = path.join(pathDir, name);
   // Plain CommonJS body (no top-level `import`): the stub lives in a bare
   // temp directory with no package.json, so Node's default module type
-  // applies regardless of what libs/edge-bridge itself is configured as.
+  // applies regardless of this package's own "type": "module".
   const script = [
     '#!/usr/bin/env node',
     `require('node:fs').appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + '\\n');`,

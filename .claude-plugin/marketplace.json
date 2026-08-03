@@ -1,0 +1,12 @@
+{
+  "name": "landfall",
+  "owner": { "name": "Landfall" },
+  "description": "Landfall's Claude Code plugin — join a live war room and investigate over MCP. Same marketplace name as the one shipped inside the landfall monorepo, so `plugin@landfall` resolves the same way from either source.",
+  "plugins": [
+    {
+      "name": "landfall-edge-bridge",
+      "source": "./",
+      "description": "Landfall Edge Bridge — join a war room and expose its MCP tools locally over stdio (no manual MCP config, no global npm install). Ships an agent that recognizes a war-room join prompt and maintains the investigation dashboard."
+    }
+  ]
+}

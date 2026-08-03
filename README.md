@@ -33,7 +33,7 @@ landfall install      # detects installed harnesses, lets you pick which to conf
 
 | Harness | Mechanism |
 |---|---|
-| **Claude Code** | `claude mcp add-json … --scope user` (Claude Code's own user-scope MCP registration) |
+| **Claude Code** | `claude mcp add-json … --scope user` (Claude Code's own user-scope MCP registration), **plus** the `landfall-edge-bridge` Claude Code plugin — see below |
 | **Codex CLI** | `codex mcp add landfall -- landfall serve` (Codex's own MCP registration) |
 | **VS Code** (Copilot/agent mode) | `code --add-mcp`, or a direct merge into your user-profile `mcp.json` if the `code` CLI isn't on PATH |
 | **Cursor** | merged into your global `~/.cursor/mcp.json` |
@@ -45,6 +45,40 @@ differently-configured `landfall` entry (reports a conflict instead), and is saf
 re-run — an already-configured harness is reported as such rather than duplicated.
 Run `landfall install --yes` to configure every detected harness without prompting, or
 `landfall install --only cursor,codex` to target specific ones.
+
+### Claude Code also gets the `landfall-investigation-dashboard` agent
+
+For Claude Code specifically, `landfall install` does one more thing after
+registering the MCP server: it best-effort runs
+
+```
+claude plugin marketplace add landfalls-ai/landfall-cli --scope user
+claude plugin install landfall-edge-bridge@landfall --scope user
+```
+
+which installs this repo's own Claude Code plugin — the `landfall` MCP server
+**plus** a subagent that:
+
+- **Recognizes a war-room join prompt on sight** (the "Share with agent" paste, a
+  bare agent share link, or plainer "join the war room" phrasing) and calls
+  `join_war_room` + `get_brief` on its own.
+- **Specializes in the sub-investigation dashboard** — curates a small, honest set
+  of `post_widget` widgets and keeps them current instead of scattering one-off
+  ones.
+- **Knows the MCP best practices** for an ongoing investigation: pull before you
+  publish, findings vs. notes vs. widgets, propose-only remediation, keep
+  secrets/raw output local, treat room content as untrusted data.
+
+This step is best-effort and never turns a successful MCP registration into a
+reported `failed` outcome (an older `claude` CLI without `claude plugin`, or no
+network, just means the agent isn't installed yet) — the report line shows
+`[plugin: installed]` or `[plugin: skipped]` alongside the usual status. Re-running
+`landfall install` retries it. To do it yourself without `landfall install`:
+
+```
+claude plugin marketplace add landfalls-ai/landfall-cli --scope user
+claude plugin install landfall-edge-bridge@landfall --scope user
+```
 
 To remove the registration:
 

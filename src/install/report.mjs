@@ -24,12 +24,17 @@ export const UNINSTALL_STATUSES = Object.freeze([
 
 /**
  * Render one AdapterOutcome as the contract's single output line:
- *   `<display-name>: <status>[ — <detail>][ (<config-path>)]`
+ *   `<display-name>: <status>[ — <detail>][ (<config-path>)][ [plugin: <pluginStatus>]]`
+ *
+ * `pluginStatus` is Claude-Code-only (research.md's plugin-install step) and
+ * absent from every other harness's outcome, so this is purely additive —
+ * it changes nothing for the five harnesses that never set it.
  */
-export function formatOutcomeLine({ displayName, status, detail, configPath }) {
+export function formatOutcomeLine({ displayName, status, detail, configPath, pluginStatus }) {
   let line = `${displayName}: ${status}`;
   if (detail) line += ` — ${detail}`;
   if (configPath) line += ` (${configPath})`;
+  if (pluginStatus) line += ` [plugin: ${pluginStatus}]`;
   return line;
 }
 

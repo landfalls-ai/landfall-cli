@@ -22,12 +22,42 @@ export const displayName = 'Claude Code';
 const ENTRY = { type: 'stdio', command: 'landfall', args: ['serve'] };
 const KEY_PATH = 'mcpServers.landfall';
 
+// Claude Code, uniquely among the supported harnesses, also has a native
+// PLUGIN system (`claude plugin ...`) — a marketplace + plugin manifest,
+// checked into this repo at .claude-plugin/, ships not just the MCP server
+// but the landfall-investigation-dashboard agent (recognizes a war-room join
+// prompt on sight, specializes in post_widget dashboard upkeep). Wiring that
+// up too is what makes `landfall install` "seamless": no separate manual
+// `claude plugin marketplace add` step for a Claude Code user.
+const PLUGIN_MARKETPLACE_SOURCE = 'landfalls-ai/landfall-cli';
+const PLUGIN_ID = 'landfall-edge-bridge@landfall';
+
 function configPath() {
   return path.join(homedir(), '.claude.json');
 }
 
 export async function detect() {
   return isOnPath('claude');
+}
+
+/**
+ * Best-effort: register the marketplace and install the plugin at user
+ * scope. Never throws — this rides along with the MCP registration above,
+ * which is the part `landfall install`'s contract actually promises; a
+ * plugin-install failure (offline, an unreleased branch, an older `claude`
+ * CLI without `claude plugin`) must not turn a successful MCP registration
+ * into a reported failure. Both underlying commands are idempotent, so
+ * re-running `landfall install` re-attempts a previously failed plugin step
+ * for free.
+ */
+async function installPluginBestEffort() {
+  try {
+    await execFileAsync('claude', ['plugin', 'marketplace', 'add', PLUGIN_MARKETPLACE_SOURCE, '--scope', 'user']);
+    await execFileAsync('claude', ['plugin', 'install', PLUGIN_ID, '--scope', 'user']);
+    return 'installed';
+  } catch {
+    return 'skipped';
+  }
 }
 
 export async function install() {
@@ -37,7 +67,9 @@ export async function install() {
   } catch (err) {
     return { status: 'failed', detail: err.message, configPath: configPath() };
   }
-  if (plan.action === 'already-installed') return { status: 'already-installed', configPath: configPath() };
+  if (plan.action === 'already-installed') {
+    return { status: 'already-installed', configPath: configPath(), pluginStatus: await installPluginBestEffort() };
+  }
   if (plan.action === 'conflict') {
     return {
       status: 'conflict',
@@ -50,7 +82,7 @@ export async function install() {
   } catch (err) {
     return { status: 'failed', detail: err.message, configPath: configPath() };
   }
-  return { status: 'configured', configPath: configPath() };
+  return { status: 'configured', configPath: configPath(), pluginStatus: await installPluginBestEffort() };
 }
 
 /** Non-mutating peek used by `landfall uninstall` to build its candidate list. */
@@ -75,6 +107,13 @@ export async function uninstall() {
     await execFileAsync('claude', ['mcp', 'remove', 'landfall', '--scope', 'user']);
   } catch (err) {
     return { status: 'failed', detail: err.message, configPath: configPath() };
+  }
+  // Best-effort, mirrors installPluginBestEffort(): leaving the plugin behind
+  // after `landfall uninstall` would strand a dangling MCP-less agent.
+  try {
+    await execFileAsync('claude', ['plugin', 'uninstall', PLUGIN_ID, '--scope', 'user']);
+  } catch {
+    /* nothing to remove, or an older claude CLI without `claude plugin` — not fatal */
   }
   return { status: 'removed', configPath: configPath() };
 }

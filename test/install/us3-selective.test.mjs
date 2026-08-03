@@ -6,7 +6,15 @@ import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { withSandbox, seedSession, readJson, writeJson, runCli } from './helpers.mjs';
 
-test('interactive install: decline Cursor, accept Claude Desktop — only Claude Desktop changes', async () => {
+// Claude Desktop app-bundle detection only has real semantics on macOS/Windows
+// (platform.mjs#appBundleCandidates returns [] on every other platform), so this
+// test is structurally unrunnable on Linux CI — skip there rather than fail.
+const skip =
+  process.platform === 'darwin' || process.platform === 'win32'
+    ? false
+    : 'Claude Desktop app-bundle detection requires macOS or Windows';
+
+test('interactive install: decline Cursor, accept Claude Desktop — only Claude Desktop changes', { skip }, async () => {
   await withSandbox(async ({ homeDir, appRoot }) => {
     await seedSession(homeDir);
 

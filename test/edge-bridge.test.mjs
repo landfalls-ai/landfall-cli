@@ -7,6 +7,7 @@ import { handleMcpMessage } from '../src/mcp.mjs';
 import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
 import { narrateDoing, contributionFor } from '../src/narrate.mjs';
 import { parseShareLink, redeemShareLink } from '../src/link.mjs';
+import { describeEvent } from '../src/live.mjs';
 
 const CFG = { baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-1', token: 'tok', agentLabel: 'Claude Code' };
 
@@ -303,7 +304,7 @@ test('the pending queue is bounded, keeping the newest and counting what it drop
   assert.equal(session.pendingDropped, 10);
 });
 
-test('a pull the agent made itself clears what the queue was holding below the new cursor', async () => {
+test('a pull the agent made itself is not repeated back to it by the flush', async () => {
   const all = [
     { seq: 0, type: 'edge.finding', payload: { text: 'first' } },
     { seq: 1, type: 'edge.finding', payload: { text: 'second' } },
@@ -318,15 +319,21 @@ test('a pull the agent made itself clears what the queue was holding below the n
   const session = createBridgeSession({ client: fakeClient });
   const tools = buildBridgeTools(session);
 
-  session.enqueueEvent({ seq: 1, type: 'edge.finding' });
-  session.enqueueEvent({ seq: 2, type: 'edge.finding' });
-  await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_updates' } }, { tools });
+  session.enqueueEvent({ seq: 1, type: 'edge.finding', payload: { text: 'second' } });
+  session.enqueueEvent({ seq: 2, type: 'edge.finding', payload: { text: 'third' } });
+  const res = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_updates' } }, { tools });
+  const text = res.result.content[0].text;
 
-  assert.equal(session.cursor, 1);
-  assert.deepEqual(session.pending.map((e) => e.seq), [2]); // seq 1 was just pulled; seq 2 still owed
+  // seq 0 and 1 came back on the pull itself; only seq 2 was still owed
+  assert.match(text, /2 new event\(s\) since seq -1/);
+  assert.match(text, /⚠ 1 update\(s\) from other investigators/);
+  assert.match(text, /#2 edge\.finding — third/);
+  assert.equal(text.match(/#1 edge\.finding/g).length, 1);
+  assert.equal(session.cursor, 2);
+  assert.deepEqual(session.pending, []);
 });
 
-test('parked events survive tool calls until something flushes them, and a rejoin clears them', async () => {
+test('a rejoin clears whatever the queue was holding', async () => {
   const fakeClient = {
     agentInstanceId: 'a-1',
     async join() {},
@@ -340,15 +347,102 @@ test('parked events survive tool calls until something flushes them, and a rejoi
     redeemImpl: async () => ({ baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-1', token: 'edge-tok' }),
     clientFactory: () => fakeClient,
   });
-  const tools = buildBridgeTools(session);
 
   session.enqueueEvent({ seq: 7, type: 'edge.finding' });
-  await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'post_finding', arguments: { text: 'x' } } }, { tools });
-  assert.deepEqual(session.pending.map((e) => e.seq), [7]);
-
   await session.joinWarRoom(SHARE_URL);
   assert.deepEqual(session.pending, []);
   assert.equal(session.pendingDropped, 0);
+  assert.equal(session.cursor, -1);
+});
+
+// ---- feature 188/#218: the queue flushes onto every narrated tool result ----
+
+/** A joined client that answers reads from `all` and records nothing else. */
+function queueClient(all = []) {
+  return {
+    agentInstanceId: 'a-1',
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() { return all; },
+    async getUpdates(since) { return all.filter((e) => e.seq > since); },
+  };
+}
+
+const callTool = (tools, name, args) =>
+  handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } }, { tools })
+    .then((r) => r.result.content[0].text);
+
+test('a tool call carries back what other investigators published while the agent worked', async () => {
+  const session = createBridgeSession({ client: queueClient() });
+  const tools = buildBridgeTools(session);
+
+  session.enqueueEvent({ seq: 4, type: 'edge.finding', payload: { displayName: 'Dana', edgeAgentLabel: 'Codex', text: 'origin pool unhealthy' } });
+  const text = await callTool(tools, 'post_finding', { text: 'mine' });
+
+  assert.match(text, /Finding posted to the war room\./); // the tool's own result survives
+  assert.match(text, /⚠ 1 update\(s\) from other investigators since your last tool call:/);
+  assert.match(text, /#4 edge\.finding \[Dana · Codex\] — origin pool unhealthy/);
+});
+
+test('flushed events advance the cursor, so get_updates does not re-deliver them', async () => {
+  const all = [{ seq: 4, type: 'edge.finding', payload: { text: 'origin pool unhealthy' } }];
+  const session = createBridgeSession({ client: queueClient(all) });
+  const tools = buildBridgeTools(session);
+
+  session.enqueueEvent(all[0]);
+  await callTool(tools, 'post_finding', { text: 'mine' });
+  assert.equal(session.cursor, 4);
+  assert.deepEqual(session.pending, []);
+
+  const pulled = await callTool(tools, 'get_updates', {});
+  assert.match(pulled, /No new shared context since seq 4/);
+  assert.doesNotMatch(pulled, /origin pool unhealthy/); // delivered exactly once
+});
+
+test('a result with nothing owed is left exactly as the tool wrote it', async () => {
+  const tools = buildBridgeTools(createBridgeSession({ client: queueClient() }));
+  assert.equal(await callTool(tools, 'post_finding', { text: 'mine' }), 'Finding posted to the war room.');
+});
+
+test('a large backlog degrades to the newest events plus a recoverable count', async () => {
+  const all = [];
+  for (let seq = 0; seq < 60; seq += 1) all.push({ seq, type: 'edge.finding', payload: { text: `finding ${seq}` } });
+  const session = createBridgeSession({ client: queueClient(all) });
+  const tools = buildBridgeTools(session);
+
+  for (const e of all) session.enqueueEvent(e); // 50 held, 10 dropped by the cap
+  const text = await callTool(tools, 'post_finding', { text: 'mine' });
+
+  assert.match(text, /⚠ 60 update\(s\) from other investigators/);
+  // only the newest FLUSH_MAX are spelled out — never an unbounded timeline dump
+  assert.equal(text.match(/^#\d+ edge\.finding/gm).length, 5);
+  assert.match(text, /#59 edge\.finding — finding 59/);
+  assert.doesNotMatch(text, /finding 54\b/);
+  // ...and what it left out is counted, with the pull that recovers it
+  assert.match(text, /\+55 earlier update\(s\) not shown \(edge\.finding×45\) — call get_updates with sinceSeq=-1 for the full detail\./);
+
+  const recovered = await callTool(tools, 'get_updates', { sinceSeq: -1 });
+  assert.match(recovered, /60 new event\(s\) since seq -1/);
+});
+
+test('vetting and claim events render their substance instead of a bare type', async () => {
+  const session = createBridgeSession({ client: queueClient() });
+  const tools = buildBridgeTools(session);
+
+  session.enqueueEvent({ seq: 1, type: 'context.flagged', payload: { displayName: 'Dana', reason: 'that dashboard is stale' } });
+  session.enqueueEvent({ seq: 2, type: 'context.voted', payload: { displayName: 'Sam', stance: 'concur' } });
+  session.enqueueEvent({ seq: 3, type: 'claim.staged', payload: { displayName: 'Ana', statement: 'the rollout caused the 5xx' } });
+  const text = await callTool(tools, 'post_finding', { text: 'mine' });
+
+  assert.match(text, /#1 context\.flagged \[Dana\] — that dashboard is stale/);
+  assert.match(text, /#2 context\.voted \[Sam\] — concur/);
+  assert.match(text, /#3 claim\.staged \[Ana\] — the rollout caused the 5xx/);
+});
+
+test('describeEvent surfaces the same vetting fields on the stderr nudge', () => {
+  assert.match(describeEvent({ type: 'context.flagged', payload: { displayName: 'Dana', reason: 'stale dashboard' } }), /from Dana: "stale dashboard"/);
+  assert.match(describeEvent({ type: 'claim.staged', payload: { statement: 'the rollout caused the 5xx' } }), /"the rollout caused the 5xx"/);
+  assert.match(describeEvent({ type: 'context.voted', payload: { stance: 'dissent' } }), /"dissent"/);
 });
 
 test('client.getUpdates hits the sinceSeq delta endpoint', async () => {

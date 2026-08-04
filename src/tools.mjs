@@ -11,7 +11,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import { contributionFor, narrateDoing } from './narrate.mjs';
+import { contributionFor, eventActor, eventText, narrateDoing } from './narrate.mjs';
 import { EdgeBridgeClient } from './client.mjs';
 import { redeemShareLink } from './link.mjs';
 
@@ -158,11 +158,51 @@ function advanceCursor(session, events) {
 
 /** One compact line per shared event, attributed to human · agent. */
 function formatEvent(e) {
-  const p = (e?.payload && typeof e.payload === 'object' ? e.payload : {});
   // feature 024: attribute by the human name, never the raw humanActorId.
-  const who = [p.displayName || null, p.edgeAgentLabel].filter(Boolean).join(' · ');
-  const what = p.text ?? p.description ?? p.doing ?? p.summary ?? '';
+  const who = eventActor(e?.payload);
+  const what = eventText(e?.payload);
   return `#${e.seq} ${e.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
+}
+
+/**
+ * Events spelled out in full on one tool result before the block becomes a
+ * digest. A tool result is the agent's only in-band channel, not a place to
+ * dump a timeline.
+ */
+const FLUSH_MAX = 5;
+
+/**
+ * Drain the pending queue onto a tool result, newest events spelled out and any
+ * older overflow counted. The cursor advances past everything the block
+ * accounts for — that is what stops `get_updates` re-delivering it — which is
+ * why the digest names the `sinceSeq` that re-fetches what it left out.
+ * Returns '' when there is nothing owed, so an ordinary result is untouched.
+ */
+function flushPending(session) {
+  const queued = Array.isArray(session.pending) ? session.pending : [];
+  const dropped = session.pendingDropped ?? 0;
+  if (!queued.length && !dropped) return '';
+
+  const resumeSeq = session.cursor;
+  const shown = queued.slice(-FLUSH_MAX);
+  const hidden = queued.slice(0, queued.length - shown.length);
+  const omitted = hidden.length + dropped;
+
+  const lines = [
+    `⚠ ${queued.length + dropped} update(s) from other investigators since your last tool call:`,
+    ...shown.map(formatEvent),
+  ];
+  if (omitted) {
+    const kinds = hidden.length ? ` (${summarize(hidden)})` : '';
+    lines.push(
+      `+${omitted} earlier update(s) not shown${kinds} — call get_updates with sinceSeq=${resumeSeq} for the full detail.`,
+    );
+  }
+
+  advanceCursor(session, shown);
+  session.pending = [];
+  session.pendingDropped = 0;
+  return lines.join('\n');
 }
 
 /**
@@ -181,14 +221,21 @@ export function buildBridgeTools(sessionOrClient) {
   };
 
   // wrap a handler so EVERY tool call heartbeats a "doing" + posts a contribution
-  // if the action produced a durable artifact.
+  // if the action produced a durable artifact — and carries back whatever other
+  // investigators published while the agent was busy, which is the only way that
+  // context reaches an agent that never chose to call get_updates.
   const narrated = (name, run) => async (args) => {
     const client = requireClient();
     const doing = narrateDoing(name, args);
     try { await client.heartbeat(doing); } catch { /* narration is best-effort */ }
     const contrib = contributionFor(name, args);
     if (contrib) { try { await client.contribute(contrib.kind, contrib.body); } catch { /* best-effort */ } }
-    return run(args, doing, client);
+    const result = await run(args, doing, client);
+    // Flush AFTER the handler: a pull the agent made itself has already advanced
+    // the cursor past what it delivered, so the block only ever carries what the
+    // socket pushed beyond that — never a duplicate of the result above it.
+    const flushed = flushPending(session);
+    return flushed ? `${result}\n\n${flushed}` : result;
   };
 
   return [

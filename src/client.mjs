@@ -60,6 +60,55 @@ export class EdgeBridgeClient {
   uploadArtifact(filename, contentType, dataBase64) {
     return this.#post('/artifacts', { filename, contentType, dataBase64, edgeAgentLabel: this.cfg.agentLabel, agentInstanceId: this.agentInstanceId });
   }
+  /**
+   * FLAG a published context item (chat message or finding) as wrong or
+   * misleading (feature 029). This is a POSITION, not a decision: the server
+   * tallies distinct actors and requires a human among the concurring voters
+   * before anything is quarantined, so an agent flagging alone changes nothing
+   * but the visible tally.
+   *
+   * `agentInstanceId` is the id the SERVER issued at `join()` — it says which
+   * agent instance is speaking, and the server still resolves the human and the
+   * display name itself. Nothing here asserts an identity of its own.
+   */
+  flagContext(targetSeq, reason, targetKind) {
+    return this.#post('/vetting/flag', {
+      agentInstanceId: this.agentInstanceId,
+      edgeAgentLabel: this.cfg.agentLabel,
+      targetSeq,
+      ...(targetKind ? { targetKind } : {}),
+      reason,
+    });
+  }
+
+  /**
+   * Take a position on a STAGED claim (feature 034): `corroborate` or `contest`.
+   * One active position per participant — repeating it replaces, never adds.
+   * The author's own corroboration is excluded server-side, and admission needs
+   * a human in the chain, so this can raise or lower the tally but never decide.
+   */
+  positionClaim(claimSeq, position, reason) {
+    return this.#post(`/claims/${encodeURIComponent(claimSeq)}/position`, {
+      agentInstanceId: this.agentInstanceId,
+      edgeAgentLabel: this.cfg.agentLabel,
+      position,
+      ...(reason ? { reason } : {}),
+    });
+  }
+
+  /**
+   * STAGE a claim (feature 034). It enters the staging area — NOT the room feed
+   * and NOT any other participant's agent context — until it earns admission.
+   * Staging is how a local finding becomes something the room can vote on.
+   */
+  stageClaim(body) {
+    return this.#post('/claims', {
+      agentInstanceId: this.agentInstanceId,
+      edgeAgentLabel: this.cfg.agentLabel,
+      ...(body ?? {}),
+    });
+  }
+
   leave() {
     return this.#post('/edge/leave', { agentInstanceId: this.agentInstanceId });
   }

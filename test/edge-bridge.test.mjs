@@ -557,3 +557,131 @@ test('client.getUpdates hits the sinceSeq delta endpoint', async () => {
   await c.getUpdates(7);
   assert.match(f.calls[0].url, /\/events\?sinceSeq=7$/);
 });
+
+// ---- feature 029/034 from the edge: vetting + claims tools (#248) -----------
+
+/** A client that records the vetting/claims calls a tool made. */
+function vettingClient() {
+  const calls = [];
+  return {
+    calls,
+    agentInstanceId: 'a-9',
+    async heartbeat(doing) { calls.push(['heartbeat', doing]); },
+    async contribute(kind, body) { calls.push(['contribute', kind, body]); },
+    async getBrief() { return []; },
+    async flagContext(targetSeq, reason) { calls.push(['flag', targetSeq, reason]); return {}; },
+    async positionClaim(claimSeq, position, reason) { calls.push(['position', claimSeq, position, reason]); return {}; },
+    async stageClaim(body) { calls.push(['stage', body]); return {}; },
+  };
+}
+
+test('client routes flag/position/stage through the existing vetting + claims controllers', async () => {
+  const f = fakeFetch({ '/o/acme/incidents/inc-1/edge/join': { status: 201, json: { agentInstanceId: 'a-9' } } });
+  const c = new EdgeBridgeClient(CFG, f);
+  await c.join();
+  await c.flagContext(12, 'origin was healthy at that timestamp');
+  await c.positionClaim(48, 'corroborate', 'reproduced locally');
+  await c.stageClaim({ claimClass: 'causal', statement: 'the rollback caused the 5xx' });
+
+  const seen = f.calls.map((x) => `${x.method} ${new URL(x.url).pathname}`);
+  assert.ok(seen.includes('POST /o/acme/incidents/inc-1/vetting/flag'));
+  assert.ok(seen.includes('POST /o/acme/incidents/inc-1/claims/48/position'));
+  assert.ok(seen.includes('POST /o/acme/incidents/inc-1/claims'));
+
+  // the server-issued instance id rides along on all three so the server can
+  // attribute the position to {human · agent}; nothing asserts an identity.
+  for (const call of f.calls.slice(1)) {
+    assert.equal(call.body.agentInstanceId, 'a-9');
+    assert.equal(call.body.edgeAgentLabel, 'Claude Code');
+    assert.equal(call.body.humanActorId, undefined);
+    assert.equal(call.body.displayName, undefined);
+    assert.equal(call.body.kind, undefined);
+  }
+  assert.equal(f.calls[1].body.reason, 'origin was healthy at that timestamp');
+  assert.equal(f.calls[2].body.position, 'corroborate');
+  assert.equal(f.calls[3].body.claimClass, 'causal');
+});
+
+test('the four vetting tools are exposed and narrate like every other bridge tool', async () => {
+  const client = vettingClient();
+  const tools = buildBridgeTools(client);
+  const names = tools.map((t) => t.name);
+  for (const n of ['flag_context', 'corroborate_claim', 'contest_claim', 'stage_claim']) {
+    assert.ok(names.includes(n), `missing tool ${n}`);
+  }
+
+  await callTool(tools, 'flag_context', { targetSeq: 12, reason: 'origin was healthy then' });
+  assert.deepEqual(client.calls.filter(([k]) => k === 'flag'), [['flag', 12, 'origin was healthy then']]);
+  // narrated() wrapping: presence heartbeat on every call, like the rest
+  assert.ok(client.calls.some(([k, doing]) => k === 'heartbeat' && /flagging #12/.test(doing)));
+});
+
+test('vetting tools never double-post a generic contribution (the endpoints append their own events)', async () => {
+  const client = vettingClient();
+  const tools = buildBridgeTools(client);
+  await callTool(tools, 'flag_context', { targetSeq: 3, reason: 'r' });
+  await callTool(tools, 'corroborate_claim', { claimSeq: 48 });
+  await callTool(tools, 'contest_claim', { claimSeq: 49, reason: 'bisect says otherwise' });
+  await callTool(tools, 'stage_claim', { claimClass: 'observation', statement: 'p99 rose at 14:02' });
+
+  assert.equal(client.calls.filter(([k]) => k === 'contribute').length, 0);
+  for (const name of ['flag_context', 'corroborate_claim', 'contest_claim', 'stage_claim']) {
+    assert.equal(contributionFor(name, {}), null);
+  }
+});
+
+test('corroborate/contest are one endpoint with opposite stances', async () => {
+  const client = vettingClient();
+  const tools = buildBridgeTools(client);
+  const yes = await callTool(tools, 'corroborate_claim', { claimSeq: 48, reason: 'reproduced' });
+  const no = await callTool(tools, 'contest_claim', { claimSeq: 48, reason: 'not on my build' });
+  assert.deepEqual(
+    client.calls.filter(([k]) => k === 'position'),
+    [['position', 48, 'corroborate', 'reproduced'], ['position', 48, 'contest', 'not on my build']],
+  );
+  // both results tell the agent its position is not the decision
+  assert.match(yes, /needs a human in the chain/);
+  assert.match(no, /needs a human in the chain/);
+});
+
+test('tool descriptions state plainly that a vote is visibility-only and needs a human quorum', () => {
+  const byName = Object.fromEntries(buildBridgeTools(vettingClient()).map((t) => [t.name, t.description]));
+  assert.match(byName.flag_context, /VISIBILITY, never truth/);
+  assert.match(byName.flag_context, /agents alone can never quarantine/i);
+  assert.match(byName.corroborate_claim, /requires a human in the chain/i);
+  assert.match(byName.corroborate_claim, /never counts the claim author corroborating themselves/i);
+  assert.match(byName.contest_claim, /decides nothing/i);
+  assert.match(byName.stage_claim, /NOT in the room feed/);
+  // and the standing instructions carry the same rule, since that is what the
+  // model reads before it ever looks at a tool schema
+  assert.match(EDGE_AGENT_INSTRUCTIONS, /POSITION, never a decision/);
+});
+
+test('a malformed seq is refused locally and never reaches the server', async () => {
+  const client = vettingClient();
+  const tools = buildBridgeTools(client);
+  assert.match(await callTool(tools, 'flag_context', { targetSeq: 'twelve', reason: 'r' }), /Nothing flagged/);
+  assert.match(await callTool(tools, 'stage_claim', { claimClass: 'causal', statement: '  ' }), /Nothing staged/);
+  // An ABSENT seq must not coerce into one. `Number(null)` and `Number('')` are
+  // both 0, and 0 is a real seq — so the naive check would have turned a tool
+  // call that forgot the argument into a position on the incident's first
+  // event. That is the one failure this surface must never have.
+  for (const missing of [null, undefined, '', {}]) {
+    assert.match(await callTool(tools, 'corroborate_claim', { claimSeq: missing }), /No position recorded/);
+    assert.match(await callTool(tools, 'flag_context', { targetSeq: missing, reason: 'r' }), /Nothing flagged/);
+  }
+  assert.deepEqual(client.calls.filter(([k]) => k !== 'heartbeat'), []);
+
+  // ...while seq 0 itself, explicitly given, is a legitimate target.
+  assert.match(await callTool(tools, 'corroborate_claim', { claimSeq: 0 }), /claim #0/);
+  assert.deepEqual(client.calls.filter(([k]) => k === 'position'), [['position', 0, 'corroborate', undefined]]);
+});
+
+test('a server refusal is relayed with its reason, and claims nothing was recorded', async () => {
+  const client = vettingClient();
+  client.flagContext = async () => { throw new Error('/vetting/flag → HTTP 400: only chat messages and findings can be flagged'); };
+  const tools = buildBridgeTools(client);
+  const out = await callTool(tools, 'flag_context', { targetSeq: 5, reason: 'r' });
+  assert.match(out, /only chat messages and findings can be flagged/);
+  assert.match(out, /Nothing flagged/);
+});

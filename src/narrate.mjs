@@ -22,6 +22,10 @@ export function narrateDoing(toolName, args = {}) {
     case 'propose_action': return `proposing a remediation${a.description ? `: ${truncate(a.description)}` : ''}`;
     case 'post_widget': return `building a dashboard widget${a.title ? `: ${truncate(a.title)}` : ''}`;
     case 'upload_artifact': return `sharing an artifact${a.filename ? `: "${truncate(a.filename)}"` : ''}`;
+    case 'flag_context': return `flagging #${a.targetSeq} as wrong${a.reason ? `: ${truncate(a.reason)}` : ''}`;
+    case 'corroborate_claim': return `corroborating claim #${a.claimSeq}${a.reason ? `: ${truncate(a.reason)}` : ''}`;
+    case 'contest_claim': return `contesting claim #${a.claimSeq}${a.reason ? `: ${truncate(a.reason)}` : ''}`;
+    case 'stage_claim': return `staging a claim${a.statement ? `: ${truncate(a.statement)}` : ''}`;
     case 'record_activity': return String(a.doing ?? 'investigating');
     default: return `using ${toolName}`;
   }
@@ -49,6 +53,18 @@ export function contributionFor(toolName, args = {}) {
       // The upload endpoint itself appends the durable `artifact.shared` event
       // (feature 025), so the generic contribution path MUST NOT double-post.
       // The heartbeat still narrates presence ("sharing an artifact: …").
+      return null;
+    case 'flag_context':
+    case 'corroborate_claim':
+    case 'contest_claim':
+    case 'stage_claim':
+      // Same rule as upload_artifact: the vetting (029) and claims (034)
+      // endpoints append their OWN durable events — `context.flagged`,
+      // `claim.corroborated`/`claim.contested`, `claim.staged` — which are what
+      // the tallies are folded from. A generic `edge.finding` contribution on
+      // top would both double-post and, worse, put an unvetted restatement of
+      // the claim straight into the feed the staging area exists to keep it out
+      // of. Presence is still narrated by the heartbeat.
       return null;
     default:
       return null; // get_brief / read_timeline / record_activity → presence only

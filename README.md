@@ -232,8 +232,12 @@ landfall hooks uninstall [--only <ids>]                # remove only landfall's 
   cannot execute). humanActorId comes from your verified session, never the payload.
 - An edge session token works ONLY on its one incident — default-deny everywhere else.
 - Join tickets are single-use, short-lived, and bound to tenant + incident + member.
-- Stdio only — the bridge never listens on a public interface; the realtime connection
-  is outbound.
+- **No network listener.** The bridge speaks MCP over stdio and opens the realtime
+  connection outbound; there is no port, and nothing another host can reach.
+  (Planned, not yet shipped: a local **filesystem** socket — `0600`, in a `0700`
+  directory, readable by your user account alone — so lifecycle hooks can ask "what
+  room events have I not seen?". It will expose exactly three read/cursor operations
+  and *no* way to act in the war room. Design and rationale: issue #225.)
 - Presence/summary/sub-tabs are projected server-side from what the bridge posts;
   nothing here bypasses the war room's approval gate.
 

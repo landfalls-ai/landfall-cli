@@ -6,16 +6,17 @@
 //
 //   stop          — refuse a silent conclusion while room events newer than the
 //                   session's last consumed seq exist (#225)
-//   file-changed  — inject a digest of spooled room events into an idle
-//                   session (#227). Claude Code only: it is the one host with
-//                   a file-watch hook.
+//   file-changed  — inject a digest of room events into an IDLE session (#227),
+//                   woken by the doorbell marker. Claude Code only: it is the
+//                   one host with a file-watch hook.
 //
 // The command every entry runs starts `landfall hooks <id>`. That prefix is
 // also how uninstall recognizes a landfall-authored entry it must NOT delete
 // because a human edited it since — see isLandfallCommand().
 import { EXIT2, protocolForHost } from './protocol.mjs';
+import { DOORBELL_DIR, DOORBELL_FILE } from './doorbell.mjs';
 
-/** @typedef {{id: string, hosts: string[], purpose: string}} HookEvent */
+/** @typedef {{id: string, hosts: string[], purpose: string, matcher?: string}} HookEvent */
 
 /** @type {HookEvent[]} */
 export const HOOK_EVENTS = [
@@ -27,7 +28,13 @@ export const HOOK_EVENTS = [
   {
     id: 'file-changed',
     hosts: ['claude-code'],
-    purpose: 'inject spooled room events into an idle session',
+    purpose: 'inject room events into an idle session',
+    // #222 registered this matcher-less, which fires on ANY change in the
+    // workspace. With a doorbell file (#227) that is both noisy and pointless:
+    // the one change worth waking for is the marker `landfall serve` appends
+    // when its queue goes from empty to non-empty. Narrowing the registration
+    // is what turns "every keystroke saved" into "the room has something".
+    matcher: `**/${DOORBELL_DIR}/${DOORBELL_FILE}`,
   },
 ];
 
@@ -46,6 +53,11 @@ export const HOOK_EVENTS = [
 export function hookCommand(eventId, hostId) {
   const base = `landfall hooks ${eventId}`;
   return protocolForHost(hostId) === EXIT2 ? base : `${base} --host ${hostId}`;
+}
+
+/** The matcher an event registers with, or null when it needs none. */
+export function matcherFor(eventId) {
+  return HOOK_EVENTS.find((e) => e.id === eventId)?.matcher ?? null;
 }
 
 /**

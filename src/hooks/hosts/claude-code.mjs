@@ -11,15 +11,17 @@ import {
   planHookUninstall,
   applyHookUninstall,
 } from '../merge.mjs';
-import { hookCommand, isLandfallCommand, eventsForHost } from '../spec.mjs';
+import { hookCommand, isLandfallCommand, eventsForHost, matcherFor } from '../spec.mjs';
 import { isOnPath, pathExists, homedir } from '../../install/platform.mjs';
 
 export const id = 'claude-code';
 export const displayName = 'Claude Code';
 
 // Claude Code's hook shape: each event holds a list of matcher groups, each
-// group a list of `{type: 'command', command}` hooks. `matcher` is omitted —
-// it selects tool names and means nothing for Stop or FileChanged.
+// group a list of `{type: 'command', command}` hooks. `matcher` is omitted for
+// Stop (which selects nothing meaningful) and carried for FileChanged, where
+// narrowing to the doorbell path is what stops every saved keystroke in the
+// workspace from spawning a process — see spec.mjs.
 const EVENT_KEY = { stop: 'Stop', 'file-changed': 'FileChanged' };
 
 export function configPath() {
@@ -27,10 +29,16 @@ export function configPath() {
 }
 
 function registrations() {
-  return eventsForHost(id).map((eventId) => ({
-    keyPath: `hooks.${EVENT_KEY[eventId]}`,
-    entry: { hooks: [{ type: 'command', command: hookCommand(eventId, id) }] },
-  }));
+  return eventsForHost(id).map((eventId) => {
+    const matcher = matcherFor(eventId);
+    return {
+      keyPath: `hooks.${EVENT_KEY[eventId]}`,
+      entry: {
+        ...(matcher ? { matcher } : {}),
+        hooks: [{ type: 'command', command: hookCommand(eventId, id) }],
+      },
+    };
+  });
 }
 
 function isOurs(element) {

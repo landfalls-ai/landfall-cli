@@ -8,7 +8,7 @@ import path from 'node:path';
 import { withSandbox, runCli, readJson } from '../install/helpers.mjs';
 import { enableFlagText } from '../../src/hooks/hosts/codex.mjs';
 
-test('Claude Code: matcher-group shape, both events, under hooks.<Event>', async () => {
+test('Claude Code: matcher-group shape, both events (FileChanged narrowed), under hooks.<Event>', async () => {
   await withSandbox(async ({ homeDir }) => {
     await fs.mkdir(path.join(homeDir, '.claude'), { recursive: true });
     await runCli(['hooks', 'install', '--only', 'claude-code']);
@@ -16,7 +16,16 @@ test('Claude Code: matcher-group shape, both events, under hooks.<Event>', async
     assert.deepEqual(await readJson(path.join(homeDir, '.claude', 'settings.json')), {
       hooks: {
         Stop: [{ hooks: [{ type: 'command', command: 'landfall hooks stop' }] }],
-        FileChanged: [{ hooks: [{ type: 'command', command: 'landfall hooks file-changed' }] }],
+        // FileChanged carries a matcher and Stop does not, deliberately (#227):
+        // matcher-less means every saved keystroke in the workspace spawns a
+        // process, and the only change worth waking for is the doorbell marker
+        // `landfall serve` appends when its queue goes from empty to non-empty.
+        FileChanged: [
+          {
+            matcher: '**/.landfall/room-events',
+            hooks: [{ type: 'command', command: 'landfall hooks file-changed' }],
+          },
+        ],
       },
     });
   });

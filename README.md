@@ -120,6 +120,31 @@ reported as a conflict rather than overwritten. `hooks uninstall` deletes only a
 entry still byte-identical to what was written, and leaves Codex's `codex_hooks`
 flag alone — other hooks of yours may depend on it.
 
+### What `Stop` does
+
+Your agent finishes a ten-minute investigation and concludes. Meanwhile another
+investigator published the finding that changes the answer — the war room saw it,
+your agent did not, because an MCP session only learns things on a tool call it
+chose to make.
+
+So on `Stop`, the hook asks any `landfall serve` running in this workspace whether
+room events newer than that session's cursor exist. If they do, it prints them and
+refuses the conclusion; your agent reads them and continues. If they don't, it exits
+silently and immediately — nothing to ask means nothing to wait for.
+
+You are never stuck: whatever the block reported is marked consumed, so a second
+`Stop` on an unchanged room goes straight through, and a host that re-runs the hook
+after a block (`stop_hook_active`) is let through regardless.
+
+**How a hook reaches a serve process.** A hook is a separate, short-lived process
+and cannot see `landfall serve`'s memory, so `serve` binds a local query socket at
+`$XDG_RUNTIME_DIR/landfall/<workspace-hash>/<pid>.sock` (macOS:
+`~/.local/state/landfall/run/…`; Windows: a per-user named pipe). No new daemon —
+it is the serve process you already run, made answerable. Two agent windows on one
+repo are two sockets with two cursors, and a hook unions them, so it can over-report
+a sibling window's context but never miss your own. Nothing else on your machine is
+listening: see [Guarantees](#guarantees).
+
 ## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 
 Configure the MCP server ONCE, with no tokens or IDs:
@@ -233,11 +258,12 @@ landfall hooks uninstall [--only <ids>]                # remove only landfall's 
 - An edge session token works ONLY on its one incident — default-deny everywhere else.
 - Join tickets are single-use, short-lived, and bound to tenant + incident + member.
 - **No network listener.** The bridge speaks MCP over stdio and opens the realtime
-  connection outbound; there is no port, and nothing another host can reach.
-  (Planned, not yet shipped: a local **filesystem** socket — `0600`, in a `0700`
-  directory, readable by your user account alone — so lifecycle hooks can ask "what
-  room events have I not seen?". It will expose exactly three read/cursor operations
-  and *no* way to act in the war room. Design and rationale: issue #225.)
+  connection outbound; there is no port, and nothing another host can reach. `landfall
+  serve` does bind one local **filesystem** socket — `0600`, inside a `0700` directory,
+  readable by your user account alone — so lifecycle hooks can ask *"what room events
+  have I not seen?"*. It answers exactly three read/cursor operations (`status`, `peek`,
+  `consume`) and offers **no way to act in the war room**: nothing that posts, proposes,
+  or hands back your session token.
 - Presence/summary/sub-tabs are projected server-side from what the bridge posts;
   nothing here bypasses the war room's approval gate.
 

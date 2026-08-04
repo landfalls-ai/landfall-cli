@@ -120,6 +120,21 @@ export async function isAuthenticated() {
 }
 
 /**
+ * The organization slug the cached session belongs to, or null.
+ *
+ * A Landfall session is pinned to exactly one organization (feature 043), so
+ * this is the session's own answer to "which org am I in?" rather than a
+ * preference — which is why the declared-intent hook (#233) uses it instead of
+ * asking the engineer to configure a slug a second time. Returned even when the
+ * token has expired: callers that need a live token ask for one separately, and
+ * the slug is not a credential.
+ */
+export async function getCachedOrgSlug() {
+  const cache = await readCache();
+  return typeof cache?.org_slug === 'string' && cache.org_slug ? cache.org_slug : null;
+}
+
+/**
  * The message to print when a cached credential has expired — including the
  * case where it is a legacy Keycloak one this CLI can no longer refresh.
  * Returns `null` when there is nothing to explain.

@@ -109,8 +109,8 @@ Three hosts have a lifecycle-hook surface, and each gets what it supports:
 
 | Host | Config file | Registered |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged` |
-| Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop` |
+| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged`, `PreToolUse` (`Bash` only) |
+| Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop`, `PreToolUse` (`Bash` only) |
 | Cursor | `~/.cursor/hooks.json` | `stop` |
 
 No sign-in needed — this edits local config, so it also works from a provisioning
@@ -119,6 +119,62 @@ are preserved, re-running is a no-op, and an entry you've hand-edited since is
 reported as a conflict rather than overwritten. `hooks uninstall` deletes only an
 entry still byte-identical to what was written, and leaves Codex's `codex_hooks`
 flag alone — other hooks of yours may depend on it.
+
+## `landfall hooks policy`: what your machine may report, in writing
+
+The `PreToolUse` hook can offer to open a war room when you start poking at
+production. It reports a **classification** — never your command line — and only
+after you say yes.
+
+**It does nothing until you write a policy file.** There is no default allow-list
+and no heuristic: a command is only ever recognized because you wrote a rule that
+recognizes it.
+
+```
+landfall hooks policy --init     # write a starter ~/.config/landfall/prod-policy.json
+landfall hooks policy            # print every rule AND the exact payload it would send
+```
+
+```json
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "kubectl-prod",
+      "description": "kubectl aimed at the production cluster",
+      "command": "kubectl",
+      "allOf": ["--context=prod-us-east-1"],
+      "noneOf": ["--dry-run"],
+      "category": "kubernetes",
+      "entityHints": ["prod-us-east-1", "payments-api"]
+    }
+  ]
+}
+```
+
+A rule matches when `command` equals the program name and every string in `allOf`
+appears literally in the command line (and none of `noneOf` does). `allOf` entries
+are **text, not patterns** — `prod.*` matches the characters `prod.*`.
+
+The part worth checking for yourself: **`category` and `entityHints` are the entire
+payload**, and both are literals you typed above. Nothing is extracted from the
+command line — there is no parser that could pull a namespace, a hostname or a
+flag out of it. `landfall hooks policy` prints the resulting body per rule, so the
+complete set of values this machine can ever send is something you can read in one
+screen. `category` must be one of `kubernetes`, `cloud`, `database`, `logs`,
+`deployment`, `network`, `other`; hints must be bare identifiers (no whitespace, no
+shell metacharacters), which is checked when the file loads rather than when you
+are mid-incident.
+
+On a match you get a one-key prompt on your terminal, and **`y` is the only answer
+that sends anything**. No terminal (CI, a detached session), no answer within 30
+seconds, any other key, no cached session, an organization that hasn't enabled
+auto-attach — every one of those reports nothing. The hook always exits 0: it never
+blocks the command you were running. Commands that match no rule, and every tool
+that isn't a shell command, do nothing at all.
+
+Your organization must also switch this on (it is off by default, admin-gated,
+server-side), so both ends have to agree before a single intent is accepted.
 
 ## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 
@@ -225,6 +281,7 @@ landfall install [--yes] [--only <ids>] [--dry-run]   # register this machine's 
 landfall uninstall [--yes] [--only <ids>]              # remove that registration
 landfall hooks install [--only <ids>] [--dry-run]      # register lifecycle hooks
 landfall hooks uninstall [--only <ids>]                # remove only landfall's hook entries
+landfall hooks policy [--init]                         # print (or scaffold) the prod allow-list
 ```
 
 ## Guarantees

@@ -29,13 +29,13 @@ import {
   planHookUninstall,
   applyHookUninstall,
 } from '../merge.mjs';
-import { hookCommand, isLandfallCommand, eventsForHost } from '../spec.mjs';
+import { hookCommand, isLandfallCommand, eventsForHost, matcherFor } from '../spec.mjs';
 import { isOnPath, pathExists, homedir } from '../../install/platform.mjs';
 
 export const id = 'codex';
 export const displayName = 'Codex CLI';
 
-const EVENT_KEY = { stop: 'Stop' };
+const EVENT_KEY = { stop: 'Stop', 'pre-tool-use': 'PreToolUse' };
 const KEY_PREFIX = 'hooks';
 
 const FLAG_RE = /^[ \t]*codex_hooks[ \t]*=[ \t]*(true|false)[ \t]*$/m;
@@ -51,10 +51,16 @@ export function tomlPath() {
 }
 
 function registrations() {
-  return eventsForHost(id).map((eventId) => ({
-    keyPath: `${KEY_PREFIX}.${EVENT_KEY[eventId]}`,
-    entry: { hooks: [{ type: 'command', command: hookCommand(eventId) }] },
-  }));
+  return eventsForHost(id).map((eventId) => {
+    const matcher = matcherFor(eventId);
+    return {
+      keyPath: `${KEY_PREFIX}.${EVENT_KEY[eventId]}`,
+      entry: {
+        ...(matcher ? { matcher } : {}),
+        hooks: [{ type: 'command', command: hookCommand(eventId) }],
+      },
+    };
+  });
 }
 
 function isOurs(element) {

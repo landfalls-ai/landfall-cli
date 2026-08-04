@@ -19,9 +19,13 @@ const QUIET_TYPES = new Set([
 /**
  * Watch the incident live. Calls `onEvent(evt)` for every meaningful shared
  * event not authored by this agent instance. Returns a stop() function.
+ *
+ * `ioImpl` exists so the filtering above can be driven by hand in tests — the
+ * behaviours it guards (echo suppression, offline fallback) are exactly the
+ * ones a real socket makes untestable.
  */
-export function watchIncident({ baseUrl, slug, incidentId, token }, { onEvent, ownInstanceId, log } = {}) {
-  const socket = io(`${baseUrl.replace(/\/$/, '')}/realtime`, {
+export function watchIncident({ baseUrl, slug, incidentId, token }, { onEvent, ownInstanceId, log, ioImpl = io } = {}) {
+  const socket = ioImpl(`${baseUrl.replace(/\/$/, '')}/realtime`, {
     transports: ['websocket'],
     auth: { token, slug },
   });

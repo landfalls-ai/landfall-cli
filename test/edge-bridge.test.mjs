@@ -7,7 +7,7 @@ import { handleMcpMessage } from '../src/mcp.mjs';
 import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
 import { narrateDoing, contributionFor } from '../src/narrate.mjs';
 import { parseShareLink, redeemShareLink } from '../src/link.mjs';
-import { describeEvent } from '../src/live.mjs';
+import { describeEvent, watchIncident } from '../src/live.mjs';
 
 const CFG = { baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-1', token: 'tok', agentLabel: 'Claude Code' };
 
@@ -443,6 +443,112 @@ test('describeEvent surfaces the same vetting fields on the stderr nudge', () =>
   assert.match(describeEvent({ type: 'context.flagged', payload: { displayName: 'Dana', reason: 'stale dashboard' } }), /from Dana: "stale dashboard"/);
   assert.match(describeEvent({ type: 'claim.staged', payload: { statement: 'the rollout caused the 5xx' } }), /"the rollout caused the 5xx"/);
   assert.match(describeEvent({ type: 'context.voted', payload: { stance: 'dissent' } }), /"dissent"/);
+});
+
+// ---- feature 188/#221: the push path, end to end, with no network ----------
+//
+// The tests above drive the queue through `enqueueEvent` directly. These drive
+// it from the wire instead — a stand-in socket handed to `watchIncident` — so
+// what is locked is the whole path an event actually travels: socket → filter →
+// queue → tool result. `watchIncident` is wired exactly as `serve` wires it.
+
+/** A socket.io stand-in: `fire()` plays the server's side of the connection. */
+function fakeSocket() {
+  const handlers = new Map();
+  const socket = {
+    emitted: [],
+    disconnected: false,
+    on(event, fn) { handlers.set(event, fn); return socket; },
+    emit(event, payload) { socket.emitted.push([event, payload]); },
+    disconnect() { socket.disconnected = true; },
+    fire(event, payload) { handlers.get(event)?.(payload); },
+  };
+  return socket;
+}
+
+/** Wire a session to a stand-in socket the way `landfall serve` does. */
+function watchWith(session, { ownInstanceId = 'a-1' } = {}) {
+  const socket = fakeSocket();
+  const logged = [];
+  const stop = watchIncident(
+    { baseUrl: 'http://api.test/', slug: 'acme', incidentId: 'inc-1', token: 'edge-tok' },
+    {
+      ownInstanceId: () => ownInstanceId,
+      onEvent: (evt) => { session.enqueueEvent(evt); logged.push(describeEvent(evt)); },
+      log: (line) => logged.push(line),
+      ioImpl: () => socket,
+    },
+  );
+  return { socket, logged, stop };
+}
+
+test('an event pushed over the socket reaches the agent on its next tool result', async () => {
+  const session = createBridgeSession({ client: queueClient() });
+  const tools = buildBridgeTools(session);
+  const { socket, stop } = watchWith(session);
+
+  socket.fire('connect');
+  assert.deepEqual(socket.emitted, [['incident.subscribe', { incidentId: 'inc-1' }]]);
+
+  socket.fire('incident.event', {
+    seq: 4,
+    type: 'edge.finding',
+    payload: { agentInstanceId: 'a-2', displayName: 'Dana', edgeAgentLabel: 'Codex', text: 'origin pool unhealthy' },
+  });
+  assert.deepEqual(session.pending.map((e) => e.seq), [4]); // parked, not lost
+
+  const text = await callTool(tools, 'post_finding', { text: 'mine' });
+  assert.match(text, /Finding posted to the war room\./);
+  assert.match(text, /#4 edge\.finding \[Dana · Codex\] — origin pool unhealthy/);
+
+  stop();
+  assert.equal(socket.disconnected, true);
+});
+
+test('the agent never has its own publications or presence plumbing pushed back at it', async () => {
+  const session = createBridgeSession({ client: queueClient() });
+  const tools = buildBridgeTools(session);
+  const { socket } = watchWith(session, { ownInstanceId: 'a-1' });
+
+  socket.fire('connect');
+  socket.fire('incident.event', { seq: 5, type: 'edge.finding', payload: { agentInstanceId: 'a-1', text: 'mine, echoed back' } });
+  socket.fire('incident.event', { seq: 6, type: 'edge.participant.heartbeat', payload: { agentInstanceId: 'a-2' } });
+  socket.fire('incident.event', { seq: 7, type: 'edge.participant.joined', payload: { agentInstanceId: 'a-2' } });
+  socket.fire('incident.event', null);
+
+  assert.deepEqual(session.pending, []);
+  // a peer's real finding still gets through — the filter is selective, not off
+  socket.fire('incident.event', { seq: 8, type: 'edge.finding', payload: { agentInstanceId: 'a-2', text: 'theirs' } });
+  assert.deepEqual(session.pending.map((e) => e.seq), [8]);
+
+  const text = await callTool(tools, 'post_finding', { text: 'mine' });
+  assert.doesNotMatch(text, /echoed back/);
+  assert.doesNotMatch(text, /participant/);
+  assert.match(text, /#8 edge\.finding — theirs/);
+});
+
+test('with realtime unavailable the tools behave exactly as they do today, and say nothing about it', async () => {
+  const all = [{ seq: 0, type: 'edge.finding', payload: { text: 'pulled, not pushed' } }];
+  const session = createBridgeSession({ client: queueClient(all) });
+  const tools = buildBridgeTools(session);
+  const { socket, logged } = watchWith(session);
+
+  socket.fire('connect_error', new Error('ECONNREFUSED'));
+
+  // the failure is a stderr line for the human, and nothing else
+  assert.ok(logged.some((l) => /realtime unavailable \(ECONNREFUSED\).*get_updates pulls/.test(l)));
+  assert.deepEqual(session.pending, []);
+  assert.equal(session.pendingDropped, 0);
+
+  // a plain tool result is byte-identical to the no-socket case...
+  const posted = await callTool(tools, 'post_finding', { text: 'mine' });
+  assert.equal(posted, 'Finding posted to the war room.');
+  // ...and the cursor pull still carries everything, unchanged
+  const pulled = await callTool(tools, 'get_updates', {});
+  assert.match(pulled, /1 new event\(s\) since seq -1/);
+  assert.match(pulled, /pulled, not pushed/);
+  assert.doesNotMatch(pulled, /ECONNREFUSED|unavailable|error/i);
+  assert.equal(session.cursor, 0);
 });
 
 test('client.getUpdates hits the sinceSeq delta endpoint', async () => {

@@ -16,13 +16,14 @@ test('Claude Code: matcher-group shape, both events (FileChanged narrowed), unde
     assert.deepEqual(await readJson(path.join(homeDir, '.claude', 'settings.json')), {
       hooks: {
         Stop: [{ hooks: [{ type: 'command', command: 'landfall hooks stop' }] }],
-        // FileChanged carries a matcher and Stop does not, deliberately (#227):
-        // matcher-less means every saved keystroke in the workspace spawns a
-        // process, and the only change worth waking for is the doorbell marker
-        // `landfall serve` appends when its queue goes from empty to non-empty.
+        // FileChanged carries a matcher and Stop does not, deliberately (#227).
+        // For FileChanged the matcher is REQUIRED, not a refinement: Claude
+        // Code watches a list of literal filenames, and an empty or omitted
+        // matcher watches nothing and never fires — which is what #222's
+        // matcher-less registration did. A path or glob is equally inert.
         FileChanged: [
           {
-            matcher: '**/.landfall/room-events',
+            matcher: 'room_events',
             hooks: [{ type: 'command', command: 'landfall hooks file-changed' }],
           },
         ],

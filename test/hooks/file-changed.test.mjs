@@ -98,10 +98,17 @@ test('clearing is idempotent and safe when the file was never written', async ()
   });
 });
 
-test('the FileChanged registration is narrowed to the doorbell path', () => {
-  // #222 registered this matcher-less, which fires on any change in the
-  // workspace — with a doorbell that is both noisy and unnecessary.
-  assert.equal(matcherFor('file-changed'), `**/${DOORBELL_DIR}/${DOORBELL_FILE}`);
+test('the FileChanged registration watches the doorbell by literal filename', () => {
+  // #222 registered this matcher-less. That does not mean "fires on every
+  // change" — for FileChanged it means the watch list is empty and the hook
+  // never fires at all.
+  assert.equal(matcherFor('file-changed'), DOORBELL_FILE);
+  // Not a glob and not a path — Claude Code's FileChanged matcher is a list of
+  // literal filenames, watched in any directory under the cwd. An empty or
+  // omitted matcher means the hook never fires at all, so this is mandatory
+  // rather than a noise-reduction nicety, and it must stay inside the
+  // documented exact-match charset (letters, digits, `_`, `|`).
+  assert.ok(/^[A-Za-z0-9_|]+$/.test(matcherFor('file-changed')), 'matcher left the exact-match charset');
   assert.equal(matcherFor('stop'), null, 'Stop selects nothing meaningful');
   assert.deepEqual(HOOK_EVENTS.find((e) => e.id === 'file-changed').hosts, ['claude-code']);
 });
@@ -159,6 +166,42 @@ test('emit happens BEFORE the cursor moves and before the bell is cleared', asyn
     emit: () => order.push('emit'),
   });
   assert.deepEqual(order, ['emit', 'consume:1', 'clear']);
+});
+
+test('a partial consume failure leaves the bell ringing for the session it missed', async () => {
+  // The bell is shared by the workspace; the cursors are per-session. Clearing
+  // it while one session's queue is still undrained would strand that session:
+  // the bell only rings on its local 0 → non-empty edge, which has already
+  // passed. Better to be re-answered than to go quiet with context owed.
+  const a = handleSocketRequest({ op: 'peek' }, sessionWith(2, { from: 1 }), { pid: 1 });
+  const b = handleSocketRequest({ op: 'peek' }, sessionWith(1, { from: 9 }), { pid: 2 });
+  let cleared = false;
+  const res = await runFileChangedHook({
+    query: async () => [
+      { socketPath: '/a', response: a },
+      { socketPath: '/b', response: b },
+    ],
+    send: async (socketPath) => {
+      if (socketPath === '/b') throw new Error('timed out after 250ms');
+    },
+    clear: async () => { cleared = true; },
+    emit: () => {},
+  });
+
+  assert.equal(res.injected, true, 'the digest still went out — the failure is downstream of delivery');
+  assert.equal(cleared, false);
+});
+
+test('the bell IS cleared once every session consumed', async () => {
+  const peek = handleSocketRequest({ op: 'peek' }, sessionWith(2), { pid: 1 });
+  let cleared = false;
+  await runFileChangedHook({
+    query: async () => [{ socketPath: '/a', response: peek }],
+    send: async () => {},
+    clear: async () => { cleared = true; },
+    emit: () => {},
+  });
+  assert.equal(cleared, true);
 });
 
 test('a wake with nothing owed says nothing and clears nothing', async () => {
@@ -286,7 +329,7 @@ test('no polling: nothing in the hook path schedules a repeat', async () => {
 
 test('the doorbell location is workspace-local and predictable', async () => {
   await withWorkspace(async ({ cwd, env }) => {
-    assert.equal(doorbellPath(cwd), path.join(cwd, '.landfall', 'room-events'));
+    assert.equal(doorbellPath(cwd), path.join(cwd, '.landfall', 'room_events'));
     // …and is NOT where the socket lives: one is in the repo, the other is not.
     assert.ok(!doorbellPath(cwd).startsWith(socketLocation({ cwd, env }).dir));
   });

@@ -109,7 +109,7 @@ Three hosts have a lifecycle-hook surface, and each gets what it supports:
 
 | Host | Config file | Registered |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged` (scoped to `.landfall/room-events`) |
+| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged` (watching `room_events`) |
 | Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop` |
 | Cursor | `~/.cursor/hooks.json` | `stop` |
 
@@ -156,7 +156,7 @@ Cursor caps auto-followups at five per turn regardless.
 not concluding, not calling tools, so neither the Stop gate nor the in-band block on a
 tool result can reach it. Room context would sit in the queue until you typed something.
 
-So `landfall serve` appends a marker line to `.landfall/room-events` in your workspace
+So `landfall serve` appends a marker line to `.landfall/room_events` in your workspace
 the moment its queue goes from empty to non-empty. Claude Code's file watcher fires, the
 hook asks the socket for the digest, and hands it to the session as `additionalContext`.
 Your agent sees what the room found without you doing anything, and nothing is blocked —
@@ -165,7 +165,7 @@ this hook always exits 0.
 The marker is a **doorbell, not a mailbox**: it carries a timestamp, a pid and a count,
 and never a finding, a name or an incident id. Room content stays on the socket, out of
 a directory that gets grepped, backed up and occasionally committed. The registration is
-scoped to that one path, so ordinary edits in your workspace don't spawn anything, and
+a watch on that one filename, so ordinary edits in your workspace don't spawn anything, and
 `.landfall/` ignores itself (it contains a `.gitignore` of `*`) rather than us editing a
 `.gitignore` you own.
 

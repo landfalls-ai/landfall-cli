@@ -33,7 +33,17 @@ import { promises as fs } from 'node:fs';
 
 /** Directory name reserved in the workspace. Self-ignoring — see ensureDir(). */
 export const DOORBELL_DIR = '.landfall';
-export const DOORBELL_FILE = 'room-events';
+
+/**
+ * The marker's filename, and it is NOT free choice — Claude Code's
+ * `FileChanged` matcher is a list of literal filenames whose exact-match set is
+ * "letters, digits, `_`, and `|`". A hyphen drops the whole matcher onto the
+ * regular-expression path instead, so `room-events` would only work by way of
+ * a regex that happens to match. `room_events` stays on the documented
+ * exact-match path, which is why the underscore is load-bearing rather than
+ * stylistic. See spec.mjs.
+ */
+export const DOORBELL_FILE = 'room_events';
 
 /** Past this, the marker file is rewritten rather than appended to. */
 const MAX_MARKER_BYTES = 8 * 1024;

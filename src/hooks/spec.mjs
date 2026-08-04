@@ -29,12 +29,15 @@ export const HOOK_EVENTS = [
     id: 'file-changed',
     hosts: ['claude-code'],
     purpose: 'inject room events into an idle session',
-    // #222 registered this matcher-less, which fires on ANY change in the
-    // workspace. With a doorbell file (#227) that is both noisy and pointless:
-    // the one change worth waking for is the marker `landfall serve` appends
-    // when its queue goes from empty to non-empty. Narrowing the registration
-    // is what turns "every keystroke saved" into "the room has something".
-    matcher: `**/${DOORBELL_DIR}/${DOORBELL_FILE}`,
+    // NOT a glob, and not optional. Claude Code's `FileChanged` matcher is a
+    // list of LITERAL FILENAMES separated by `|`, watched in any directory
+    // under the cwd — "glob patterns and path prefixes are not supported", and
+    // "if the matcher is empty or omitted, no files are watched and the hook
+    // never fires". So #222's matcher-less registration never fired at all,
+    // and a path glob here would not have either. The bare filename is the
+    // only form that works; `.landfall/` is where we put it, but the watch is
+    // by name alone.
+    matcher: DOORBELL_FILE,
   },
 ];
 

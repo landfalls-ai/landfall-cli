@@ -104,12 +104,23 @@ export async function runFileChangedHook({
 
   emit(JSON.stringify(injectionPayload(injection.context)));
 
-  await Promise.all(
+  const consumed = await Promise.all(
     injection.consumes.map(({ socketPath, upTo }) =>
-      Promise.resolve(send(socketPath, { op: 'consume', upTo })).catch(() => null),
+      Promise.resolve(send(socketPath, { op: 'consume', upTo })).then(
+        () => true,
+        () => false,
+      ),
     ),
   );
-  await Promise.resolve(clear(cwd)).catch(() => null);
+
+  // Clear the bell only if EVERY session's cursor actually advanced. The
+  // doorbell is shared by the workspace but the cursors are per-session, so a
+  // single transient socket failure would otherwise leave one session's queue
+  // undrained with nothing left to wake it: the bell only rings on the local
+  // 0 → non-empty edge, and that session's `pending` never returns to 0. A
+  // bell left ringing is re-answered on the next change and costs one wake; a
+  // bell cleared early costs that session its idle nudge until it next stops.
+  if (consumed.every(Boolean)) await Promise.resolve(clear(cwd)).catch(() => null);
 
   return { exitCode: 0, injected: true, context: injection.context };
 }

@@ -11,7 +11,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import { contributionFor, eventActor, eventText, narrateDoing } from './narrate.mjs';
+import { contributionFor, formatEventLine, narrateDoing } from './narrate.mjs';
 import { EdgeBridgeClient } from './client.mjs';
 import { redeemShareLink } from './link.mjs';
 
@@ -162,13 +162,26 @@ function advanceCursor(session, events) {
   }
 }
 
-/** One compact line per shared event, attributed to human · agent. */
-function formatEvent(e) {
-  // feature 024: attribute by the human name, never the raw humanActorId.
-  const who = eventActor(e?.payload);
-  const what = eventText(e?.payload);
-  return `#${e.seq} ${e.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
+/**
+ * Advance the cursor straight to `upTo` and drop everything the queue was
+ * holding at or below it. This is what the hook socket's `consume` verb calls
+ * (#225): a Stop hook that has already spelled the events out to the agent has
+ * delivered them, exactly as a flushed tool result would have.
+ */
+export function consumeUpTo(session, upTo) {
+  if (typeof upTo === 'number' && upTo > session.cursor) session.cursor = upTo;
+  if (Array.isArray(session.pending)) {
+    session.pending = session.pending.filter((e) => e.seq > session.cursor);
+    // Same rule as flushPending: the overflow counter has been reported once
+    // the queue it belonged to is gone. The cursor was never advanced for the
+    // dropped events themselves, so `get_updates` can still fetch them.
+    if (!session.pending.length) session.pendingDropped = 0;
+  }
+  return session.cursor;
 }
+
+/** One compact line per shared event, attributed to human · agent. */
+const formatEvent = formatEventLine;
 
 /**
  * Events spelled out in full on one tool result before the block becomes a

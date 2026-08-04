@@ -89,6 +89,19 @@ export function eventText(payload) {
   return typeof v === 'string' ? v : '';
 }
 
+/**
+ * One compact line per shared event, attributed to human · agent. The single
+ * renderer for every place a queued room event is spelled out: the in-band
+ * block on a tool result (tools.mjs), and the `peek` digest a lifecycle hook
+ * reads over the local socket (hooks/socket.mjs, #225).
+ */
+export function formatEventLine(e) {
+  // feature 024: attribute by the human name, never the raw humanActorId.
+  const who = eventActor(e?.payload);
+  const what = eventText(e?.payload);
+  return `#${e?.seq} ${e?.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
+}
+
 function truncate(s, n = 80) {
   s = String(s);
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;

@@ -34,7 +34,7 @@
 // war room from a plain incident URL or LANDFALL_SLUG+LANDFALL_INCIDENT with NO
 // share link — you join as your authenticated member identity.
 import { EdgeBridgeClient } from '../src/client.mjs';
-import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
+import { buildBridgeTools, consumeUpTo, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
 import { runStdioServer } from '../src/mcp.mjs';
 import { redeemShareLink } from '../src/link.mjs';
 import { watchIncident, describeEvent } from '../src/live.mjs';
@@ -43,6 +43,8 @@ import { runInstall, runUninstall } from '../src/install/commands.mjs';
 import { formatOutcomeLine } from '../src/install/report.mjs';
 import { runHooksInstall, runHooksUninstall, parseHookFlags } from '../src/hooks/commands.mjs';
 import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
+import { readHookInput } from '../src/hooks/input.mjs';
+import { startHookSocket } from '../src/hooks/socket.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -227,7 +229,10 @@ async function main() {
     // it must stay silent on stdout (the host parses that channel) and say
     // everything it has to say through the exit code.
     if (HOOK_EVENT_IDS.includes(sub)) {
-      const { exitCode, error } = await runHookEvent(sub);
+      // The host writes the hook's context to stdin (it carries `stop_hook_active`,
+      // the loop guard) and reads the verdict from the exit code + stderr.
+      const input = await readHookInput();
+      const { exitCode, error } = await runHookEvent(sub, { input });
       if (error) log(error);
       process.exitCode = exitCode;
       return;
@@ -292,8 +297,17 @@ async function main() {
     log('not joined yet — the agent should call join_war_room with a Landfall share link.');
   }
 
+  // The local query socket (#225): lifecycle hooks are separate, short-lived
+  // processes and cannot reach `session.pending` / `session.cursor` in this
+  // process's memory. Binding here is what makes them answerable — no separate
+  // daemon, and best-effort, since a serve process that cannot offer the socket
+  // must still serve MCP.
+  const hookSocket = await startHookSocket(session, { consume: consumeUpTo, log });
+  if (hookSocket) log(`hook query socket at ${hookSocket.socketPath}`);
+
   const shutdown = async () => {
     stopLive?.();
+    await hookSocket?.close().catch(() => {});
     await session.client?.leave().catch(() => {});
     process.exit(0);
   };

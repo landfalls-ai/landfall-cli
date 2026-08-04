@@ -12,6 +12,7 @@
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { contributionFor, formatEventLine, narrateDoing } from './narrate.mjs';
+import { touchesAttention, voteRequestBlock } from './attention.mjs';
 import { EdgeBridgeClient } from './client.mjs';
 import { redeemShareLink } from './link.mjs';
 
@@ -111,6 +112,31 @@ export function createBridgeSession({
     // for them, so `get_updates` can still fetch them; the count is what keeps
     // the overflow visible instead of silent.
     pendingDropped: 0,
+    // What the room is waiting on from THIS agent (#252). The server owns the
+    // projection; this is the last answer it gave, refreshed when a room event
+    // that could change it arrives and read by both the piggyback channel and
+    // the hook socket. `dirty` starts true so the first tool call asks once.
+    attention: null,
+    attentionDirty: true,
+    // Vote requests already announced in-band, so the same claim is not
+    // re-appended to every tool result for the rest of the session.
+    attentionNotified: new Set(),
+    /**
+     * Re-read the attention projection, best-effort. Never throws and never
+     * blocks a tool call: an unreachable server means "nothing known to be
+     * waiting", exactly as it does for the live socket.
+     */
+    async refreshAttention() {
+      if (!session.client) return null;
+      try {
+        session.attention = await session.client.getAttention();
+        session.attentionDirty = false;
+      } catch {
+        // Leave the previous answer in place rather than blanking it — a stale
+        // vote request is recoverable, a silently dropped one is the bug.
+      }
+      return session.attention;
+    },
     /**
      * Park a live room event for delivery. Returns true when it was queued.
      * A numeric `seq` is required: it is both the dedupe key and how an event
@@ -123,6 +149,9 @@ export function createBridgeSession({
       if (session.pending.some((e) => e.seq === seq)) return false;
       session.pending.push(evt);
       session.pending.sort((a, b) => a.seq - b.seq);
+      // A claim/vetting event is the only thing that can change what awaits
+      // this agent, so arrival is the refresh trigger — no timer anywhere.
+      if (touchesAttention(evt)) session.attentionDirty = true;
       while (session.pending.length > PENDING_MAX) {
         session.pending.shift();
         session.pendingDropped += 1;
@@ -140,6 +169,10 @@ export function createBridgeSession({
       session.cursor = -1;
       session.pending.length = 0;
       session.pendingDropped = 0;
+      // A different room asks different questions of a different participant.
+      session.attention = null;
+      session.attentionDirty = true;
+      session.attentionNotified = new Set();
       await onJoined?.(session, cfg);
       return cfg;
     },
@@ -225,6 +258,34 @@ function flushPending(session) {
 }
 
 /**
+ * Drain new vote requests onto a tool result (#252).
+ *
+ * Refreshes the projection only when a room event said it could have changed
+ * (or it has never been read), so a quiet room costs ZERO extra requests per
+ * tool call — the cost of this channel scales with what is happening in the
+ * war room, not with how busy the agent is.
+ *
+ * A claim is announced ONCE, and once more if it later goes stale: repeating it
+ * on every tool result for the rest of the session would train the agent to
+ * ignore the marker, which is the only thing this channel has.
+ *
+ * Returns '' when there is nothing new. Never throws — a failed read leaves the
+ * result untouched.
+ */
+async function flushVoteRequests(session) {
+  try {
+    if (session.attentionDirty || session.attention === null) await session.refreshAttention();
+    const { text, keys } = voteRequestBlock(session.attention, { notified: session.attentionNotified });
+    // Marked only once the block is in hand, so a failure above cannot silently
+    // consume the announcement.
+    for (const k of keys) session.attentionNotified.add(k);
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Build the MCP tool set. Accepts a session from {@link createBridgeSession},
  * or (legacy, feature 012) a bare joined EdgeBridgeClient.
  */
@@ -254,7 +315,13 @@ export function buildBridgeTools(sessionOrClient) {
     // the cursor past what it delivered, so the block only ever carries what the
     // socket pushed beyond that — never a duplicate of the result above it.
     const flushed = flushPending(session);
-    return flushed ? `${result}\n\n${flushed}` : result;
+    // Vote requests ride the same channel and are PREPENDED (#252): they are
+    // the one thing here that is addressed to the agent rather than reporting
+    // what happened, and burying an "answer this" under a tool result and a
+    // digest is how it gets skimmed past.
+    const asked = await flushVoteRequests(session);
+    const body = flushed ? `${result}\n\n${flushed}` : result;
+    return asked ? `${asked}\n\n${body}` : body;
   };
 
   return [

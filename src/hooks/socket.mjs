@@ -137,6 +137,19 @@ export function handleSocketRequest(request, session, { pid = process.pid, consu
         cursor: session?.cursor ?? -1,
         maxSeq: pending.length ? pending[pending.length - 1].seq : (session?.cursor ?? -1),
         digest: pending.map((e) => formatEventLine(e)),
+        // #252: what the ROOM is waiting on from this agent, carried on the
+        // same round trip rather than as a second verb. Both answers are "what
+        // does this session still owe?", and a Stop hook needs them together —
+        // a second socket call would double the latency of every conclusion to
+        // separate two halves of one question.
+        //
+        // ADDITIVE, so the protocol version does not move: an older hook
+        // ignores the field, and a newer hook reading `undefined` from an older
+        // serve process finds no blockers, which is the pre-#252 behaviour.
+        // NOT refreshed here — the serve process keeps it current from the
+        // realtime socket, and a hook waiting on an HTTP round trip inside a
+        // 250 ms budget would time out and silently stop blocking.
+        attention: session?.attention ?? null,
       };
 
     case 'consume': {

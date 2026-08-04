@@ -23,7 +23,18 @@
 //     a further block requires genuinely NEW events. Without (1) an agent in a
 //     very busy room could still be nagged repeatedly; without (2) it could
 //     never stop at all. Both, so neither failure is reachable.
+//
+// #252 ADDS A SECOND REASON TO REFUSE, and it behaves differently: the room has
+// QUARANTINED context this agent relied on, or a claim contradicting the
+// admitted record is still awaiting its position. That is not discharged by
+// reading — it stays true until the agent does something about it — so there is
+// nothing to consume and guard (2) does not apply to it. Guard (1) does, and is
+// what still guarantees termination: one refusal per conclusion, then the
+// host's `stop_hook_active` lets the agent through. The alternative, refusing
+// until the room's ruling is acted on, would be a hook that can strand a
+// session on other people's votes.
 import { queryHookSockets, sendToSocket } from './socket.mjs';
+import { BLOCKER_FOOT, BLOCKER_HEAD, describeStopBlockers, stopBlockers } from '../attention.mjs';
 
 /**
  * Ceiling on what the hook writes back. Hook output is folded into the model's
@@ -42,16 +53,24 @@ const DIGEST_MAX_LINES = 12;
  * @param {{socketPath: string, response: object}[]} peeks
  */
 export function buildStopDecision(peeks, { maxChars = HOOK_OUTPUT_MAX } = {}) {
-  const owed = (Array.isArray(peeks) ? peeks : []).filter(
-    (p) => (p?.response?.count ?? 0) > 0 || (p?.response?.dropped ?? 0) > 0,
-  );
+  const answers = Array.isArray(peeks) ? peeks : [];
+  const owed = answers.filter((p) => (p?.response?.count ?? 0) > 0 || (p?.response?.dropped ?? 0) > 0);
   const total = owed.reduce((n, p) => n + (p.response.count ?? 0) + (p.response.dropped ?? 0), 0);
-  if (!total) return { block: false, reason: '', consumes: [] };
+
+  // #252: the second, independent reason to refuse — the room has QUARANTINED
+  // context this agent relied on, or a claim contradicting the admitted record
+  // is still awaiting its position. Unlike unconsumed events this is not
+  // discharged by reading: it is discharged by the agent doing something about
+  // it, so nothing is consumed for it. The `stop_hook_active` guard in
+  // `runStopHook` is what still guarantees the session can terminate.
+  const blockerLines = describeStopBlockers(mergeBlockers(answers));
+
+  if (!total && !blockerLines.length) return { block: false, reason: '', consumes: [] };
 
   // Union across sessions (see queryHookSockets): over-reporting a sibling
   // window's context is recoverable, under-reporting is the bug this prevents.
   const lines = owed.flatMap((p) => p.response.digest ?? []);
-  const resumeSeq = Math.min(...owed.map((p) => p.response.cursor ?? -1));
+  const resumeSeq = owed.length ? Math.min(...owed.map((p) => p.response.cursor ?? -1)) : -1;
   const shown = lines.slice(-DIGEST_MAX_LINES);
   let omitted = total - shown.length;
 
@@ -64,7 +83,12 @@ export function buildStopDecision(peeks, { maxChars = HOOK_OUTPUT_MAX } = {}) {
     'Read these before you conclude. If they change your answer, say so and continue investigating; ' +
     'if they do not, restate your conclusion and you will be allowed to stop.';
 
-  const assemble = (body, n) => [head, ...body, tail(n), foot].filter(Boolean).join('\n');
+  // The blocker section goes FIRST when present: "you cited something the room
+  // has ruled wrong" outranks "there is unread news", and the two are separate
+  // asks with separate exits.
+  const blockerSection = blockerLines.length ? [BLOCKER_HEAD, ...blockerLines, BLOCKER_FOOT] : [];
+  const eventSection = (body, n) => (total ? [head, ...body, tail(n), foot] : []);
+  const assemble = (body, n) => [...blockerSection, ...eventSection(body, n)].filter(Boolean).join('\n');
 
   // Trim oldest-first until the whole message fits. The count of what was
   // dropped rises as lines leave, so the pointer stays truthful.
@@ -82,9 +106,29 @@ export function buildStopDecision(peeks, { maxChars = HOOK_OUTPUT_MAX } = {}) {
     reason,
     // Consume everything each session owed, not just what was spelled out —
     // the pointer above is what makes the omitted detail re-fetchable, exactly
-    // as an in-band flush on a tool result does.
+    // as an in-band flush on a tool result does. Only EVENTS are consumed; a
+    // quarantined citation is not made untrue by having been mentioned.
     consumes: owed.map((p) => ({ socketPath: p.socketPath, upTo: p.response.maxSeq })),
   };
+}
+
+/**
+ * Blockers across every serve session in this workspace, de-duplicated.
+ *
+ * Two agent windows on one repo are two sessions with two cursors but often the
+ * same incident, so the same quarantine can arrive twice. Dedupe on the
+ * identity of the thing (a seq), not on the rendered line, so two sessions
+ * describing it slightly differently still collapse to one.
+ */
+function mergeBlockers(answers) {
+  const quarantined = new Map();
+  const contradictions = new Map();
+  for (const a of answers) {
+    const b = stopBlockers(a?.response?.attention);
+    for (const q of b.quarantined) if (!quarantined.has(q.targetSeq)) quarantined.set(q.targetSeq, q);
+    for (const c of b.contradictions) if (!contradictions.has(c.claimSeq)) contradictions.set(c.claimSeq, c);
+  }
+  return { quarantined: [...quarantined.values()], contradictions: [...contradictions.values()] };
 }
 
 /**

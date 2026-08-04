@@ -23,7 +23,13 @@ export class UnparseableConfigError extends Error {
   }
 }
 
-async function readJsonOrEmpty(filePath) {
+// Exported (rather than private, as they were when this file had a single
+// caller) so the hook-config merge in ../hooks/merge.mjs reads and writes a
+// harness's JSON through exactly the same code path — same ENOENT-is-empty
+// rule, same refusal to overwrite an unparseable file, same 2-space + trailing
+// newline output. Two JSON I/O implementations would be two chances to clobber
+// a config file differently.
+export async function readJsonOrEmpty(filePath) {
   let text;
   try {
     text = await fs.readFile(filePath, 'utf8');
@@ -39,17 +45,17 @@ async function readJsonOrEmpty(filePath) {
   }
 }
 
-async function writeJsonPretty(filePath, data) {
+export async function writeJsonPretty(filePath, data) {
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, JSON.stringify(data, null, 2) + '\n', 'utf8');
 }
 
-function getPath(obj, keyPath) {
+export function getPath(obj, keyPath) {
   return keyPath.split('.').reduce((cur, key) => (cur == null ? undefined : cur[key]), obj);
 }
 
 /** Returns a NEW object with `value` set at `keyPath`; does not mutate `obj`. */
-function setPath(obj, keyPath, value) {
+export function setPath(obj, keyPath, value) {
   const keys = keyPath.split('.');
   const root = { ...obj };
   let cur = root;
@@ -65,7 +71,7 @@ function setPath(obj, keyPath, value) {
 }
 
 /** Returns a NEW object with the key at `keyPath` removed; does not mutate `obj`. */
-function deletePath(obj, keyPath) {
+export function deletePath(obj, keyPath) {
   const keys = keyPath.split('.');
   const root = { ...obj };
   let cur = root;

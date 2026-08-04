@@ -92,6 +92,34 @@ if you've hand-edited it since, it's left in place and reported as such.
 Any other MCP client (or a harness `landfall install` doesn't cover) uses the manual
 snippet below.
 
+## `landfall hooks install`: make room context impossible to miss
+
+MCP registration gives your agent the incident tools. Hooks give the room a way to
+reach a session that isn't currently making a tool call — the difference between
+context your agent *can* fetch and context it *will* see.
+
+```
+landfall hooks install                  # every detected host
+landfall hooks install --only codex     # just one
+landfall hooks install --dry-run        # report what would change, write nothing
+landfall hooks uninstall                # remove only landfall's entries
+```
+
+Three hosts have a lifecycle-hook surface, and each gets what it supports:
+
+| Host | Config file | Registered |
+|---|---|---|
+| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged` |
+| Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop` |
+| Cursor | `~/.cursor/hooks.json` | `stop` |
+
+No sign-in needed — this edits local config, so it also works from a provisioning
+script. Every write is an append into the host's own hook list: your existing hooks
+are preserved, re-running is a no-op, and an entry you've hand-edited since is
+reported as a conflict rather than overwritten. `hooks uninstall` deletes only an
+entry still byte-identical to what was written, and leaves Codex's `codex_hooks`
+flag alone — other hooks of yours may depend on it.
+
 ## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 
 Configure the MCP server ONCE, with no tokens or IDs:
@@ -195,6 +223,8 @@ landfall note "origin pool is unhealthy"   # post a one-off finding
 landfall leave                # leave the incident
 landfall install [--yes] [--only <ids>] [--dry-run]   # register this machine's coding agents
 landfall uninstall [--yes] [--only <ids>]              # remove that registration
+landfall hooks install [--only <ids>] [--dry-run]      # register lifecycle hooks
+landfall hooks uninstall [--only <ids>]                # remove only landfall's hook entries
 ```
 
 ## Guarantees

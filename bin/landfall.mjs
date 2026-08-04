@@ -26,6 +26,9 @@
 //   landfall install [--yes] [--only <ids>] [--dry-run]   register this machine's coding
 //                                 agents (feature 049 — see contracts/cli.md)
 //   landfall uninstall [--yes] [--only <ids>]              remove that registration
+//   landfall hooks install [--only <ids>] [--dry-run] [--uninstall]   register the
+//                                 lifecycle hooks that push room context into a
+//                                 local session (#222; story #190)
 //
 // Auth (024): once `landfall login` has cached a token, `serve`/`join` can join a
 // war room from a plain incident URL or LANDFALL_SLUG+LANDFALL_INCIDENT with NO
@@ -38,6 +41,8 @@ import { watchIncident, describeEvent } from '../src/live.mjs';
 import { login, logout, getCachedAccessToken, explainExpiredCredential } from '../src/auth.mjs';
 import { runInstall, runUninstall } from '../src/install/commands.mjs';
 import { formatOutcomeLine } from '../src/install/report.mjs';
+import { runHooksInstall, runHooksUninstall, parseHookFlags } from '../src/hooks/commands.mjs';
+import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -149,6 +154,9 @@ Commands:
   leave                                                   leave the incident
   install [--yes] [--only <ids>] [--dry-run]              register this machine's coding agents
   uninstall [--yes] [--only <ids>]                        remove that registration
+  hooks install [--only <ids>] [--dry-run] [--uninstall]  register lifecycle hooks so room context
+                                                          reaches a local session it can't ignore
+  hooks uninstall [--only <ids>]                          remove only landfall's hook entries
 
 Run 'landfall <command>' with no further arguments for command-specific behavior.
 Docs: https://github.com/landfalls-ai/landfall-cli`;
@@ -209,6 +217,38 @@ async function main() {
     process.on('SIGTERM', shutdown);
     log('presence keep-alive running (Ctrl-C to leave).');
     return; // heartbeat interval keeps the process alive
+  }
+
+  if (cmd === 'hooks') {
+    const { rest: subArgs, uninstall: uninstallFlag } = parseHookFlags(rest);
+    const sub = subArgs[0];
+
+    // `landfall hooks <event>` is what a registered hook entry itself runs, so
+    // it must stay silent on stdout (the host parses that channel) and say
+    // everything it has to say through the exit code.
+    if (HOOK_EVENT_IDS.includes(sub)) {
+      const { exitCode, error } = await runHookEvent(sub);
+      if (error) log(error);
+      process.exitCode = exitCode;
+      return;
+    }
+
+    if (sub !== 'install' && sub !== 'uninstall') {
+      log(`usage: landfall hooks <install|uninstall|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall]`);
+      process.exitCode = 2;
+      return;
+    }
+
+    const run = sub === 'uninstall' || uninstallFlag ? runHooksUninstall : runHooksInstall;
+    const result = await run(rest, { log });
+    if (result.usageError) {
+      log(result.usageError);
+      process.exitCode = result.exitCode;
+      return;
+    }
+    for (const o of result.outcomes) console.log(formatOutcomeLine(o));
+    process.exitCode = result.exitCode; // not process.exit — see the note below
+    return;
   }
 
   if (cmd === 'install' || cmd === 'uninstall') {

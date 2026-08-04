@@ -3,6 +3,11 @@
 // makes a teammate's edge investigation narrate itself into the war room: every
 // action the agent takes maps to a presence heartbeat + optional contribution,
 // with NO extra effort from the teammate. Pure + node-testable.
+//
+// It also owns the reverse direction — rendering a shared event published by
+// SOMEONE ELSE into one readable line — so the two readers of that stream (the
+// stderr nudge in live.mjs and the in-band block on a tool result in tools.mjs)
+// cannot drift apart on which payload fields carry the substance.
 
 /** A friendly present-tense phrase for what the agent is doing right now. */
 export function narrateDoing(toolName, args = {}) {
@@ -48,6 +53,24 @@ export function contributionFor(toolName, args = {}) {
     default:
       return null; // get_brief / read_timeline / record_activity → presence only
   }
+}
+
+/** Who published a shared event: the human name, never the raw humanActorId. */
+export function eventActor(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  return [p.displayName || null, p.edgeAgentLabel].filter(Boolean).join(' · ');
+}
+
+/**
+ * The human-readable substance of a shared event. Vetting and claim events
+ * (`context.flagged`, `context.voted`, `claim.staged`, `claim.contested`) carry
+ * theirs in `statement`/`reason`/`stance` rather than `text`, so a reader that
+ * knew only the older fields rendered them as a bare type with no body.
+ */
+export function eventText(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  const v = p.text ?? p.description ?? p.doing ?? p.summary ?? p.statement ?? p.reason ?? p.stance ?? '';
+  return typeof v === 'string' ? v : '';
 }
 
 function truncate(s, n = 80) {

@@ -6,6 +6,7 @@
 // host controls its own context). Best-effort by design: if the gateway is
 // unreachable the bridge still works via cursor pulls.
 import { io } from 'socket.io-client';
+import { eventActor, eventText } from './narrate.mjs';
 
 /** Event types that are noise for a teammate (presence plumbing, own joins). */
 const QUIET_TYPES = new Set([
@@ -43,11 +44,10 @@ export function watchIncident({ baseUrl, slug, incidentId, token }, { onEvent, o
 
 /** One human-readable stderr line for a pushed shared event. */
 export function describeEvent(evt) {
-  const p = (evt?.payload && typeof evt.payload === 'object' ? evt.payload : {});
   // feature 024: show the human name, never the raw humanActorId.
-  const who = [p.displayName || null, p.edgeAgentLabel].filter(Boolean).join(' · ');
-  const what = p.text ?? p.description ?? p.doing ?? p.summary ?? '';
-  const body = typeof what === 'string' && what ? `: "${truncate(what)}"` : '';
+  const who = eventActor(evt?.payload);
+  const what = eventText(evt?.payload);
+  const body = what ? `: "${truncate(what)}"` : '';
   return `⚡ ${evt?.type ?? 'event'}${who ? ` from ${who}` : ''}${body} — new shared context; call get_updates.`;
 }
 

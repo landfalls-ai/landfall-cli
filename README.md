@@ -147,8 +147,22 @@ landfall join  "https://…/agent?ticket=…"          # presence-only keep-aliv
   connection; when other investigators (humans, the central agent crew, or other edge
   agents) publish something, you get a stderr nudge —
   `⚡ edge.finding from dana · Codex: "origin pool unhealthy" — call get_updates.`
-  The agent then pulls it with `get_updates` (durable cursor: only what's new since it
-  last looked). Pull is authoritative; the push is a nudge.
+  Your agent gets it **in-band**: the next tool call it makes — any tool — comes back
+  with the new context appended, so it cannot miss what the room found while it was
+  busy elsewhere.
+
+  ```
+  Finding posted to the war room.
+
+  ⚠ 1 update(s) from other investigators since your last tool call:
+  #42 edge.finding [dana · Codex] — origin pool unhealthy
+  ```
+
+  The block is bounded: past a handful of events only the newest are spelled out and
+  the rest are counted, with the `get_updates sinceSeq=…` that fetches them in full.
+  Delivery advances the same durable cursor `get_updates` reads, so nothing arrives
+  twice — and with the realtime connection unavailable the bridge still works exactly
+  as before, on cursor pulls alone.
 
 - **Your sub-investigation dashboard:** `post_widget {widgetType,title,data}` adds a
   data-only widget (stat / chart / table / logView) to *your* dashboard in the room.

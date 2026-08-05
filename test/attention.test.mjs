@@ -233,6 +233,53 @@ test('joining a different war room forgets the previous room’s questions', asy
   assert.equal(session.attentionDirty, true);
 });
 
+test('a read still in flight against the OLD room can never answer for the new one', async () => {
+  // The case the test above does not reach: it resets already-settled fields,
+  // while this one has a genuine unresolved promise spanning the switch.
+  //
+  // `claimSeq` is a PER-INCIDENT counter, so incident A's claim #48 rendered
+  // into a tool result the agent is reading as incident B is not a cosmetic
+  // mix-up — corroborate_claim goes straight to the CURRENT client, so acting
+  // on it records a position on whatever #48 happens to be in B.
+  let releaseOldRead;
+  const oldRoomAnswer = attention({ votesAwaited: [awaited({ claimSeq: 48, statement: 'OLD ROOM claim' })] });
+  const clientA = {
+    agentInstanceId: 'a-1',
+    leave: async () => {},
+    getAttention: () => new Promise((resolve) => { releaseOldRead = () => resolve(oldRoomAnswer); }),
+  };
+  const clientB = {
+    agentInstanceId: 'a-2',
+    join: async () => {},
+    leave: async () => {},
+    getAttention: async () => attention({ votesAwaited: [awaited({ claimSeq: 7, statement: 'NEW ROOM claim' })] }),
+  };
+
+  const session = createBridgeSession({
+    client: clientA,
+    redeemImpl: async () => ({ ...CFG, incidentId: 'inc-2' }),
+    clientFactory: () => clientB,
+  });
+
+  // A room event lands in A and starts a read that has not come back yet.
+  session.enqueueEvent({ seq: 5, type: 'claim.staged', payload: { statement: 'x' } });
+  const oldRead = session.refreshAttention();
+  assert.ok(session.attentionInFlight, 'precondition: a read is genuinely in flight');
+
+  await session.joinWarRoom('http://api.test/share/xyz');
+  assert.equal(session.attentionInFlight, null, 'the old room’s read is abandoned, not inherited');
+
+  // The next read must go to B rather than short-circuiting onto A's promise.
+  const fresh = await session.refreshAttention();
+  assert.equal(fresh.votesAwaited[0].statement, 'NEW ROOM claim');
+
+  // And when A's request finally lands it must discard its own answer.
+  releaseOldRead();
+  await oldRead;
+  assert.equal(session.attention.votesAwaited[0].statement, 'NEW ROOM claim');
+  assert.equal(session.attention.votesAwaited[0].claimSeq, 7);
+});
+
 // --------------------------------------------------------------- the blockers
 
 test('quarantined context this agent relied on is a blocker', () => {

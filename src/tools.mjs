@@ -286,6 +286,18 @@ export function createBridgeSession({
       session.attention = null;
       session.attentionDirty = true;
       session.attentionNotified = new Set();
+      // AND THE READ STILL IN FLIGHT AGAINST THE OLD ROOM IS ABANDONED. Clearing
+      // the pointer does both halves of that, because `refreshAttention` keys
+      // everything on promise identity rather than on which client issued it:
+      // the next caller no longer short-circuits onto the old room's promise,
+      // and when that promise finally lands its own
+      // `attentionInFlight === inFlight` guard is already false, so it discards
+      // its answer instead of writing incident A's claims into incident B's
+      // snapshot. Without this the piggyback channel could render "vote
+      // requested: claim #N" for a claim belonging to the room the agent just
+      // left — and `claimSeq` is a per-incident counter, so acting on it in the
+      // new room records a position on an unrelated claim.
+      session.attentionInFlight = null;
       await onJoined?.(session, cfg);
       return cfg;
     },

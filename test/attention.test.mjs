@@ -384,6 +384,71 @@ test('a failed attention read leaves the previous snapshot and stays dirty for a
   assert.equal(session.attentionDirty, true);
 });
 
+test('an abandoned slow read can never clobber the fresher snapshot that replaced it', async () => {
+  // Two reads completing out of START order — a retry, a pool wait or a GC
+  // pause is enough. The first misses its budget and is abandoned, a second
+  // takes over and sees the quarantine; then the first finally lands with its
+  // pre-quarantine answer. Assigning it unconditionally would overwrite the
+  // newer answer AND leave the snapshot clean, so no later event would ever
+  // correct it: a blocker-free Stop for the rest of the session, which is the
+  // exact failure the settle path was added to prevent.
+  const deferred = [];
+  const session = createBridgeSession({
+    client: {
+      cfg: { slug: 'acme', incidentId: 'inc-1' },
+      getAttention: () => new Promise((resolve) => { deferred.push(resolve); }),
+    },
+  });
+  session.attention = attention({}); // clean, from earlier in the session
+  session.attentionDirty = true;
+
+  // Read #1 starts, misses the budget, and the hook answers with what it has.
+  const answered = await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+  assert.equal(answered.attention.flaggedOwnContext.length, 0);
+  assert.equal(deferred.length, 1);
+
+  // Read #2 — fresh, and this one sees the quarantine.
+  const second = session.refreshAttention();
+  assert.equal(deferred.length, 2);
+  deferred[1](attention({ flaggedOwnContext: [flagged()] }));
+  await second;
+  assert.equal(session.attention.flaggedOwnContext.length, 1);
+
+  // Read #1 lands at last, carrying the world as it was before the quarantine.
+  deferred[0](attention({}));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(session.attention.flaggedOwnContext.length, 1);
+  const res = await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+  assert.equal(buildStopDecision([{ socketPath: '/s/1', response: res }]).block, true);
+});
+
+test('a superseded read that FAILS does not re-dirty the snapshot its successor owns', async () => {
+  // Same out-of-order shape, failing instead of resolving. The current read's
+  // answer is good; a corpse's error says nothing about it, and re-dirtying
+  // would buy a pointless extra round trip on the next tool call.
+  const deferred = [];
+  const session = createBridgeSession({
+    client: {
+      cfg: { slug: 'acme', incidentId: 'inc-1' },
+      getAttention: () => new Promise((resolve, reject) => { deferred.push({ resolve, reject }); }),
+    },
+  });
+  session.attention = attention({});
+  session.attentionDirty = true;
+
+  await answerSocketRequest({ op: 'peek' }, session, { pid: 1 }); // abandons read #1
+  const second = session.refreshAttention();
+  deferred[1].resolve(attention({ flaggedOwnContext: [flagged()] }));
+  await second;
+
+  deferred[0].reject(new Error('server unreachable'));
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  assert.equal(session.attention.flaggedOwnContext.length, 1);
+  assert.equal(session.attentionDirty, false);
+});
+
 test('a blocker alone refuses a conclusion, with nothing queued and nothing consumed', () => {
   const d = buildStopDecision([
     { socketPath: '/s/1', response: { count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [], attention: attention({ flaggedOwnContext: [flagged()] }) } },
@@ -460,6 +525,20 @@ test('an answer with no incidentId falls back to its own socket — over-reports
   const d = buildStopDecision([
     { socketPath: '/s/1', response: { ...base, attention: attention({ flaggedOwnContext: [flagged()] }) } },
     { socketPath: '/s/2', response: { ...base, attention: attention({ flaggedOwnContext: [flagged()] }) } },
+  ]);
+  assert.equal(d.reason.match(/seq 21/g).length, 2);
+});
+
+test('mid-upgrade, an old and a new process on one item report it twice — never zero times', () => {
+  // One serve process upgraded, one not yet, same incident, same item. The old
+  // answer carries no incident, so matching it to the new one would mean
+  // assuming equal sequence numbers mean the same item — the assumption that
+  // produced the cross-incident drop above. The duplicate line is the accepted
+  // cost, and it disappears once every process in the workspace is new.
+  const base = { count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [] };
+  const d = buildStopDecision([
+    { socketPath: '/s/1', response: { ...base, attention: attention({ flaggedOwnContext: [flagged()] }) } },
+    { socketPath: '/s/2', response: { ...base, incidentId: 'inc-a', attention: attention({ flaggedOwnContext: [flagged()] }) } },
   ]);
   assert.equal(d.reason.match(/seq 21/g).length, 2);
 });

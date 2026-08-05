@@ -88,8 +88,12 @@ const PENDING_MAX = 50;
 /**
  * Longest the hook socket's `peek` will wait for an in-flight attention read.
  *
- * The hook's own budget is `SOCKET_TIMEOUT_MS` (250 ms) for the whole round
- * trip, so this leaves room for the rest of it. The refresh is already running
+ * The bound that matters here is this CLI's own `SOCKET_TIMEOUT_MS` (250 ms)
+ * for the whole `peek` round trip — not a host-imposed one; Claude Code's and
+ * Codex's hook timeouts are both considerably larger. Waiting less than the
+ * round trip we already give ourselves leaves room for the rest of it, and
+ * keeps the hook fast regardless of what the host would tolerate. The refresh
+ * is already running
  * by the time a Stop lands in almost every case — it starts when the event
  * arrives — so this bounds the narrow window where a quarantine and a
  * conclusion are simultaneous, and never becomes the common path.
@@ -146,6 +150,19 @@ export function createBridgeSession({
      * success, so an event arriving DURING a read re-dirties the snapshot and
      * the next caller reads again rather than trusting an answer computed
      * before that event landed.
+     *
+     * ONLY THE CURRENT READ MAY WRITE THE SNAPSHOT. `settleAttention` abandons a
+     * read that misses its budget, and a later, fresher read then takes over. If
+     * the abandoned one were still allowed to assign when it finally lands, two
+     * reads completing out of start order — ordinary latency variance is enough:
+     * a retry, a pool wait, a GC pause — would overwrite the newer answer with
+     * the older one AND leave the snapshot marked clean, so nothing would ever
+     * correct it. That turns the bounded "possibly stale under a slow server"
+     * cost this design accepts into an unbounded stale-forever snapshot, which
+     * is exactly the blocker-free Stop the quarantine check exists to prevent.
+     * So every write below — the answer and the re-dirty on failure alike — is
+     * gated on this read still being the session's current one; a superseded
+     * read discards its own result and touches nothing.
      */
     refreshAttention() {
       if (!session.client) return Promise.resolve(null);
@@ -153,12 +170,18 @@ export function createBridgeSession({
       session.attentionDirty = false;
       const inFlight = (async () => {
         try {
-          session.attention = await session.client.getAttention();
+          const next = await session.client.getAttention();
+          // Superseded reads drop their answer on the floor: the read that
+          // replaced this one owns the snapshot and has already, or will, write
+          // a fresher value than this stale one.
+          if (session.attentionInFlight === inFlight) session.attention = next;
         } catch {
           // Leave the previous answer in place rather than blanking it — a
           // stale vote request is recoverable, a silently dropped one is the
           // bug. Re-dirty so the next caller retries instead of trusting it.
-          session.attentionDirty = true;
+          // Not for a superseded read: its failure says nothing about the
+          // snapshot the current read owns.
+          if (session.attentionInFlight === inFlight) session.attentionDirty = true;
         } finally {
           // Cleared before the promise settles for its awaiters, so the next
           // caller starts a fresh read rather than joining a finished one.

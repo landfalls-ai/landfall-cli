@@ -130,9 +130,16 @@ export function buildStopDecision(peeks, { maxChars = HOOK_OUTPUT_MAX } = {}) {
  * exists to prevent.
  *
  * An answer with no `incidentId` (an older serve process, before the field was
- * added to `peek`) falls back to its own socket path, so it can only ever
- * collapse with itself. That over-reports across two old sessions in one
- * incident, which is the correct direction.
+ * added to `peek`) falls back to its own socket path, so it never shares a
+ * scope with anything but itself: not with another old process, and not with a
+ * new one. During a partial upgrade — one old and one new serve process in the
+ * same incident — the same quarantined item is therefore reported twice rather
+ * than once. That is accepted, and deliberately not fixed by collapsing across
+ * scopes when the content matches: an old answer carries no incident, so
+ * matching it to a new one means guessing that equal sequence numbers mean the
+ * same item, which is precisely the assumption that produced the cross-incident
+ * drop above. A duplicate line is recoverable; a dropped blocker is the bug.
+ * The duplicate disappears once every serve process in the workspace is new.
  */
 function mergeBlockers(answers) {
   const quarantined = new Map();

@@ -10,7 +10,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { EdgeBridgeClient } from '../src/client.mjs';
-import { buildBridgeTools, createBridgeSession } from '../src/tools.mjs';
+import { ATTENTION_SETTLE_MS, buildBridgeTools, createBridgeSession } from '../src/tools.mjs';
 import {
   describeStopBlockers,
   formatDuration,
@@ -21,7 +21,7 @@ import {
   voteRequestBlock,
 } from '../src/attention.mjs';
 import { buildStopDecision } from '../src/hooks/stop.mjs';
-import { handleSocketRequest } from '../src/hooks/socket.mjs';
+import { answerSocketRequest, handleSocketRequest } from '../src/hooks/socket.mjs';
 
 const CFG = { baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-1', token: 'tok', agentLabel: 'Claude Code' };
 
@@ -304,6 +304,86 @@ test('a serve process with no attention answers null, not a throw', () => {
   assert.equal(res.attention, null);
 });
 
+test('peek names the incident, so a hook can tell two rooms in one checkout apart', () => {
+  const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+  assert.equal(handleSocketRequest({ op: 'peek' }, session, { pid: 1 }).incidentId, 'inc-1');
+});
+
+test('a quarantine arriving with NO tool call in between still reaches the Stop hook', async () => {
+  // The real chain, not an injected snapshot: an event lands on the realtime
+  // socket, the agent makes no further tool call (the Stop path makes none),
+  // and the hook peeks. Before the fix, `enqueueEvent` only set a dirty flag
+  // and the sole reader of that flag was a tool call — so this peek returned
+  // the last blocker-free snapshot and the agent was allowed to conclude on
+  // quarantined content.
+  const f = fakeFetch({ attention: attention({ flaggedOwnContext: [flagged()] }) });
+  const session = await joinedSession(f);
+  session.attention = attention({}); // a clean snapshot from earlier in the session
+  session.attentionDirty = false;
+
+  session.enqueueEvent({ seq: 7, type: 'context.quarantined' });
+
+  const res = await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+  assert.equal(res.attention.flaggedOwnContext.length, 1);
+  assert.equal(buildStopDecision([{ socketPath: '/s/1', response: res }]).block, true);
+});
+
+test('a burst of claim events costs ONE read, not one per event', async () => {
+  const f = fakeFetch();
+  const session = await joinedSession(f);
+  session.attentionDirty = false;
+
+  for (let seq = 1; seq <= 5; seq += 1) session.enqueueEvent({ seq, type: 'claim.staged' });
+  await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+
+  assert.equal(f.calls.filter((c) => c.path.endsWith('/vetting/attention')).length, 1);
+});
+
+test('an event that cannot change attention triggers no read at all', async () => {
+  const f = fakeFetch();
+  const session = await joinedSession(f);
+  session.attentionDirty = false;
+  session.attention = attention({});
+
+  session.enqueueEvent({ seq: 1, type: 'edge.finding' });
+  await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+
+  assert.equal(f.calls.filter((c) => c.path.endsWith('/vetting/attention')).length, 0);
+});
+
+test('a hung attention read does not hang the hook — it answers with what it has', async () => {
+  // A hook that hangs is a hook that gets uninstalled. The wait is bounded, so
+  // a slow server costs a possibly-stale answer and never a stuck agent.
+  const never = new Promise(() => {});
+  const session = createBridgeSession({
+    client: { cfg: { slug: 'acme', incidentId: 'inc-1' }, getAttention: () => never },
+  });
+  session.attention = attention({ flaggedOwnContext: [flagged()] });
+  session.attentionDirty = true;
+
+  const started = Date.now();
+  const res = await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+
+  assert.ok(Date.now() - started < ATTENTION_SETTLE_MS + 200);
+  assert.equal(res.attention.flaggedOwnContext.length, 1); // the previous answer, not null
+});
+
+test('a failed attention read leaves the previous snapshot and stays dirty for a retry', async () => {
+  const session = createBridgeSession({
+    client: {
+      cfg: { slug: 'acme', incidentId: 'inc-1' },
+      getAttention: async () => { throw new Error('server unreachable'); },
+    },
+  });
+  session.attention = attention({ flaggedOwnContext: [flagged()] });
+  session.attentionDirty = true;
+
+  const res = await answerSocketRequest({ op: 'peek' }, session, { pid: 1 });
+
+  assert.equal(res.attention.flaggedOwnContext.length, 1);
+  assert.equal(session.attentionDirty, true);
+});
+
 test('a blocker alone refuses a conclusion, with nothing queued and nothing consumed', () => {
   const d = buildStopDecision([
     { socketPath: '/s/1', response: { count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [], attention: attention({ flaggedOwnContext: [flagged()] }) } },
@@ -346,14 +426,42 @@ test('blockers come FIRST when both reasons apply, and events still consume', ()
   assert.deepEqual(d.consumes, [{ socketPath: '/s/1', upTo: 5 }]);
 });
 
-test('the same quarantine seen by two sessions is reported once', () => {
-  const one = { count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [], attention: attention({ flaggedOwnContext: [flagged()] }) };
+test('the same quarantine seen by two sessions in the SAME incident is reported once', () => {
+  const one = { incidentId: 'inc-a', count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [], attention: attention({ flaggedOwnContext: [flagged()] }) };
   const two = { ...one, attention: attention({ flaggedOwnContext: [flagged({ reason: 'phrased differently' })] }) };
   const d = buildStopDecision([
     { socketPath: '/s/1', response: one },
     { socketPath: '/s/2', response: two },
   ]);
   assert.equal(d.reason.match(/seq 21/g).length, 1);
+});
+
+test('two DIFFERENT incidents sharing a seq both survive the merge', () => {
+  // Sockets are joined by workspace, not by incident, so two serve processes in
+  // one checkout can be in two different rooms. Per-incident sequence numbers
+  // are small counters, so a collision is ordinary — and a bare-seq dedupe
+  // dropped the second session's real blocker on first-answer-wins, which is
+  // the under-reporting this whole tier exists to prevent.
+  const base = { count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [] };
+  const d = buildStopDecision([
+    { socketPath: '/s/1', response: { ...base, incidentId: 'inc-a', attention: attention({ flaggedOwnContext: [flagged({ reason: 'the A room ruling' })] }) } },
+    { socketPath: '/s/2', response: { ...base, incidentId: 'inc-b', attention: attention({ flaggedOwnContext: [flagged({ reason: 'the B room ruling' })] }) } },
+  ]);
+  assert.equal(d.reason.match(/seq 21/g).length, 2);
+  assert.ok(d.reason.includes('the A room ruling'));
+  assert.ok(d.reason.includes('the B room ruling'));
+});
+
+test('an answer with no incidentId falls back to its own socket — over-reports, never drops', () => {
+  // An older serve process, before `peek` carried the incident. Collapsing
+  // those into one scope would reintroduce exactly the cross-incident drop
+  // above, so each is scoped to itself.
+  const base = { count: 0, dropped: 0, cursor: 5, maxSeq: 5, digest: [] };
+  const d = buildStopDecision([
+    { socketPath: '/s/1', response: { ...base, attention: attention({ flaggedOwnContext: [flagged()] }) } },
+    { socketPath: '/s/2', response: { ...base, attention: attention({ flaggedOwnContext: [flagged()] }) } },
+  ]);
+  assert.equal(d.reason.match(/seq 21/g).length, 2);
 });
 
 test('the refusal stays inside the hook output cap', () => {

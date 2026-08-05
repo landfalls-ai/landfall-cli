@@ -132,6 +132,12 @@ export function handleSocketRequest(request, session, { pid = process.pid, consu
       // reporting must leave the events queued. See the order note in stop.mjs.
       return {
         ...base,
+        // Additive (#252 review): the join key between sockets is the WORKSPACE,
+        // so two serve processes in one checkout can be in two different
+        // incidents. Without this the hook has no way to tell their per-incident
+        // sequence numbers apart, and dedupes one session's real blocker away
+        // against an unrelated one that happens to share a seq.
+        incidentId: session?.client?.cfg?.incidentId ?? null,
         count: pending.length,
         dropped: session?.pendingDropped ?? 0,
         cursor: session?.cursor ?? -1,
@@ -146,9 +152,10 @@ export function handleSocketRequest(request, session, { pid = process.pid, consu
         // ADDITIVE, so the protocol version does not move: an older hook
         // ignores the field, and a newer hook reading `undefined` from an older
         // serve process finds no blockers, which is the pre-#252 behaviour.
-        // NOT refreshed here — the serve process keeps it current from the
-        // realtime socket, and a hook waiting on an HTTP round trip inside a
-        // 250 ms budget would time out and silently stop blocking.
+        //
+        // Made current by `answerSocketRequest` below, not here: this function
+        // is deliberately synchronous and I/O-free so the whole protocol stays
+        // testable without a socket or a serve process.
         attention: session?.attention ?? null,
       };
 
@@ -162,6 +169,36 @@ export function handleSocketRequest(request, session, { pid = process.pid, consu
     default:
       return { ok: false, v: SOCKET_PROTOCOL_VERSION, error: `unknown op: ${op ?? '(none)'}` };
   }
+}
+
+/**
+ * `handleSocketRequest`, plus the one thing that has to happen before a `peek`
+ * can be answered honestly: bring the attention snapshot up to date.
+ *
+ * WHY THIS IS A SEPARATE FUNCTION. `handleSocketRequest` is synchronous and
+ * I/O-free on purpose — that is what makes the whole protocol testable without a
+ * socket, a serve process or a war room. The refresh is I/O, so it lives out
+ * here, in the layer that already does I/O.
+ *
+ * WHY IT HAS TO HAPPEN AT ALL. `peek`'s `attention` was previously whatever the
+ * session last happened to hold, on the reasoning that the serve process kept it
+ * current from the realtime socket. Nothing did: a `claim.*`/`context.*` event
+ * arriving only set a dirty flag, and the sole reader of that flag was a tool
+ * call — which `runStopHook` never makes. An agent whose last tool call predated
+ * a quarantine therefore concluded against a blocker-free snapshot, which is
+ * precisely the failure the Stop-hook tier exists to prevent. The refresh now
+ * starts when the event arrives (see `enqueueEvent`), and this waits — briefly,
+ * bounded well inside the hook's own 250 ms budget — for a read already in
+ * flight. A session that offers no `settleAttention` (a bare client, the legacy
+ * shape) is answered exactly as before.
+ */
+export async function answerSocketRequest(request, session, opts = {}) {
+  if (request?.op === 'peek' && typeof session?.settleAttention === 'function') {
+    // Best-effort: a refresh that fails leaves the previous snapshot in place,
+    // and a hook must never be blocked by the thing it is asking about.
+    await session.settleAttention().catch(() => {});
+  }
+  return handleSocketRequest(request, session, opts);
 }
 
 /** True when something is already listening at `socketPath` (vs. a stale node). */
@@ -211,15 +248,19 @@ export async function startHookSocket(session, { cwd, env, platform, pid = proce
       } catch {
         /* malformed — answered by the default branch below */
       }
-      let response;
-      try {
-        response = handleSocketRequest(request, session, { pid, consume });
-      } catch (err) {
-        response = { ok: false, v: SOCKET_PROTOCOL_VERSION, error: err.message };
-      }
-      // One request per connection: a hook lives for milliseconds, and a
-      // long-lived subscription is the second lifecycle this design avoids.
-      conn.end(`${JSON.stringify(response)}\n`);
+      // `peek` may wait briefly on an in-flight attention read, so the handler
+      // is async now; the per-connection timeout above still bounds it.
+      void (async () => {
+        let response;
+        try {
+          response = await answerSocketRequest(request, session, { pid, consume });
+        } catch (err) {
+          response = { ok: false, v: SOCKET_PROTOCOL_VERSION, error: err.message };
+        }
+        // One request per connection: a hook lives for milliseconds, and a
+        // long-lived subscription is the second lifecycle this design avoids.
+        if (!conn.destroyed) conn.end(`${JSON.stringify(response)}\n`);
+      })();
     });
   });
 

@@ -117,16 +117,37 @@ export function buildStopDecision(peeks, { maxChars = HOOK_OUTPUT_MAX } = {}) {
  *
  * Two agent windows on one repo are two sessions with two cursors but often the
  * same incident, so the same quarantine can arrive twice. Dedupe on the
- * identity of the thing (a seq), not on the rendered line, so two sessions
- * describing it slightly differently still collapse to one.
+ * identity of the thing, not on the rendered line, so two sessions describing it
+ * slightly differently still collapse to one.
+ *
+ * THE IDENTITY IS (incident, seq), NOT seq. Sockets are joined by WORKSPACE —
+ * `workspaceKey(cwd)`, with no incident in it — so two `landfall serve`
+ * processes in one checkout can be in two DIFFERENT incidents and both answer
+ * one `peek`. Sequence numbers are small per-incident counters, so a collision
+ * is ordinary rather than exotic, and a bare-seq dedupe silently dropped the
+ * losing session's real blocker on first-answer-wins. That inverts this file's
+ * own invariant: over-reporting is recoverable, under-reporting is the bug this
+ * exists to prevent.
+ *
+ * An answer with no `incidentId` (an older serve process, before the field was
+ * added to `peek`) falls back to its own socket path, so it can only ever
+ * collapse with itself. That over-reports across two old sessions in one
+ * incident, which is the correct direction.
  */
 function mergeBlockers(answers) {
   const quarantined = new Map();
   const contradictions = new Map();
   for (const a of answers) {
+    const scope = a?.response?.incidentId ?? `socket:${a?.socketPath ?? '?'}`;
     const b = stopBlockers(a?.response?.attention);
-    for (const q of b.quarantined) if (!quarantined.has(q.targetSeq)) quarantined.set(q.targetSeq, q);
-    for (const c of b.contradictions) if (!contradictions.has(c.claimSeq)) contradictions.set(c.claimSeq, c);
+    for (const q of b.quarantined) {
+      const key = JSON.stringify([scope, q.targetSeq]);
+      if (!quarantined.has(key)) quarantined.set(key, q);
+    }
+    for (const c of b.contradictions) {
+      const key = JSON.stringify([scope, c.claimSeq]);
+      if (!contradictions.has(key)) contradictions.set(key, c);
+    }
   }
   return { quarantined: [...quarantined.values()], contradictions: [...contradictions.values()] };
 }

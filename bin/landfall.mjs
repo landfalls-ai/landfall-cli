@@ -222,24 +222,31 @@ async function main() {
   }
 
   if (cmd === 'hooks') {
-    const { rest: subArgs, uninstall: uninstallFlag } = parseHookFlags(rest);
+    const { rest: subArgs, uninstall: uninstallFlag, host } = parseHookFlags(rest);
     const sub = subArgs[0];
 
-    // `landfall hooks <event>` is what a registered hook entry itself runs, so
-    // it must stay silent on stdout (the host parses that channel) and say
-    // everything it has to say through the exit code.
+    // `landfall hooks <event>` is what a registered hook entry itself runs.
+    // How it answers depends on the host that registered it (#228): under the
+    // exit-2 convention it stays silent on stdout (the host parses that
+    // channel) and says everything through the exit code + stderr; under
+    // Cursor's it writes exactly one JSON object to stdout and always exits 0.
+    // `--host` is on the command line because we wrote that command line —
+    // inferring the contract from an unfamiliar payload would be a guess.
     if (HOOK_EVENT_IDS.includes(sub)) {
-      // The host writes the hook's context to stdin (it carries `stop_hook_active`,
-      // the loop guard) and reads the verdict from the exit code + stderr.
+      // The host writes the hook's context to stdin (it carries the loop guard)
+      // and reads the verdict from the channel its own protocol defines.
       const input = await readHookInput();
-      const { exitCode, error } = await runHookEvent(sub, { input });
+      const { exitCode, error, stdout } = await runHookEvent(sub, { input, host });
+      if (stdout) process.stdout.write(stdout);
       if (error) log(error);
       process.exitCode = exitCode;
       return;
     }
 
     if (sub !== 'install' && sub !== 'uninstall') {
-      log(`usage: landfall hooks <install|uninstall|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall]`);
+      log(
+        `usage: landfall hooks <install|uninstall|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall] [--host <id>]`,
+      );
       process.exitCode = 2;
       return;
     }

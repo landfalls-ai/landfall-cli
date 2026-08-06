@@ -29,7 +29,7 @@ export function configPath() {
 function registrations() {
   return eventsForHost(id).map((eventId) => ({
     keyPath: `hooks.${EVENT_KEY[eventId]}`,
-    entry: { hooks: [{ type: 'command', command: hookCommand(eventId) }] },
+    entry: { hooks: [{ type: 'command', command: hookCommand(eventId, id) }] },
   }));
 }
 

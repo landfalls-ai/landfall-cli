@@ -10,9 +10,10 @@
 //                   session (#227). Claude Code only: it is the one host with
 //                   a file-watch hook.
 //
-// The command every entry runs is `landfall hooks <id>`. That prefix is also
-// how uninstall recognizes a landfall-authored entry it must NOT delete
+// The command every entry runs starts `landfall hooks <id>`. That prefix is
+// also how uninstall recognizes a landfall-authored entry it must NOT delete
 // because a human edited it since — see isLandfallCommand().
+import { EXIT2, protocolForHost } from './protocol.mjs';
 
 /** @typedef {{id: string, hosts: string[], purpose: string}} HookEvent */
 
@@ -30,9 +31,41 @@ export const HOOK_EVENTS = [
   },
 ];
 
-/** The exact shell command a registered hook entry runs. */
-export function hookCommand(eventId) {
-  return `landfall hooks ${eventId}`;
+/**
+ * The exact shell command a registered hook entry runs.
+ *
+ * A host whose block semantics are the exit-2 convention gets the bare
+ * command; a host that needs another output shape gets `--host <id>` appended
+ * so the handler is TOLD which contract to answer on rather than inferring it
+ * from a payload we did not write (#228).
+ *
+ * Passing the flag only where it changes behaviour is deliberate: the two
+ * hosts already registered with the bare form keep byte-identical entries, so
+ * an upgrade churns nobody's config into a conflict.
+ */
+export function hookCommand(eventId, hostId) {
+  const base = `landfall hooks ${eventId}`;
+  return protocolForHost(hostId) === EXIT2 ? base : `${base} --host ${hostId}`;
+}
+
+/**
+ * Exact commands a PREVIOUS version of this installer wrote for the same
+ * (event, host) — entries that are ours and unmodified, just stale.
+ *
+ * This is what keeps an upgrade from stranding people. Without it, changing a
+ * registered command turns every existing install into a `conflict`: never
+ * overwritten (correct — we cannot tell "stale" from "hand-edited" without
+ * this list) and never removable either, since `hooks uninstall` only deletes
+ * a byte-exact match of the CURRENT command. Enumerating the old forms here
+ * makes "stale" a fourth, distinguishable state that install replaces in place
+ * and uninstall cleans up, while an entry matching neither the current nor any
+ * past form stays a conflict — a human edited it, and it is not ours to touch.
+ */
+export function supersededHookCommands(eventId, hostId) {
+  // Cursor's `stop` shipped bare in v0.2.0, before the host flag existed; the
+  // handler answered it with exit 2 + stderr, which Cursor does not read.
+  if (hostId === 'cursor' && eventId === 'stop') return ['landfall hooks stop'];
+  return [];
 }
 
 /**

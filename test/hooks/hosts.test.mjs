@@ -27,10 +27,30 @@ test('Cursor: lowercase event name, bare {command} entry, version stamped', asyn
     await fs.mkdir(path.join(homeDir, '.cursor'), { recursive: true });
     await runCli(['hooks', 'install', '--only', 'cursor']);
 
+    // `--host cursor` is what tells the handler to answer in JSON on stdout
+    // rather than exit 2 + stderr, which Cursor never reads (#228).
     assert.deepEqual(await readJson(path.join(homeDir, '.cursor', 'hooks.json')), {
       version: 1,
-      hooks: { stop: [{ command: 'landfall hooks stop' }] },
+      hooks: { stop: [{ command: 'landfall hooks stop --host cursor' }] },
     });
+  });
+});
+
+test('Claude Code and Codex keep the bare command — only a host needing another output shape is flagged', async () => {
+  await withSandbox(async ({ homeDir }) => {
+    await fs.mkdir(path.join(homeDir, '.claude'), { recursive: true });
+    await fs.mkdir(path.join(homeDir, '.codex'), { recursive: true });
+    await runCli(['hooks', 'install', '--only', 'claude-code,codex']);
+
+    const claude = await readJson(path.join(homeDir, '.claude', 'settings.json'));
+    const codex = await readJson(path.join(homeDir, '.codex', 'hooks.json'));
+    for (const command of [
+      claude.hooks.Stop[0].hooks[0].command,
+      claude.hooks.FileChanged[0].hooks[0].command,
+      codex.hooks.Stop[0].hooks[0].command,
+    ]) {
+      assert.equal(command.includes('--host'), false, `${command} must stay byte-identical across the #228 upgrade`);
+    }
   });
 });
 

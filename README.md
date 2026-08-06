@@ -117,8 +117,14 @@ No sign-in needed — this edits local config, so it also works from a provision
 script. Every write is an append into the host's own hook list: your existing hooks
 are preserved, re-running is a no-op, and an entry you've hand-edited since is
 reported as a conflict rather than overwritten. `hooks uninstall` deletes only an
-entry still byte-identical to what was written, and leaves Codex's `codex_hooks`
-flag alone — other hooks of yours may depend on it.
+entry landfall wrote — its current form, or one an earlier version wrote — and
+leaves Codex's `codex_hooks` flag alone: other hooks of yours may depend on it.
+
+Cursor's entry carries `--host cursor`, because Cursor's hook contract is not the
+one Claude Code and Codex share. Those two read a refusal as exit code 2 with the
+message on stderr; Cursor reads exactly one JSON object on stdout, and never sees
+an exit code or stderr at all. Upgrading from v0.2.0 rewrites the older bare
+`landfall hooks stop` entry in place — same position in your list, no duplicate.
 
 ### What `Stop` does
 
@@ -135,6 +141,14 @@ silently and immediately — nothing to ask means nothing to wait for.
 You are never stuck: whatever the block reported is marked consumed, so a second
 `Stop` on an unchanged room goes straight through, and a host that re-runs the hook
 after a block (`stop_hook_active`) is let through regardless.
+
+On Cursor the same decision arrives by a different verb. Cursor's `stop` is a
+notification — it cannot refuse a conclusion — but it can hand back a
+`followup_message`, which Cursor submits as the next user message and which
+continues the agent loop. That gets your agent the same thing: it does not walk
+away from the incident holding stale context. Termination is just as bounded —
+what was reported is consumed, an interrupted or errored turn is left alone, and
+Cursor caps auto-followups at five per turn regardless.
 
 **How a hook reaches a serve process.** A hook is a separate, short-lived process
 and cannot see `landfall serve`'s memory, so `serve` binds a local query socket at

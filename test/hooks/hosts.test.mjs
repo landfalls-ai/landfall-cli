@@ -8,7 +8,7 @@ import path from 'node:path';
 import { withSandbox, runCli, readJson } from '../install/helpers.mjs';
 import { enableFlagText } from '../../src/hooks/hosts/codex.mjs';
 
-test('Claude Code: matcher-group shape, both events (FileChanged narrowed), under hooks.<Event>', async () => {
+test('Claude Code: matcher-group shape, all three events, under hooks.<Event>', async () => {
   await withSandbox(async ({ homeDir }) => {
     await fs.mkdir(path.join(homeDir, '.claude'), { recursive: true });
     await runCli(['hooks', 'install', '--only', 'claude-code']);
@@ -27,6 +27,10 @@ test('Claude Code: matcher-group shape, both events (FileChanged narrowed), unde
             hooks: [{ type: 'command', command: 'landfall hooks file-changed' }],
           },
         ],
+        // The delivery half (#227). No matcher — the event does not support one
+        // and always fires, which is precisely why it is the half that speaks:
+        // it is guaranteed to run when an idle session resumes.
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'landfall hooks user-prompt-submit' }] }],
       },
     });
   });

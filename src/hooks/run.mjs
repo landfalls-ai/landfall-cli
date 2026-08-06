@@ -1,14 +1,17 @@
 // run.mjs — the hook handlers a registered entry actually invokes.
 //
-// #222 shipped the installer and this contract; #225 filled in `stop` and #227
-// `file-changed`. The two block on different things and speak on different
-// channels, deliberately:
+// #222 shipped the installer and this contract; #225 filled in `stop`, and #227
+// `file-changed` + `user-prompt-submit`. Each speaks on a different channel,
+// because each host event allows a different one:
 //
 //   stop          exit 2 + stderr — a REFUSAL every host understands. The agent
 //                 is concluding, and the point is that it may not yet.
-//   file-changed  exit 0 + a structured JSON object on stdout — an INJECTION.
-//                 The session is idle; there is nothing to refuse, only
-//                 something to hand it.
+//   file-changed  exit 0, stderr only — a WAKE. The host discards this event's
+//                 output entirely, so it stages the digest and nudges the
+//                 human, and consumes nothing.
+//   user-prompt-submit
+//                 exit 0 + a structured JSON object on stdout — the INJECTION.
+//                 The one event that can both run on resumption and be heard.
 //
 // The shared default for an event with nothing to say is the one that is always
 // safe, because the installer registers a command the host runs on every
@@ -19,6 +22,7 @@ import { HOOK_EVENTS } from './spec.mjs';
 import { runStopHook } from './stop.mjs';
 import { protocolForHost, renderNoOp } from './protocol.mjs';
 import { runFileChangedHook } from './file-changed.mjs';
+import { runUserPromptSubmitHook } from './user-prompt-submit.mjs';
 
 export const HOOK_EVENT_IDS = HOOK_EVENTS.map((e) => e.id);
 
@@ -41,6 +45,10 @@ export async function runHookEvent(eventId, deps = {}) {
   }
   if (eventId === 'file-changed') {
     const { exitCode } = await runFileChangedHook(deps);
+    return { exitCode };
+  }
+  if (eventId === 'user-prompt-submit') {
+    const { exitCode } = await runUserPromptSubmitHook(deps);
     return { exitCode };
   }
   // An event with no behaviour yet still owes its host a well-formed answer:

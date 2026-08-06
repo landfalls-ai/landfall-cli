@@ -2,13 +2,17 @@
 // registers, in ONE place, so the installer, the uninstaller and the hook
 // handlers themselves can never disagree about what was written.
 //
-// Two events, both from story #190 (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1):
+// Three events, all from story #190 (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1):
 //
 //   stop          — refuse a silent conclusion while room events newer than the
 //                   session's last consumed seq exist (#225)
-//   file-changed  — inject a digest of room events into an IDLE session (#227),
-//                   woken by the doorbell marker. Claude Code only: it is the
-//                   one host with a file-watch hook.
+//   file-changed  — wake on the doorbell marker and STAGE a digest of room
+//                   events for an idle session (#227). Claude Code only: it is
+//                   the one host with a file-watch hook. Cannot deliver — the
+//                   host discards this event's output.
+//   user-prompt-submit
+//                 — DELIVER that staged digest as `additionalContext` on the
+//                   session's next prompt (#227). The half that can speak.
 //
 // The command every entry runs starts `landfall hooks <id>`. That prefix is
 // also how uninstall recognizes a landfall-authored entry it must NOT delete
@@ -38,6 +42,15 @@ export const HOOK_EVENTS = [
     // only form that works; `.landfall/` is where we put it, but the watch is
     // by name alone.
     matcher: DOORBELL_FILE,
+  },
+  {
+    id: 'user-prompt-submit',
+    hosts: ['claude-code'],
+    purpose: 'deliver the staged room digest on the session\'s next prompt',
+    // No matcher, and none is possible: this event "does not support matchers
+    // and always fires on every occurrence". That is exactly why it is the
+    // delivery half — it is the one event guaranteed to run when an idle
+    // session resumes, and unlike `file-changed` its output is not discarded.
   },
 ];
 

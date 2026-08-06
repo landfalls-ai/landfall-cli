@@ -18,6 +18,17 @@
 //   2. the stage — for when `serve` exited between the wake and the prompt, so
 //      the socket is gone but the context should still arrive.
 //
+// "PRIORITY" HERE MEANS ANSWERED, NOT OWED. A session that answers is telling
+// us what it is still owed, and that answer is the truth even when it is
+// "nothing". The stage cannot know what happened after it was written, and
+// something usually did: `../tools.mjs`'s `flushPending` drains the very same
+// queue in-band after EVERY MCP tool call, with no knowledge of this stage. So
+// "the socket owes nothing" overwhelmingly means "the agent already read it" —
+// and re-delivering the stage there would hand the agent context it has
+// already seen, captioned "while you were idle", breaking the repo's
+// nothing-arrives-twice guarantee. The stage is entitled to answer for one
+// session only: one we could not reach at all.
+//
 // The cursor advances only AFTER the digest has been emitted, which is where
 // `never consume without delivering` is finally paid off.
 import { queryHookSockets, sendToSocket } from './socket.mjs';
@@ -33,11 +44,32 @@ export function promptPayload(context) {
 /**
  * Decide what to deliver from the two sources. Pure, so the precedence rule is
  * testable without a socket or a filesystem.
+ *
+ * `answered` is the socket paths that actually replied to the peek — the one
+ * fact that separates "serve is gone, the stage is the only surviving copy"
+ * from "serve answered and owes nothing, so the stage is spent". Without it
+ * both look identical (no injection), and the second re-delivers.
+ *
+ * A stage is judged per session, against the sessions it was built from: it is
+ * trusted only while some session named in its `consumes` is unreachable. An
+ * empty `consumes` carries no owner to check, so it falls back to the coarse
+ * question — did anything answer at all?
+ *
+ * @returns delivery, plus `staleStage` when a stage was proven spent and its
+ *   caller should drop it rather than leave it to surface later.
  */
-export function chooseDelivery(live, staged) {
-  if (live?.inject) return { ...live, source: 'socket' };
-  if (staged?.context) return { inject: true, context: staged.context, consumes: staged.consumes ?? [], source: 'stage' };
-  return { inject: false, context: '', consumes: [], source: 'none' };
+export function chooseDelivery(live, staged, { answered = [] } = {}) {
+  if (live?.inject) return { ...live, source: 'socket', staleStage: false };
+
+  const nothing = { inject: false, context: '', consumes: [], source: 'none', staleStage: false };
+  if (!staged?.context) return nothing;
+
+  const reached = new Set(answered);
+  const owners = (staged.consumes ?? []).map((c) => c.socketPath);
+  const unreachable = owners.length ? owners.some((p) => !reached.has(p)) : reached.size === 0;
+  if (!unreachable) return { ...nothing, staleStage: true };
+
+  return { inject: true, context: staged.context, consumes: staged.consumes ?? [], source: 'stage', staleStage: false };
 }
 
 /**
@@ -59,16 +91,29 @@ export async function runUserPromptSubmitHook({
 } = {}) {
   const opts = { cwd, env, platform };
 
+  // The raw peeks, not just the digest built from them: WHICH sessions replied
+  // is what decides whether the stage still speaks for anyone.
+  let peeks = [];
   let live = null;
   try {
-    live = buildInjection(await query({ op: 'peek' }, opts));
+    peeks = await query({ op: 'peek' }, opts);
+    live = buildInjection(peeks);
   } catch {
-    live = null; // fall through to the stage
+    peeks = []; // asked and got nothing back — indistinguishable from serve being gone
+    live = null;
   }
 
-  const staged = live?.inject ? null : await stage(opts).catch(() => null);
-  const delivery = chooseDelivery(live, staged);
-  if (!delivery.inject) return { exitCode: 0, injected: false, source: 'none', context: '' };
+  const staged = await Promise.resolve(stage(opts)).catch(() => null);
+  const delivery = chooseDelivery(live, staged, { answered: peeks.map((p) => p.socketPath) });
+
+  if (!delivery.inject) {
+    // A stage every one of whose sessions answered has been overtaken — most
+    // often by `flushPending` handing those events to the agent in-band on an
+    // ordinary tool call. Drop it now: left on disk it would inject on some
+    // later prompt, once `serve` is gone and can no longer contradict it.
+    if (delivery.staleStage) await Promise.resolve(unstage(opts)).catch(() => null);
+    return { exitCode: 0, injected: false, source: 'none', context: '' };
+  }
 
   emit(JSON.stringify(promptPayload(delivery.context)));
 

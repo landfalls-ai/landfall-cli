@@ -13,7 +13,7 @@ import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-import { createBridgeSession, consumeUpTo } from '../../src/tools.mjs';
+import { createBridgeSession, consumeUpTo, buildBridgeTools } from '../../src/tools.mjs';
 import { handleSocketRequest, queryHookSockets, socketLocation, startHookSocket } from '../../src/hooks/socket.mjs';
 import { runFileChangedHook, nudgeLine } from '../../src/hooks/file-changed.mjs';
 import { buildInjection, INJECT_MAX } from '../../src/hooks/digest.mjs';
@@ -234,6 +234,92 @@ test('delivery prefers a live socket, and falls back to the stage', () => {
   assert.equal(chooseDelivery({ inject: false }, staged).source, 'stage');
   assert.equal(chooseDelivery({ inject: false }, staged).context, 'staged');
   assert.equal(chooseDelivery({ inject: false }, null).inject, false);
+});
+
+test('a session that answered outranks the stage even when it owes nothing', () => {
+  const staged = { context: 'staged', consumes: [{ socketPath: '/a', upTo: 9 }] };
+
+  // The distinction the whole rule turns on. "Nothing owed" from a session that
+  // REPLIED means the events reached the agent some other way — flushPending
+  // rides every tool call — so the stage is spent, not pending.
+  const answered = chooseDelivery({ inject: false }, staged, { answered: ['/a'] });
+  assert.equal(answered.inject, false, 'a spent stage must never re-inject');
+  assert.equal(answered.staleStage, true, 'and must be dropped, not left to surface later');
+
+  // Same stage, same silent live answer — but its session never replied.
+  const gone = chooseDelivery({ inject: false }, staged, { answered: ['/someone-else'] });
+  assert.equal(gone.source, 'stage');
+  assert.equal(gone.staleStage, false);
+
+  // Partial: two sessions staged, only one still reachable. The unreachable one
+  // has no other copy, so the stage still speaks.
+  const both = { context: 'staged', consumes: [{ socketPath: '/a', upTo: 9 }, { socketPath: '/b', upTo: 3 }] };
+  assert.equal(chooseDelivery({ inject: false }, both, { answered: ['/a'] }).source, 'stage');
+  assert.equal(chooseDelivery({ inject: false }, both, { answered: ['/a', '/b'] }).inject, false);
+});
+
+test('an in-band flush before the prompt spends the stage instead of re-delivering it', async () => {
+  await withWorkspace(async ({ cwd, env }) => {
+    // The repro that matters: the agent was never idle. It made an ordinary
+    // tool call between the doorbell wake and the human's next message, and
+    // `flushPending` handed it the event in-band on that tool result.
+    const session = createBridgeSession({
+      client: {
+        cfg: { slug: 'acme', incidentId: 'inc-1' },
+        heartbeat: async () => {},
+        getBrief: async () => [],
+      },
+    });
+    const bound = await startHookSocket(session, { cwd, env, consume: consumeUpTo, pid: 3201 });
+    try {
+      session.enqueueEvent({ seq: 7, type: 'edge.finding', payload: { displayName: 'Dana', text: 'origin pool unhealthy' } });
+      await createDoorbell({ cwd }).ring(session.pending.length);
+      await runFileChangedHook({ cwd, env, notify: () => {} });
+      assert.ok((await readStage({ cwd, env })).context.includes('#7'), 'the wake staged it');
+
+      // The in-band drain, through the real tool path rather than a stand-in.
+      const getBrief = buildBridgeTools(session).find((t) => t.name === 'get_brief');
+      const toolResult = await getBrief.handler({});
+      assert.match(toolResult, /#7 edge\.finding \[Dana\]/, 'delivered in-band on the tool result');
+      assert.equal(session.pending.length, 0);
+
+      // Now the human types. The socket answers "nothing owed" — truthfully —
+      // and that answer must beat the stage sitting on disk.
+      const res = await runUserPromptSubmitHook({
+        cwd,
+        env,
+        emit: () => assert.fail('re-delivering context the agent already read breaks nothing-arrives-twice'),
+      });
+      assert.equal(res.injected, false);
+      assert.equal(await readStage({ cwd, env }), null, 'the spent stage is dropped, not left to fire once serve exits');
+    } finally {
+      await bound.close();
+    }
+  });
+});
+
+test('a spent stage is dropped before serve can exit and make it look pending again', async () => {
+  await withWorkspace(async ({ cwd, env }) => {
+    // Without the drop above, this is how the duplicate finally lands: the
+    // stage outlives the session that could have contradicted it.
+    const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+    const bound = await startHookSocket(session, { cwd, env, consume: consumeUpTo, pid: 3202 });
+    let injected = false;
+    try {
+      // A stage naming this very session, which owes nothing.
+      await writeStage({ context: 'stale digest', consumes: [{ socketPath: bound.socketPath, upTo: 4 }] }, { cwd, env });
+      await runUserPromptSubmitHook({ cwd, env, emit: () => { injected = true; } });
+    } finally {
+      await bound.close();
+    }
+    assert.equal(injected, false);
+    assert.equal(await readStage({ cwd, env }), null);
+
+    // serve is gone now; with the stage already dropped there is nothing left
+    // to resurrect.
+    const after = await runUserPromptSubmitHook({ cwd, env, emit: () => assert.fail('a dropped stage cannot come back') });
+    assert.equal(after.injected, false);
+  });
 });
 
 test('the prompt emits BEFORE any cursor moves, then unstages', async () => {

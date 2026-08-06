@@ -50,7 +50,13 @@ export function stagePath(opts) {
 export async function writeStage({ context, consumes }, opts = {}) {
   const file = stagePath(opts);
   try {
-    await fs.mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
+    const dir = path.dirname(file);
+    await fs.mkdir(dir, { recursive: true, mode: 0o700 });
+    // `mode` on mkdir only applies to a directory it actually creates, so an
+    // existing one keeps whatever mode it had. Same belt-and-braces chmod
+    // `socket.mjs` does for this identical path — the directory mode is the
+    // whole access-control story for everything that lives in here.
+    await fs.chmod(dir, 0o700).catch(() => {});
     await fs.writeFile(file, `${JSON.stringify({ v: STAGE_VERSION, context, consumes })}\n`, { mode: 0o600 });
     return true;
   } catch {

@@ -20,7 +20,6 @@ import path from 'node:path';
 import { createBridgeSession, consumeUpTo } from '../../src/tools.mjs';
 import { handleSocketRequest, startHookSocket } from '../../src/hooks/socket.mjs';
 import { runStopHook, isStopHookActive, isConcludedTurn } from '../../src/hooks/stop.mjs';
-import { runHookEvent } from '../../src/hooks/run.mjs';
 import {
   CURSOR_JSON,
   EXIT2,
@@ -193,12 +192,14 @@ test('an aborted turn keeps its events queued for the next real conclusion', asy
   assert.equal(session.pending.length, 2);
 });
 
-test('an event with no behaviour yet still answers its host correctly', async () => {
-  assert.deepEqual(JSON.parse((await runHookEvent('file-changed', { host: 'cursor' })).stdout), {});
-  const exit2 = await runHookEvent('file-changed', { host: 'claude-code' });
-  assert.equal(exit2.exitCode, 0);
-  assert.equal(exit2.stdout ?? '', '', 'stdout is Claude Code\'s own channel — #227 has not landed either way');
-});
+// `file-changed` was this suite's stand-in for "an event with no behaviour
+// yet" — until #227 landed and gave it a real handler (run.mjs dispatches it
+// to runFileChangedHook before the generic host-answering fallback is ever
+// reached). Every event HOOK_EVENTS currently declares (`stop`, `file-changed`,
+// `user-prompt-submit`) now has its own handler, so runHookEvent's fallback —
+// renderNoOp, still exercised directly above — is dead until a future event is
+// registered ahead of its handler landing, the same gap #227 itself passed
+// through. Nothing here to assert through the dispatcher in the meantime.
 
 // -------------------------------------------------------------- 3. wire + CLI
 

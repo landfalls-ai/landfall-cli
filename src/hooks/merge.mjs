@@ -8,11 +8,23 @@
 // So the unit here is one element of an array, and every operation preserves
 // every element it did not put there.
 //
-// Three outcomes per registration, and no fourth:
+// Four outcomes per registration, and no fifth:
 //   present  — an element byte-identical to what we would write is already there
-//   conflict — an element that IS ours by command prefix but differs (a human
-//              edited it): never overwritten, never deleted, never duplicated
+//   outdated — an element byte-identical to what an OLDER version of this
+//              installer wrote (registration.superseded): still ours, still
+//              unmodified, just stale — upgraded in place, position kept
+//   conflict — an element that IS ours by command prefix but matches neither
+//              the current nor any past form (a human edited it): never
+//              overwritten, never deleted, never duplicated
 //   absent   — nothing of ours: append, leaving every other element untouched
+//
+// `outdated` is what makes changing a registered command survivable (#228).
+// Without it the only honest classification for a stale entry is `conflict`,
+// and a conflict is by design immovable: install refuses to write and
+// uninstall refuses to delete, so an upgrade would leave a dead entry that our
+// own tooling cannot clear. Enumerating past forms explicitly — rather than
+// treating "starts with landfall hooks but differs" as replaceable — is what
+// keeps a hand-edited entry safe, since it matches no enumerated form.
 import {
   readJsonOrEmpty,
   writeJsonPretty,
@@ -30,18 +42,53 @@ function listAt(data, keyPath) {
   return Array.isArray(value) ? value : [];
 }
 
+/** Elements of `list` written by an older version of this installer. */
+function isSuperseded(registration, element) {
+  return (registration.superseded ?? []).some((old) => deepEqual(element, old));
+}
+
 /**
  * Classify one registration against the config already on disk.
+ *
+ * `outdated` is tested BEFORE `present`, so a file holding both the current
+ * entry and a stale one is still reported as work to do — otherwise the stale
+ * entry would survive every future install, firing a command written for a
+ * contract we no longer answer.
+ *
  * @param {object} data parsed config
- * @param {{keyPath: string, entry: object}} registration
+ * @param {{keyPath: string, entry: object, superseded?: object[]}} registration
  * @param {(element: object) => boolean} isOurs recognizes a landfall-authored
  *   element regardless of whether it still matches byte-for-byte
  */
 export function classify(data, registration, isOurs) {
   const list = listAt(data, registration.keyPath);
+  if (list.some((el) => isSuperseded(registration, el))) return 'outdated';
   if (list.some((el) => deepEqual(el, registration.entry))) return 'present';
   if (list.some((el) => isOurs(el))) return 'conflict';
   return 'absent';
+}
+
+/**
+ * The list with every stale form of `registration` replaced by the current
+ * entry, in place — position preserved (a user reading their own config should
+ * not find our hook has jumped to the end), duplicates collapsed to one.
+ */
+function upgradeInPlace(list, registration) {
+  const kept = [];
+  let placed = false;
+  for (const el of list) {
+    const stale = isSuperseded(registration, el);
+    const current = deepEqual(el, registration.entry);
+    if (!stale && !current) {
+      kept.push(el);
+      continue;
+    }
+    if (placed) continue; // a second copy of ours, stale or not, is not kept
+    kept.push(registration.entry);
+    placed = true;
+  }
+  if (!placed) kept.push(registration.entry);
+  return kept;
 }
 
 /**
@@ -54,7 +101,7 @@ export async function planHookInstall(filePath, registrations, isOurs) {
   const per = registrations.map((r) => ({ ...r, state: classify(data, r, isOurs) }));
   const action = per.some((r) => r.state === 'conflict')
     ? 'conflict'
-    : per.some((r) => r.state === 'absent')
+    : per.some((r) => r.state === 'absent' || r.state === 'outdated')
       ? 'write'
       : 'already-installed';
   return { action, data, registrations: per };
@@ -62,7 +109,7 @@ export async function planHookInstall(filePath, registrations, isOurs) {
 
 /**
  * Apply {@link planHookInstall}. Writes ONLY when at least one registration is
- * absent and none conflicts, and appends only the absent ones — a partially
+ * absent or outdated and none conflicts, and touches only those — a partially
  * installed file gains exactly what it was missing. A conflict writes nothing
  * at all, including for the registrations that would have been fine: a file
  * whose Stop entry a human rewrote is a file to leave alone and report on,
@@ -73,8 +120,11 @@ export async function applyHookInstall(filePath, registrations, isOurs) {
   if (plan.action !== 'write') return plan;
   let next = plan.data;
   for (const r of plan.registrations) {
-    if (r.state !== 'absent') continue;
-    next = setPath(next, r.keyPath, [...listAt(next, r.keyPath), r.entry]);
+    if (r.state === 'absent') {
+      next = setPath(next, r.keyPath, [...listAt(next, r.keyPath), r.entry]);
+    } else if (r.state === 'outdated') {
+      next = setPath(next, r.keyPath, upgradeInPlace(listAt(next, r.keyPath), r));
+    }
   }
   await writeJsonPretty(filePath, next);
   return { action: 'configured', data: next, registrations: plan.registrations };
@@ -82,14 +132,15 @@ export async function applyHookInstall(filePath, registrations, isOurs) {
 
 /**
  * What an uninstall would do, without writing anything:
- *   remove        — at least one byte-exact entry of ours is present
+ *   remove        — at least one entry of ours is present byte-exact, in its
+ *                   current form or in one an older version wrote
  *   left-in-place — only edited-since entries of ours remain
  *   not-installed — nothing of ours anywhere
  */
 export async function planHookUninstall(filePath, registrations, isOurs) {
   const data = await readJsonOrEmpty(filePath);
   const per = registrations.map((r) => ({ ...r, state: classify(data, r, isOurs) }));
-  const action = per.some((r) => r.state === 'present')
+  const action = per.some((r) => r.state === 'present' || r.state === 'outdated')
     ? 'remove'
     : per.some((r) => r.state === 'conflict')
       ? 'left-in-place'
@@ -109,8 +160,12 @@ export async function applyHookUninstall(filePath, registrations, isOurs) {
   if (plan.action !== 'remove') return plan;
   let next = plan.data;
   for (const r of plan.registrations) {
-    if (r.state !== 'present') continue;
-    const kept = listAt(next, r.keyPath).filter((el) => !deepEqual(el, r.entry));
+    if (r.state !== 'present' && r.state !== 'outdated') continue;
+    // An entry an older version wrote is still ours to remove — leaving it
+    // behind would make "uninstall removed everything landfall added" false.
+    const kept = listAt(next, r.keyPath).filter(
+      (el) => !deepEqual(el, r.entry) && !isSuperseded(r, el),
+    );
     next = kept.length ? setPath(next, r.keyPath, kept) : deletePath(next, r.keyPath);
   }
   for (const parent of pruneCandidates(plan.registrations)) {

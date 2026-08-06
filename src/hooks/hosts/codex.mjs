@@ -53,7 +53,7 @@ export function tomlPath() {
 function registrations() {
   return eventsForHost(id).map((eventId) => ({
     keyPath: `${KEY_PREFIX}.${EVENT_KEY[eventId]}`,
-    entry: { hooks: [{ type: 'command', command: hookCommand(eventId) }] },
+    entry: { hooks: [{ type: 'command', command: hookCommand(eventId, id) }] },
   }));
 }
 

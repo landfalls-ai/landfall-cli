@@ -33,7 +33,15 @@
 // host's `stop_hook_active` lets the agent through. The alternative, refusing
 // until the room's ruling is acted on, would be a hook that can strand a
 // session on other people's votes.
+//
+// #228 ADDS A SECOND OUTPUT SHAPE and changes nothing above. The decision is
+// still `buildStopDecision`; only its delivery is host-parameterized, because
+// Cursor reads a hook's verdict as JSON on stdout and cannot see an exit code
+// or a line of stderr at all. See protocol.mjs — including why Cursor's
+// termination guarantee does not rest on `stop_hook_active`, which it never
+// sends.
 import { queryHookSockets, sendToSocket } from './socket.mjs';
+import { EXIT2, renderStopVerdict } from './protocol.mjs';
 import { BLOCKER_FOOT, BLOCKER_HEAD, describeStopBlockers, stopBlockers } from '../attention.mjs';
 
 /**
@@ -167,34 +175,80 @@ function mergeBlockers(answers) {
  * being wrong is one extra nag rather than a silent conclusion.
  */
 export function isStopHookActive(input) {
-  if (!input) return false;
+  const parsed = parseHookInput(input);
+  if (!parsed) return false;
+  if (parsed.stop_hook_active === true || parsed.stopHookActive === true) return true;
+  // Cursor sends no `stop_hook_active`. Where it reports how many auto-followups
+  // this turn has already had, that count is the same guard under another name:
+  // anything above zero means this Stop follows one of ours. Where it does not,
+  // this is simply never true and termination rests on consume-after-block plus
+  // Cursor's own cap of 5 followups (protocol.mjs).
+  return Number.isFinite(parsed.loop_count) && parsed.loop_count >= 1;
+}
+
+/**
+ * Whether this Stop is a turn that actually CONCLUDED.
+ *
+ * Cursor's stop payload carries `status: 'completed' | 'aborted' | 'error'`.
+ * A turn the user interrupted, or one that died, is not an agent walking away
+ * from the room holding stale context — it is an agent that did not get to
+ * finish. Nagging it adds a followup message to a turn nobody is reading, and
+ * would consume the very events the next real conclusion needs to be told
+ * about. Hosts that send no status (Claude Code, Codex) are unaffected: absent
+ * means "concluded", the reading those hosts' Stop already implies.
+ */
+export function isConcludedTurn(input) {
+  const status = parseHookInput(input)?.status;
+  return status !== 'aborted' && status !== 'error';
+}
+
+function parseHookInput(input) {
+  if (!input) return null;
   try {
     const parsed = typeof input === 'string' ? JSON.parse(input) : input;
-    return parsed?.stop_hook_active === true || parsed?.stopHookActive === true;
+    return parsed && typeof parsed === 'object' ? parsed : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
 /**
- * Run the stop hook. Returns `{ exitCode, blocked }` — exit 2 with the digest on
- * stderr is the one blocking shape every host in HOOK_EVENTS understands
- * (Claude Code and Codex both feed a Stop hook's stderr back to the model on
- * exit 2). Nothing is ever written to stdout: the host parses that channel.
+ * Run the stop hook. Returns `{ exitCode, blocked, reason }`.
+ *
+ * WHAT gets said is `buildStopDecision`'s; HOW is `protocol`'s (protocol.mjs) —
+ * exit 2 with the digest on stderr for Claude Code and Codex, one JSON object
+ * on stdout for Cursor. Under exit2 nothing is ever written to stdout, because
+ * the host parses that channel; under cursor-json stdout is exactly where the
+ * verdict goes and silence there is a parse error rather than an allow, so
+ * EVERY exit path below emits — including the ones that decline to block.
  *
  * `emit` is called BEFORE the cursors move, so a crash mid-way leaves the
- * events queued rather than consumed-but-never-delivered.
+ * events queued rather than consumed-but-never-delivered. It is passed
+ * `(text, {channel})` and is never called with empty text.
  */
 export async function runStopHook({
   input,
   cwd,
   env,
   platform,
+  protocol = EXIT2,
   query = queryHookSockets,
   send = sendToSocket,
-  emit = (text) => process.stderr.write(`${text}\n`),
+  emit = (text, { channel } = {}) =>
+    (channel === 'stdout' ? process.stdout : process.stderr).write(text),
 } = {}) {
-  if (isStopHookActive(input)) return { exitCode: 0, blocked: false, reason: '' };
+  const say = (decision) => {
+    const verdict = renderStopVerdict(protocol, decision);
+    if (verdict.text) emit(verdict.text, { channel: verdict.channel });
+    return verdict;
+  };
+  const allow = () => {
+    const { exitCode } = say({ block: false, reason: '' });
+    return { exitCode, blocked: false, reason: '' };
+  };
+
+  if (isStopHookActive(input)) return allow();
+  if (!isConcludedTurn(input)) return allow();
 
   let peeks = [];
   try {
@@ -202,13 +256,13 @@ export async function runStopHook({
   } catch {
     // A hook that fails must not become a hook that blocks. No serve session,
     // no socket, a permissions problem — all mean "nothing known to be owed".
-    return { exitCode: 0, blocked: false, reason: '' };
+    return allow();
   }
 
   const decision = buildStopDecision(peeks);
-  if (!decision.block) return { exitCode: 0, blocked: false, reason: '' };
+  if (!decision.block) return allow();
 
-  emit(decision.reason);
+  const { exitCode } = say(decision);
 
   // A failed consume must never suppress the block that was already emitted —
   // the events staying queued is the recoverable outcome.
@@ -218,5 +272,5 @@ export async function runStopHook({
     ),
   );
 
-  return { exitCode: 2, blocked: true, reason: decision.reason };
+  return { exitCode, blocked: true, reason: decision.reason };
 }

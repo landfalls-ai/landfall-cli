@@ -11,26 +11,34 @@ import {
   planHookUninstall,
   applyHookUninstall,
 } from '../merge.mjs';
-import { hookCommand, isLandfallCommand, eventsForHost } from '../spec.mjs';
+import { hookCommand, isLandfallCommand, eventsForHost, matcherFor } from '../spec.mjs';
 import { isOnPath, pathExists, homedir } from '../../install/platform.mjs';
 
 export const id = 'claude-code';
 export const displayName = 'Claude Code';
 
 // Claude Code's hook shape: each event holds a list of matcher groups, each
-// group a list of `{type: 'command', command}` hooks. `matcher` is omitted —
-// it selects tool names and means nothing for Stop or FileChanged.
-const EVENT_KEY = { stop: 'Stop', 'file-changed': 'FileChanged' };
+// group a list of `{type: 'command', command}` hooks. `matcher` is omitted for
+// Stop and UserPromptSubmit, neither of which supports one, and carried for
+// FileChanged — where it is not a refinement but the whole watch list, since an
+// absent matcher there watches nothing at all. See spec.mjs.
+const EVENT_KEY = { stop: 'Stop', 'file-changed': 'FileChanged', 'user-prompt-submit': 'UserPromptSubmit' };
 
 export function configPath() {
   return path.join(homedir(), '.claude', 'settings.json');
 }
 
 function registrations() {
-  return eventsForHost(id).map((eventId) => ({
-    keyPath: `hooks.${EVENT_KEY[eventId]}`,
-    entry: { hooks: [{ type: 'command', command: hookCommand(eventId, id) }] },
-  }));
+  return eventsForHost(id).map((eventId) => {
+    const matcher = matcherFor(eventId);
+    return {
+      keyPath: `hooks.${EVENT_KEY[eventId]}`,
+      entry: {
+        ...(matcher ? { matcher } : {}),
+        hooks: [{ type: 'command', command: hookCommand(eventId, id) }],
+      },
+    };
+  });
 }
 
 function isOurs(element) {

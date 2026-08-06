@@ -45,6 +45,7 @@ import { runHooksInstall, runHooksUninstall, parseHookFlags } from '../src/hooks
 import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
 import { readHookInput } from '../src/hooks/input.mjs';
 import { startHookSocket } from '../src/hooks/socket.mjs';
+import { createDoorbell } from '../src/hooks/doorbell.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -130,12 +131,18 @@ async function resolveConfig(link) {
  * agent's next tool call can carry it — the stderr line only reaches a human
  * who happens to be watching the terminal.
  */
-function keepLive(client, cfg, session) {
+function keepLive(client, cfg, session, doorbell) {
   const beat = setInterval(() => { client.heartbeat('investigating').catch(() => {}); }, HEARTBEAT_MS);
   const unwatch = watchIncident(cfg, {
     ownInstanceId: () => client.agentInstanceId,
     onEvent: (evt) => {
-      session?.enqueueEvent(evt);
+      // #227: ring the doorbell on the 0 → non-empty EDGE only. A session
+      // that already owes context will be shown this event too when the bell
+      // it has yet to answer is answered; re-ringing on every event would
+      // wake an idle agent once per message in a busy room.
+      const wasEmpty = (session?.pending?.length ?? 0) === 0;
+      const queued = session?.enqueueEvent(evt);
+      if (doorbell && queued && wasEmpty) doorbell.ring(session.pending.length);
       log(describeEvent(evt));
     },
     log,
@@ -225,16 +232,18 @@ async function main() {
     const { rest: subArgs, uninstall: uninstallFlag, host } = parseHookFlags(rest);
     const sub = subArgs[0];
 
-    // `landfall hooks <event>` is what a registered hook entry itself runs.
+    // `landfall hooks <event>` is what a registered hook entry itself runs. The
+    // host writes the hook's context to stdin (it carries `stop_hook_active`,
+    // the loop guard) and reads the answer back on the channels it parses.
     // How it answers depends on the host that registered it (#228): under the
-    // exit-2 convention it stays silent on stdout (the host parses that
-    // channel) and says everything through the exit code + stderr; under
-    // Cursor's it writes exactly one JSON object to stdout and always exits 0.
-    // `--host` is on the command line because we wrote that command line —
-    // inferring the contract from an unfamiliar payload would be a guess.
+    // exit-2 convention (Claude Code, Codex) stdout stays STRUCTURED — a JSON
+    // object or nothing at all, never a log line — and the exit code plus
+    // stderr carry a refusal; under Cursor's protocol it writes exactly one
+    // JSON object to stdout and always exits 0. `--host` is on the command
+    // line because we wrote that command line — inferring the contract from
+    // an unfamiliar payload would be a guess. See ../src/hooks/run.mjs for
+    // which event uses which, and why.
     if (HOOK_EVENT_IDS.includes(sub)) {
-      // The host writes the hook's context to stdin (it carries the loop guard)
-      // and reads the verdict from the channel its own protocol defines.
       const input = await readHookInput();
       const { exitCode, error, stdout } = await runHookEvent(sub, { input, host });
       if (stdout) process.stdout.write(stdout);
@@ -283,12 +292,16 @@ async function main() {
 
   // default: serve — expose incident MCP tools over stdio; each call narrates.
   let stopLive = null;
+  // #227: the doorbell an idle session's FileChanged hook watches. It carries a
+  // timestamp and a count — never room content; the events themselves stay on
+  // the query socket and out of the user's repository.
+  const doorbell = createDoorbell({ log });
   const session = createBridgeSession({
     agentLabel: process.env.LANDFALL_AGENT_LABEL ?? 'edge-agent',
     baseUrl: process.env.LANDFALL_BASE_URL,
     onJoined: (s, cfg) => {
       stopLive?.();
-      stopLive = keepLive(s.client, cfg, s);
+      stopLive = keepLive(s.client, cfg, s, doorbell);
       log(`joined incident ${cfg.incidentId} as "${s.agentLabel}" (instance ${s.client.agentInstanceId}).`);
     },
   });
@@ -298,7 +311,7 @@ async function main() {
     const client = new EdgeBridgeClient(cfg);
     await client.join();
     session.client = client;
-    stopLive = keepLive(client, cfg, session);
+    stopLive = keepLive(client, cfg, session, doorbell);
     log(`joined incident ${cfg.incidentId} as "${cfg.agentLabel}" (instance ${client.agentInstanceId}).`);
   } else {
     log('not joined yet — the agent should call join_war_room with a Landfall share link.');

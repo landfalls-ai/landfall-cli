@@ -1,20 +1,28 @@
 // run.mjs — the hook handlers a registered entry actually invokes.
 //
-// #222 shipped the installer and this contract; #225 fills in `stop`. The
-// behaviour behind `file-changed` is still its own ticket (#227 — inject
-// spooled events into an idle session).
+// #222 shipped the installer and this contract; #225 filled in `stop`, and #227
+// `file-changed` + `user-prompt-submit`. Each speaks on a different channel,
+// because each host event allows a different one:
 //
-// The default for an event with no behaviour yet is the one that is always
+//   stop          exit 2 + stderr — a REFUSAL every host understands. The agent
+//                 is concluding, and the point is that it may not yet.
+//   file-changed  exit 0, stderr only — a WAKE. The host discards this event's
+//                 output entirely, so it stages the digest and nudges the
+//                 human, and consumes nothing.
+//   user-prompt-submit
+//                 exit 0 + a structured JSON object on stdout — the INJECTION.
+//                 The one event that can both run on resumption and be heard.
+//
+// The shared default for an event with nothing to say is the one that is always
 // safe, because the installer registers a command the host runs on every
 // matching event from the moment it is written:
 //
 //   exit 0, print nothing = "nothing pending, carry on"
-//
-// Nothing here writes to stdout. The host parses that channel; a hook says what
-// it has to say through its exit code and stderr.
 import { HOOK_EVENTS } from './spec.mjs';
 import { runStopHook } from './stop.mjs';
 import { protocolForHost, renderNoOp } from './protocol.mjs';
+import { runFileChangedHook } from './file-changed.mjs';
+import { runUserPromptSubmitHook } from './user-prompt-submit.mjs';
 
 export const HOOK_EVENT_IDS = HOOK_EVENTS.map((e) => e.id);
 
@@ -33,6 +41,14 @@ export async function runHookEvent(eventId, deps = {}) {
   const protocol = protocolForHost(deps.host);
   if (eventId === 'stop') {
     const { exitCode } = await runStopHook({ ...deps, protocol });
+    return { exitCode };
+  }
+  if (eventId === 'file-changed') {
+    const { exitCode } = await runFileChangedHook(deps);
+    return { exitCode };
+  }
+  if (eventId === 'user-prompt-submit') {
+    const { exitCode } = await runUserPromptSubmitHook(deps);
     return { exitCode };
   }
   // An event with no behaviour yet still owes its host a well-formed answer:

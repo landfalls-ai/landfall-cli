@@ -8,7 +8,7 @@ import path from 'node:path';
 import { withSandbox, runCli, readJson } from '../install/helpers.mjs';
 import { enableFlagText } from '../../src/hooks/hosts/codex.mjs';
 
-test('Claude Code: matcher-group shape, both events, under hooks.<Event>', async () => {
+test('Claude Code: matcher-group shape, all three events, under hooks.<Event>', async () => {
   await withSandbox(async ({ homeDir }) => {
     await fs.mkdir(path.join(homeDir, '.claude'), { recursive: true });
     await runCli(['hooks', 'install', '--only', 'claude-code']);
@@ -16,7 +16,21 @@ test('Claude Code: matcher-group shape, both events, under hooks.<Event>', async
     assert.deepEqual(await readJson(path.join(homeDir, '.claude', 'settings.json')), {
       hooks: {
         Stop: [{ hooks: [{ type: 'command', command: 'landfall hooks stop' }] }],
-        FileChanged: [{ hooks: [{ type: 'command', command: 'landfall hooks file-changed' }] }],
+        // FileChanged carries a matcher and Stop does not, deliberately (#227).
+        // For FileChanged the matcher is REQUIRED, not a refinement: Claude
+        // Code watches a list of literal filenames, and an empty or omitted
+        // matcher watches nothing and never fires — which is what #222's
+        // matcher-less registration did. A path or glob is equally inert.
+        FileChanged: [
+          {
+            matcher: 'room_events',
+            hooks: [{ type: 'command', command: 'landfall hooks file-changed' }],
+          },
+        ],
+        // The delivery half (#227). No matcher — the event does not support one
+        // and always fires, which is precisely why it is the half that speaks:
+        // it is guaranteed to run when an idle session resumes.
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'landfall hooks user-prompt-submit' }] }],
       },
     });
   });

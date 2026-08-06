@@ -2,20 +2,25 @@
 // registers, in ONE place, so the installer, the uninstaller and the hook
 // handlers themselves can never disagree about what was written.
 //
-// Two events, both from story #190 (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1):
+// Three events, all from story #190 (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1):
 //
 //   stop          — refuse a silent conclusion while room events newer than the
 //                   session's last consumed seq exist (#225)
-//   file-changed  — inject a digest of spooled room events into an idle
-//                   session (#227). Claude Code only: it is the one host with
-//                   a file-watch hook.
+//   file-changed  — wake on the doorbell marker and STAGE a digest of room
+//                   events for an idle session (#227). Claude Code only: it is
+//                   the one host with a file-watch hook. Cannot deliver — the
+//                   host discards this event's output.
+//   user-prompt-submit
+//                 — DELIVER that staged digest as `additionalContext` on the
+//                   session's next prompt (#227). The half that can speak.
 //
 // The command every entry runs starts `landfall hooks <id>`. That prefix is
 // also how uninstall recognizes a landfall-authored entry it must NOT delete
 // because a human edited it since — see isLandfallCommand().
 import { EXIT2, protocolForHost } from './protocol.mjs';
+import { DOORBELL_DIR, DOORBELL_FILE } from './doorbell.mjs';
 
-/** @typedef {{id: string, hosts: string[], purpose: string}} HookEvent */
+/** @typedef {{id: string, hosts: string[], purpose: string, matcher?: string}} HookEvent */
 
 /** @type {HookEvent[]} */
 export const HOOK_EVENTS = [
@@ -27,7 +32,25 @@ export const HOOK_EVENTS = [
   {
     id: 'file-changed',
     hosts: ['claude-code'],
-    purpose: 'inject spooled room events into an idle session',
+    purpose: 'inject room events into an idle session',
+    // NOT a glob, and not optional. Claude Code's `FileChanged` matcher is a
+    // list of LITERAL FILENAMES separated by `|`, watched in any directory
+    // under the cwd — "glob patterns and path prefixes are not supported", and
+    // "if the matcher is empty or omitted, no files are watched and the hook
+    // never fires". So #222's matcher-less registration never fired at all,
+    // and a path glob here would not have either. The bare filename is the
+    // only form that works; `.landfall/` is where we put it, but the watch is
+    // by name alone.
+    matcher: DOORBELL_FILE,
+  },
+  {
+    id: 'user-prompt-submit',
+    hosts: ['claude-code'],
+    purpose: 'deliver the staged room digest on the session\'s next prompt',
+    // No matcher, and none is possible: this event "does not support matchers
+    // and always fires on every occurrence". That is exactly why it is the
+    // delivery half — it is the one event guaranteed to run when an idle
+    // session resumes, and unlike `file-changed` its output is not discarded.
   },
 ];
 
@@ -46,6 +69,11 @@ export const HOOK_EVENTS = [
 export function hookCommand(eventId, hostId) {
   const base = `landfall hooks ${eventId}`;
   return protocolForHost(hostId) === EXIT2 ? base : `${base} --host ${hostId}`;
+}
+
+/** The matcher an event registers with, or null when it needs none. */
+export function matcherFor(eventId) {
+  return HOOK_EVENTS.find((e) => e.id === eventId)?.matcher ?? null;
 }
 
 /**

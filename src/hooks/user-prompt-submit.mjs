@@ -29,6 +29,14 @@
 // nothing-arrives-twice guarantee. The stage is entitled to answer for one
 // session only: one we could not reach at all.
 //
+// AND THAT RULE IS PER SESSION, NOT PER STAGE. One stage can cover several
+// sessions, which by delivery time need not share a fate — one answering, one
+// dead. So the stage is sliced, not weighed: the digest delivered from it is
+// re-rendered from only the sessions that failed to answer. Asking the coarser
+// question ("is ANY owner unreachable?") and then delivering the whole thing
+// re-delivers the answering session's own already-read events, which is the
+// same defect one level up.
+//
 // The cursor advances only AFTER the digest has been emitted, which is where
 // `never consume without delivering` is finally paid off.
 import { queryHookSockets, sendToSocket } from './socket.mjs';
@@ -50,26 +58,36 @@ export function promptPayload(context) {
  * from "serve answered and owes nothing, so the stage is spent". Without it
  * both look identical (no injection), and the second re-delivers.
  *
- * A stage is judged per session, against the sessions it was built from: it is
- * trusted only while some session named in its `consumes` is unreachable. An
- * empty `consumes` carries no owner to check, so it falls back to the coarse
- * question — did anything answer at all?
+ * THE STAGE IS JUDGED PER SESSION, AND SO IS WHAT IT DELIVERS. A stage can
+ * cover several sessions, and a partially-reachable one is the case that gets
+ * this wrong: "any owner unreachable → deliver the whole stage" re-hands an
+ * answering session its own already-read events, because the assembled text has
+ * no per-session boundary to cut on (#10 review). So the staged peeks are
+ * filtered down to the sessions that did NOT answer and the digest is
+ * re-rendered from those alone, by the same `buildInjection` the live path uses.
+ * Every session that answered is dropped from it — its answer, including
+ * "nothing owed", is the truth.
  *
- * @returns delivery, plus `staleStage` when a stage was proven spent and its
- *   caller should drop it rather than leave it to surface later.
+ * @returns delivery, plus `staleStage` when nothing in the stage survived the
+ *   filter, so its caller should drop it rather than leave it to surface later.
  */
 export function chooseDelivery(live, staged, { answered = [] } = {}) {
   if (live?.inject) return { ...live, source: 'socket', staleStage: false };
 
   const nothing = { inject: false, context: '', consumes: [], source: 'none', staleStage: false };
-  if (!staged?.context) return nothing;
+  const peeks = staged?.peeks ?? [];
+  if (!peeks.length) return nothing;
 
   const reached = new Set(answered);
-  const owners = (staged.consumes ?? []).map((c) => c.socketPath);
-  const unreachable = owners.length ? owners.some((p) => !reached.has(p)) : reached.size === 0;
-  if (!unreachable) return { ...nothing, staleStage: true };
+  const orphaned = peeks.filter((p) => !reached.has(p.socketPath));
+  // Either every owner answered, or the ones that didn't turn out to owe
+  // nothing. Both mean this stage speaks for nobody now.
+  if (!orphaned.length) return { ...nothing, staleStage: true };
 
-  return { inject: true, context: staged.context, consumes: staged.consumes ?? [], source: 'stage', staleStage: false };
+  const rebuilt = buildInjection(orphaned);
+  if (!rebuilt.inject) return { ...nothing, staleStage: true };
+
+  return { ...rebuilt, source: 'stage', staleStage: false };
 }
 
 /**

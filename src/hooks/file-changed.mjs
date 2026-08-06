@@ -56,7 +56,13 @@ export async function runFileChangedHook({
     return { exitCode: 0, staged: false, context: '' };
   }
 
-  const staged = await stage({ context: injection.context, consumes: injection.consumes }, { cwd, env, platform });
+  // The peeks that are actually owed something, per session — not the assembled
+  // text. Delivery may need to speak for some of these sessions and not others
+  // (see `stage.mjs`), and that cut can only be made while they are still
+  // separate. Sessions owing nothing are dropped here so they never widen the
+  // stage beyond what it is entitled to deliver.
+  const owed = peeks.filter((p) => (p?.response?.count ?? 0) > 0 || (p?.response?.dropped ?? 0) > 0);
+  const staged = await stage({ peeks: owed }, { cwd, env, platform });
 
   const total = peeks.reduce((n, p) => n + (p.response?.count ?? 0) + (p.response?.dropped ?? 0), 0);
   notify(nudgeLine(total));

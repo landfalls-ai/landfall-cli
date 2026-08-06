@@ -223,21 +223,30 @@ test('a wake that cannot ask stays silent and still exits 0', async () => {
 
 // ------------------------------------------------- the prompt delivers
 
+/** One staged session's `peek` answer, shaped the way `socket.mjs` replies. */
+function stagedPeek(socketPath, seq, text) {
+  return {
+    socketPath,
+    response: { ok: true, count: 1, dropped: 0, cursor: seq - 1, maxSeq: seq, digest: [`#${seq} edge.finding [x] — ${text}`] },
+  };
+}
+
 test('delivery prefers a live socket, and falls back to the stage', () => {
   const live = { inject: true, context: 'live', consumes: [{ socketPath: '/s', upTo: 4 }] };
-  const staged = { context: 'staged', consumes: [{ socketPath: '/gone', upTo: 9 }] };
+  const staged = { peeks: [stagedPeek('/gone', 9, 'staged')] };
 
   assert.equal(chooseDelivery(live, staged).source, 'socket');
   assert.equal(chooseDelivery(live, staged).context, 'live');
   // serve exited between the wake and the prompt: the socket is gone, but the
   // context should still arrive. That case is the only reason a stage exists.
   assert.equal(chooseDelivery({ inject: false }, staged).source, 'stage');
-  assert.equal(chooseDelivery({ inject: false }, staged).context, 'staged');
+  assert.match(chooseDelivery({ inject: false }, staged).context, /#9 .* staged/);
   assert.equal(chooseDelivery({ inject: false }, null).inject, false);
+  assert.equal(chooseDelivery({ inject: false }, { peeks: [] }).inject, false);
 });
 
 test('a session that answered outranks the stage even when it owes nothing', () => {
-  const staged = { context: 'staged', consumes: [{ socketPath: '/a', upTo: 9 }] };
+  const staged = { peeks: [stagedPeek('/a', 9, 'a-only')] };
 
   // The distinction the whole rule turns on. "Nothing owed" from a session that
   // REPLIED means the events reached the agent some other way — flushPending
@@ -250,12 +259,49 @@ test('a session that answered outranks the stage even when it owes nothing', () 
   const gone = chooseDelivery({ inject: false }, staged, { answered: ['/someone-else'] });
   assert.equal(gone.source, 'stage');
   assert.equal(gone.staleStage, false);
+});
 
-  // Partial: two sessions staged, only one still reachable. The unreachable one
-  // has no other copy, so the stage still speaks.
-  const both = { context: 'staged', consumes: [{ socketPath: '/a', upTo: 9 }, { socketPath: '/b', upTo: 3 }] };
-  assert.equal(chooseDelivery({ inject: false }, both, { answered: ['/a'] }).source, 'stage');
-  assert.equal(chooseDelivery({ inject: false }, both, { answered: ['/a', '/b'] }).inject, false);
+test('a partially-reachable stage delivers ONLY the sessions that never answered', () => {
+  // The residual half of the duplicate-delivery bug, one level up from the
+  // single-socket case: /a answered (so flushPending has already handed the
+  // agent #9 in-band) while /b's serve died (so #3 has no other surviving
+  // copy). Answering the coarse question — "is ANY owner unreachable?" — and
+  // then delivering the whole staged block re-shows /a its own already-read
+  // event, captioned "while you were idle".
+  const both = { peeks: [stagedPeek('/a', 9, 'already-read-by-a'), stagedPeek('/b', 3, 'only-copy-for-b')] };
+
+  const partial = chooseDelivery({ inject: false }, both, { answered: ['/a'] });
+  assert.equal(partial.source, 'stage');
+  assert.match(partial.context, /only-copy-for-b/, 'the orphaned session still gets its context');
+  assert.doesNotMatch(partial.context, /already-read-by-a/, 'the answering session must not be re-told');
+  assert.match(partial.context, /^⚡ 1 update\(s\)/, 'and the count is of what is actually delivered');
+  assert.deepEqual(
+    partial.consumes.map((c) => c.socketPath),
+    ['/b'],
+    'no cursor is moved on behalf of a session we are not delivering to',
+  );
+
+  // Both gone: both portions are the only surviving copies, so both go.
+  const neither = chooseDelivery({ inject: false }, both, { answered: [] });
+  assert.match(neither.context, /already-read-by-a/);
+  assert.match(neither.context, /only-copy-for-b/);
+
+  // Both answered: nothing left for the stage to speak for.
+  const spent = chooseDelivery({ inject: false }, both, { answered: ['/a', '/b'] });
+  assert.equal(spent.inject, false);
+  assert.equal(spent.staleStage, true);
+});
+
+test('a stage whose orphaned sessions owe nothing is spent, not delivered empty', () => {
+  // An orphan can be present and still have nothing to say — a stage written
+  // for a session that was then consumed by another path before dying. It must
+  // be dropped rather than injected as a zero-update block.
+  const empty = {
+    peeks: [{ socketPath: '/b', response: { ok: true, count: 0, dropped: 0, cursor: 4, maxSeq: 4, digest: [] } }],
+  };
+  const out = chooseDelivery({ inject: false }, empty, { answered: [] });
+  assert.equal(out.inject, false);
+  assert.equal(out.staleStage, true);
 });
 
 test('an in-band flush before the prompt spends the stage instead of re-delivering it', async () => {
@@ -275,7 +321,8 @@ test('an in-band flush before the prompt spends the stage instead of re-deliveri
       session.enqueueEvent({ seq: 7, type: 'edge.finding', payload: { displayName: 'Dana', text: 'origin pool unhealthy' } });
       await createDoorbell({ cwd }).ring(session.pending.length);
       await runFileChangedHook({ cwd, env, notify: () => {} });
-      assert.ok((await readStage({ cwd, env })).context.includes('#7'), 'the wake staged it');
+      const wakeStage = await readStage({ cwd, env });
+      assert.ok(buildInjection(wakeStage.peeks).context.includes('#7'), 'the wake staged it');
 
       // The in-band drain, through the real tool path rather than a stand-in.
       const getBrief = buildBridgeTools(session).find((t) => t.name === 'get_brief');
@@ -307,7 +354,7 @@ test('a spent stage is dropped before serve can exit and make it look pending ag
     let injected = false;
     try {
       // A stage naming this very session, which owes nothing.
-      await writeStage({ context: 'stale digest', consumes: [{ socketPath: bound.socketPath, upTo: 4 }] }, { cwd, env });
+      await writeStage({ peeks: [stagedPeek(bound.socketPath, 4, 'stale digest')] }, { cwd, env });
       await runUserPromptSubmitHook({ cwd, env, emit: () => { injected = true; } });
     } finally {
       await bound.close();
@@ -364,7 +411,7 @@ test('the stage is dropped even when its sockets are gone, so it cannot re-injec
   let unstaged = false;
   const res = await runUserPromptSubmitHook({
     query: async () => [],
-    stage: async () => ({ context: 'staged digest', consumes: [{ socketPath: '/gone', upTo: 3 }] }),
+    stage: async () => ({ peeks: [stagedPeek('/gone', 3, 'staged digest')] }),
     send: async () => { throw new Error('ECONNREFUSED'); },
     unstage: async () => { unstaged = true; },
     clear: async () => {},
@@ -438,7 +485,7 @@ test('the whole idle path: ring, wake+stage, resume, deliver, consume, clear', a
       assert.equal((await fs.stat(doorbellPath(cwd))).size, 0, 'the bell is answered once staged');
 
       const staged = await readStage({ cwd, env });
-      assert.match(staged.context, /#7 edge\.finding \[Dana\] — origin pool unhealthy/);
+      assert.match(buildInjection(staged.peeks).context, /#7 edge\.finding \[Dana\] — origin pool unhealthy/);
 
       // 3. the human sends their next message. NOW it is delivered, and only
       //    now may the cursor move.

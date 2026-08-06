@@ -44,7 +44,10 @@ test('hooks with no subcommand prints usage and exits 2', async () => {
   await withSandbox(async () => {
     const { stdout, stderr, exitCode } = await runCli(['hooks']);
     assert.equal(exitCode, 2);
-    assert.match(stderr, /usage: landfall hooks <install\|uninstall\|policy\|stop\|file-changed\|pre-tool-use>/);
+    assert.match(
+      stderr,
+      /usage: landfall hooks <install\|uninstall\|policy\|stop\|file-changed\|user-prompt-submit\|pre-tool-use>/,
+    );
     assert.equal(stdout, '');
   });
 });

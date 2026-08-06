@@ -116,6 +116,22 @@ export class EdgeBridgeClient {
   getBrief() {
     return this.#get('/events');
   }
+  /**
+   * What the room is waiting on from THIS agent (#252): staged claims awaiting
+   * its position, and context it authored or cited that has since been flagged
+   * or quarantined.
+   *
+   * `agentInstanceId` is the id the SERVER issued at `join()`, and it is not an
+   * identity claim: the server checks it against this incident's join grant and
+   * refuses one it never issued. It matters because `quorum.ts` counts an agent
+   * and its owning human as DISTINCT voters — omit it and the answer is the
+   * human's queue, which both hides a vote this agent still owes and offers it
+   * one it cannot cast.
+   */
+  getAttention() {
+    const q = this.agentInstanceId ? `?agentInstanceId=${encodeURIComponent(this.agentInstanceId)}` : '';
+    return this.#get(`/vetting/attention${q}`);
+  }
   /** Durable-cursor delta read (021): only events with seq > sinceSeq. */
   getUpdates(sinceSeq) {
     const since = Number.isFinite(sinceSeq) ? sinceSeq : -1;

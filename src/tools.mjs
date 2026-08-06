@@ -11,7 +11,8 @@
 
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import { contributionFor, eventActor, eventText, narrateDoing } from './narrate.mjs';
+import { contributionFor, formatEventLine, narrateDoing } from './narrate.mjs';
+import { touchesAttention, voteRequestBlock } from './attention.mjs';
 import { EdgeBridgeClient } from './client.mjs';
 import { redeemShareLink } from './link.mjs';
 
@@ -85,6 +86,21 @@ export const EDGE_AGENT_INSTRUCTIONS = [
 const PENDING_MAX = 50;
 
 /**
+ * Longest the hook socket's `peek` will wait for an in-flight attention read.
+ *
+ * The bound that matters here is this CLI's own `SOCKET_TIMEOUT_MS` (250 ms)
+ * for the whole `peek` round trip — not a host-imposed one; Claude Code's and
+ * Codex's hook timeouts are both considerably larger. Waiting less than the
+ * round trip we already give ourselves leaves room for the rest of it, and
+ * keeps the hook fast regardless of what the host would tolerate. The refresh
+ * is already running
+ * by the time a Stop lands in almost every case — it starts when the event
+ * arrives — so this bounds the narrow window where a quarantine and a
+ * conclusion are simultaneous, and never becomes the common path.
+ */
+export const ATTENTION_SETTLE_MS = 150;
+
+/**
  * A bridge session: the (possibly not-yet-joined) client plus the durable
  * update cursor and the queue of live room events waiting to reach the agent.
  * `joinWarRoom` redeems a share link, joins, and fires `onJoined(session)` so
@@ -111,6 +127,118 @@ export function createBridgeSession({
     // for them, so `get_updates` can still fetch them; the count is what keeps
     // the overflow visible instead of silent.
     pendingDropped: 0,
+    // What the room is waiting on from THIS agent (#252). The server owns the
+    // projection; this is the last answer it gave, refreshed when a room event
+    // that could change it arrives and read by both the piggyback channel and
+    // the hook socket. `dirty` starts true so the first tool call asks once.
+    attention: null,
+    attentionDirty: true,
+    // The in-flight refresh, if one is running. Two things need it: coalescing
+    // (a burst of claim events must cost one read, not one per event) and the
+    // Stop path, which waits on THIS promise rather than starting its own.
+    attentionInFlight: null,
+    // Vote requests already announced in-band, so the same claim is not
+    // re-appended to every tool result for the rest of the session.
+    attentionNotified: new Set(),
+    /**
+     * Re-read the attention projection, best-effort. Never throws and never
+     * blocks a tool call: an unreachable server means "nothing known to be
+     * waiting", exactly as it does for the live socket.
+     *
+     * Coalesced: a second caller while a read is in flight joins that read
+     * instead of issuing another. `attentionDirty` is cleared on entry, not on
+     * success, so an event arriving DURING a read re-dirties the snapshot and
+     * the next caller reads again rather than trusting an answer computed
+     * before that event landed.
+     *
+     * ONLY THE CURRENT READ MAY WRITE THE SNAPSHOT. `settleAttention` abandons a
+     * read that misses its budget, and a later, fresher read then takes over. If
+     * the abandoned one were still allowed to assign when it finally lands, two
+     * reads completing out of start order — ordinary latency variance is enough:
+     * a retry, a pool wait, a GC pause — would overwrite the newer answer with
+     * the older one AND leave the snapshot marked clean, so nothing would ever
+     * correct it. That turns the bounded "possibly stale under a slow server"
+     * cost this design accepts into an unbounded stale-forever snapshot, which
+     * is exactly the blocker-free Stop the quarantine check exists to prevent.
+     * So every write below — the answer and the re-dirty on failure alike — is
+     * gated on this read still being the session's current one; a superseded
+     * read discards its own result and touches nothing.
+     */
+    refreshAttention() {
+      if (!session.client) return Promise.resolve(null);
+      if (session.attentionInFlight) return session.attentionInFlight;
+      session.attentionDirty = false;
+      const inFlight = (async () => {
+        try {
+          const next = await session.client.getAttention();
+          // Superseded reads drop their answer on the floor: the read that
+          // replaced this one owns the snapshot and has already, or will, write
+          // a fresher value than this stale one.
+          if (session.attentionInFlight === inFlight) session.attention = next;
+        } catch {
+          // Leave the previous answer in place rather than blanking it — a
+          // stale vote request is recoverable, a silently dropped one is the
+          // bug. Re-dirty so the next caller retries instead of trusting it.
+          // Not for a superseded read: its failure says nothing about the
+          // snapshot the current read owns.
+          if (session.attentionInFlight === inFlight) session.attentionDirty = true;
+        } finally {
+          // Cleared before the promise settles for its awaiters, so the next
+          // caller starts a fresh read rather than joining a finished one.
+          if (session.attentionInFlight === inFlight) session.attentionInFlight = null;
+        }
+        return session.attention;
+      })();
+      session.attentionInFlight = inFlight;
+      return inFlight;
+    },
+    /**
+     * Make the snapshot as current as it can be made within `timeoutMs`, then
+     * return whatever there is. The Stop hook's entry point (#252 review).
+     *
+     * WHY THIS EXISTS. `enqueueEvent` used to only set `attentionDirty`, and the
+     * one thing that ever acted on that flag was `flushVoteRequests` — a side
+     * effect of another MCP tool call. `runStopHook` calls `peek` and nothing
+     * else, so an agent whose last tool call predated a quarantine concluded
+     * against a blocker-free snapshot: exactly the failure tier 1 exists to
+     * prevent. The refresh now starts the moment the event arrives, and this is
+     * what the Stop path waits on.
+     *
+     * BOUNDED, because a hook that hangs is a hook that gets uninstalled: the
+     * caller's budget is 250 ms end-to-end, so waiting is capped well under it
+     * and a slow server costs a possibly-stale answer, never a stuck agent.
+     */
+    async settleAttention(timeoutMs = ATTENTION_SETTLE_MS) {
+      if (!session.attentionInFlight && session.attentionDirty) session.refreshAttention();
+      const inFlight = session.attentionInFlight;
+      if (!inFlight) return session.attention;
+      let timer;
+      let timedOut = false;
+      try {
+        await Promise.race([
+          inFlight,
+          new Promise((resolve) => {
+            timer = setTimeout(() => {
+              timedOut = true;
+              resolve();
+            }, timeoutMs);
+          }),
+        ]);
+      } catch {
+        /* refreshAttention never rejects, but never let this path throw */
+      } finally {
+        clearTimeout(timer);
+      }
+      if (timedOut && session.attentionInFlight === inFlight) {
+        // Stop treating a read this slow as the one everybody joins: a request
+        // that never returns would otherwise wedge the coalescing for the rest
+        // of the session and silently disable every later refresh. It is still
+        // free to land and update the snapshot when it does.
+        session.attentionInFlight = null;
+        session.attentionDirty = true;
+      }
+      return session.attention;
+    },
     /**
      * Park a live room event for delivery. Returns true when it was queued.
      * A numeric `seq` is required: it is both the dedupe key and how an event
@@ -123,6 +251,20 @@ export function createBridgeSession({
       if (session.pending.some((e) => e.seq === seq)) return false;
       session.pending.push(evt);
       session.pending.sort((a, b) => a.seq - b.seq);
+      // A claim/vetting event is the only thing that can change what awaits
+      // this agent, so arrival is the refresh trigger — no timer anywhere.
+      //
+      // The read STARTS here rather than only marking the snapshot dirty. The
+      // flag alone was acted on by exactly one code path (`flushVoteRequests`,
+      // a side effect of another tool call), and the Stop hook makes no tool
+      // call — so a quarantine landing after an agent's last tool call never
+      // reached the Stop path at all. Fire-and-forget and coalesced: a burst of
+      // claim events costs one read, and a failed one leaves the flag set for
+      // the next caller.
+      if (touchesAttention(evt)) {
+        session.attentionDirty = true;
+        void session.refreshAttention();
+      }
       while (session.pending.length > PENDING_MAX) {
         session.pending.shift();
         session.pendingDropped += 1;
@@ -140,6 +282,22 @@ export function createBridgeSession({
       session.cursor = -1;
       session.pending.length = 0;
       session.pendingDropped = 0;
+      // A different room asks different questions of a different participant.
+      session.attention = null;
+      session.attentionDirty = true;
+      session.attentionNotified = new Set();
+      // AND THE READ STILL IN FLIGHT AGAINST THE OLD ROOM IS ABANDONED. Clearing
+      // the pointer does both halves of that, because `refreshAttention` keys
+      // everything on promise identity rather than on which client issued it:
+      // the next caller no longer short-circuits onto the old room's promise,
+      // and when that promise finally lands its own
+      // `attentionInFlight === inFlight` guard is already false, so it discards
+      // its answer instead of writing incident A's claims into incident B's
+      // snapshot. Without this the piggyback channel could render "vote
+      // requested: claim #N" for a claim belonging to the room the agent just
+      // left — and `claimSeq` is a per-incident counter, so acting on it in the
+      // new room records a position on an unrelated claim.
+      session.attentionInFlight = null;
       await onJoined?.(session, cfg);
       return cfg;
     },
@@ -162,13 +320,26 @@ function advanceCursor(session, events) {
   }
 }
 
-/** One compact line per shared event, attributed to human · agent. */
-function formatEvent(e) {
-  // feature 024: attribute by the human name, never the raw humanActorId.
-  const who = eventActor(e?.payload);
-  const what = eventText(e?.payload);
-  return `#${e.seq} ${e.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
+/**
+ * Advance the cursor straight to `upTo` and drop everything the queue was
+ * holding at or below it. This is what the hook socket's `consume` verb calls
+ * (#225): a Stop hook that has already spelled the events out to the agent has
+ * delivered them, exactly as a flushed tool result would have.
+ */
+export function consumeUpTo(session, upTo) {
+  if (typeof upTo === 'number' && upTo > session.cursor) session.cursor = upTo;
+  if (Array.isArray(session.pending)) {
+    session.pending = session.pending.filter((e) => e.seq > session.cursor);
+    // Same rule as flushPending: the overflow counter has been reported once
+    // the queue it belonged to is gone. The cursor was never advanced for the
+    // dropped events themselves, so `get_updates` can still fetch them.
+    if (!session.pending.length) session.pendingDropped = 0;
+  }
+  return session.cursor;
 }
+
+/** One compact line per shared event, attributed to human · agent. */
+const formatEvent = formatEventLine;
 
 /**
  * Events spelled out in full on one tool result before the block becomes a
@@ -212,6 +383,34 @@ function flushPending(session) {
 }
 
 /**
+ * Drain new vote requests onto a tool result (#252).
+ *
+ * Refreshes the projection only when a room event said it could have changed
+ * (or it has never been read), so a quiet room costs ZERO extra requests per
+ * tool call — the cost of this channel scales with what is happening in the
+ * war room, not with how busy the agent is.
+ *
+ * A claim is announced ONCE, and once more if it later goes stale: repeating it
+ * on every tool result for the rest of the session would train the agent to
+ * ignore the marker, which is the only thing this channel has.
+ *
+ * Returns '' when there is nothing new. Never throws — a failed read leaves the
+ * result untouched.
+ */
+async function flushVoteRequests(session) {
+  try {
+    if (session.attentionDirty || session.attention === null) await session.refreshAttention();
+    const { text, keys } = voteRequestBlock(session.attention, { notified: session.attentionNotified });
+    // Marked only once the block is in hand, so a failure above cannot silently
+    // consume the announcement.
+    for (const k of keys) session.attentionNotified.add(k);
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Build the MCP tool set. Accepts a session from {@link createBridgeSession},
  * or (legacy, feature 012) a bare joined EdgeBridgeClient.
  */
@@ -241,7 +440,13 @@ export function buildBridgeTools(sessionOrClient) {
     // the cursor past what it delivered, so the block only ever carries what the
     // socket pushed beyond that — never a duplicate of the result above it.
     const flushed = flushPending(session);
-    return flushed ? `${result}\n\n${flushed}` : result;
+    // Vote requests ride the same channel and are PREPENDED (#252): they are
+    // the one thing here that is addressed to the agent rather than reporting
+    // what happened, and burying an "answer this" under a tool result and a
+    // digest is how it gets skimmed past.
+    const asked = await flushVoteRequests(session);
+    const body = flushed ? `${result}\n\n${flushed}` : result;
+    return asked ? `${asked}\n\n${body}` : body;
   };
 
   return [

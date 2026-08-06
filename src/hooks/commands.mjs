@@ -25,9 +25,22 @@ import { exitCodeForOutcomes } from '../install/report.mjs';
 import { isOnPath as defaultIsOnPath } from '../install/platform.mjs';
 import { loadPolicy, policyPath, starterPolicy, intentFor } from './policy.mjs';
 
-/** Parse `hooks install`/`hooks uninstall` flags: `--only <ids>`, `--dry-run`, `--uninstall`. */
+/**
+ * Parse `landfall hooks` flags: `--only <ids>`, `--dry-run`, `--uninstall`, and
+ * `--host <id>` — the last of which belongs to a hook INVOCATION rather than to
+ * install/uninstall, and names the host whose output contract the handler must
+ * answer on (#228). Parsed here with the rest so `rest[0]` stays the
+ * subcommand wherever the flag appears.
+ */
 export function parseHookFlags(rest) {
   const args = [...rest];
+  const takeValue = (name) => {
+    const i = args.indexOf(name);
+    if (i < 0) return null;
+    const value = args[i + 1] ?? null;
+    args.splice(i, value === null ? 1 : 2);
+    return value;
+  };
   const takeFlag = (name) => {
     const i = args.indexOf(name);
     if (i < 0) return false;
@@ -36,6 +49,7 @@ export function parseHookFlags(rest) {
   };
   const dryRun = takeFlag('--dry-run');
   const uninstall = takeFlag('--uninstall');
+  const host = takeValue('--host');
   let only = null;
   const oi = args.indexOf('--only');
   if (oi >= 0) {
@@ -45,7 +59,7 @@ export function parseHookFlags(rest) {
       .filter(Boolean);
     args.splice(oi, 2);
   }
-  return { dryRun, uninstall, only, rest: args };
+  return { dryRun, uninstall, only, host, rest: args };
 }
 
 function resolveOnly(hosts, only) {

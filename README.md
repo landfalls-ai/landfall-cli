@@ -109,7 +109,7 @@ Three hosts have a lifecycle-hook surface, and each gets what it supports:
 
 | Host | Config file | Registered |
 |---|---|---|
-| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged`, `PreToolUse` (`Bash` only) |
+| Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged` (watching `room_events`), `UserPromptSubmit`, `PreToolUse` (`Bash` only) |
 | Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop`, `PreToolUse` (`Bash` only) |
 | Cursor | `~/.cursor/hooks.json` | `stop` |
 
@@ -117,8 +117,78 @@ No sign-in needed — this edits local config, so it also works from a provision
 script. Every write is an append into the host's own hook list: your existing hooks
 are preserved, re-running is a no-op, and an entry you've hand-edited since is
 reported as a conflict rather than overwritten. `hooks uninstall` deletes only an
-entry still byte-identical to what was written, and leaves Codex's `codex_hooks`
-flag alone — other hooks of yours may depend on it.
+entry landfall wrote — its current form, or one an earlier version wrote — and
+leaves Codex's `codex_hooks` flag alone: other hooks of yours may depend on it.
+
+Cursor's entry carries `--host cursor`, because Cursor's hook contract is not the
+one Claude Code and Codex share. Those two read a refusal as exit code 2 with the
+message on stderr; Cursor reads exactly one JSON object on stdout, and never sees
+an exit code or stderr at all. Upgrading from v0.2.0 rewrites the older bare
+`landfall hooks stop` entry in place — same position in your list, no duplicate.
+
+### What `Stop` does
+
+Your agent finishes a ten-minute investigation and concludes. Meanwhile another
+investigator published the finding that changes the answer — the war room saw it,
+your agent did not, because an MCP session only learns things on a tool call it
+chose to make.
+
+So on `Stop`, the hook asks any `landfall serve` running in this workspace whether
+room events newer than that session's cursor exist. If they do, it prints them and
+refuses the conclusion; your agent reads them and continues. If they don't, it exits
+silently and immediately — nothing to ask means nothing to wait for.
+
+You are never stuck: whatever the block reported is marked consumed, so a second
+`Stop` on an unchanged room goes straight through, and a host that re-runs the hook
+after a block (`stop_hook_active`) is let through regardless.
+
+On Cursor the same decision arrives by a different verb. Cursor's `stop` is a
+notification — it cannot refuse a conclusion — but it can hand back a
+`followup_message`, which Cursor submits as the next user message and which
+continues the agent loop. That gets your agent the same thing: it does not walk
+away from the incident holding stale context. Termination is just as bounded —
+what was reported is consumed, an interrupted or errored turn is left alone, and
+Cursor caps auto-followups at five per turn regardless.
+
+### What `FileChanged` + `UserPromptSubmit` do
+
+`Stop` covers an agent that is concluding. This pair covers one that is **idle** —
+not concluding, not calling tools, so neither the Stop gate nor the in-band block on
+a tool result can reach it.
+
+It takes two hook events, because no single one can do the job:
+
+- **`FileChanged` can watch, but not speak.** `landfall serve` appends a marker line
+  to `.landfall/room_events` the moment its queue goes from empty to non-empty, and
+  the watcher fires — but Claude Code discards this event's output entirely. So the
+  wake *stages* the digest and prints a one-line nudge to your terminal. It
+  deliberately consumes nothing.
+- **`UserPromptSubmit` can speak, but never learns the room changed.** It fires on
+  every message you send, so it picks up the staged digest and hands it to the
+  session as `additionalContext` — before the model generates anything.
+
+**The honest limit:** nothing can wake a genuinely idle Claude Code session with zero
+human action, because nothing server-side can push into one. The earliest moment an
+idle session can act on room context is your next message, and that is exactly when
+this delivers it — no action beyond what you were already about to do.
+
+The cursor only advances once the digest has actually been handed over, so context is
+never consumed by a hook that could not deliver it.
+
+The marker is a **doorbell, not a mailbox**: it carries a timestamp, a pid and a count,
+never a finding, a name or an incident id. The digest itself is staged next to the
+sockets outside your repo (`0600`), so nothing from the war room lands in a directory
+that gets grepped, backed up and occasionally committed. `.landfall/` ignores itself
+(it contains a `.gitignore` of `*`) rather than us editing a `.gitignore` you own.
+
+**How a hook reaches a serve process.** A hook is a separate, short-lived process
+and cannot see `landfall serve`'s memory, so `serve` binds a local query socket at
+`$XDG_RUNTIME_DIR/landfall/<workspace-hash>/<pid>.sock` (macOS:
+`~/.local/state/landfall/run/…`; Windows: a per-user named pipe). No new daemon —
+it is the serve process you already run, made answerable. Two agent windows on one
+repo are two sockets with two cursors, and a hook unions them, so it can over-report
+a sibling window's context but never miss your own. Nothing else on your machine is
+listening: see [Guarantees](#guarantees).
 
 ## `landfall hooks policy`: what your machine may report, in writing
 
@@ -289,8 +359,13 @@ landfall hooks policy [--init]                         # print (or scaffold) the
   cannot execute). humanActorId comes from your verified session, never the payload.
 - An edge session token works ONLY on its one incident — default-deny everywhere else.
 - Join tickets are single-use, short-lived, and bound to tenant + incident + member.
-- Stdio only — the bridge never listens on a public interface; the realtime connection
-  is outbound.
+- **No network listener.** The bridge speaks MCP over stdio and opens the realtime
+  connection outbound; there is no port, and nothing another host can reach. `landfall
+  serve` does bind one local **filesystem** socket — `0600`, inside a `0700` directory,
+  readable by your user account alone — so lifecycle hooks can ask *"what room events
+  have I not seen?"*. It answers exactly three read/cursor operations (`status`, `peek`,
+  `consume`) and offers **no way to act in the war room**: nothing that posts, proposes,
+  or hands back your session token.
 - Presence/summary/sub-tabs are projected server-side from what the bridge posts;
   nothing here bypasses the war room's approval gate.
 

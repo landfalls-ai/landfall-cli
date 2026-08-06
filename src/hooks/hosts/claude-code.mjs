@@ -18,11 +18,18 @@ export const id = 'claude-code';
 export const displayName = 'Claude Code';
 
 // Claude Code's hook shape: each event holds a list of matcher groups, each
-// group a list of `{type: 'command', command}` hooks. `matcher` selects tool
-// names, so it is omitted for Stop and FileChanged (which have no tool) and
-// carried for PreToolUse (where narrowing to the shell tool is what keeps a
-// non-matching command free — see spec.mjs).
-const EVENT_KEY = { stop: 'Stop', 'file-changed': 'FileChanged', 'pre-tool-use': 'PreToolUse' };
+// group a list of `{type: 'command', command}` hooks. `matcher` is omitted for
+// Stop and UserPromptSubmit, neither of which supports one; carried for
+// FileChanged, where it is not a refinement but the whole watch list, since an
+// absent matcher there watches nothing at all; and carried for PreToolUse,
+// where narrowing to the shell tool is what keeps a non-matching command free
+// — see spec.mjs.
+const EVENT_KEY = {
+  stop: 'Stop',
+  'file-changed': 'FileChanged',
+  'user-prompt-submit': 'UserPromptSubmit',
+  'pre-tool-use': 'PreToolUse',
+};
 
 export function configPath() {
   return path.join(homedir(), '.claude', 'settings.json');
@@ -35,7 +42,7 @@ function registrations() {
       keyPath: `hooks.${EVENT_KEY[eventId]}`,
       entry: {
         ...(matcher ? { matcher } : {}),
-        hooks: [{ type: 'command', command: hookCommand(eventId) }],
+        hooks: [{ type: 'command', command: hookCommand(eventId, id) }],
       },
     };
   });

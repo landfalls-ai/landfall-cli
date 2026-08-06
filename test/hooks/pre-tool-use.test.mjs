@@ -6,7 +6,6 @@
 //   non-matching commands cost nothing     — no policy read, no tty, no network
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Readable } from 'node:stream';
 import { runHookEvent, shellCommandOf } from '../../src/hooks/run.mjs';
 import { validateRule } from '../../src/hooks/policy.mjs';
 
@@ -23,8 +22,11 @@ const RULE = validateRule(
 
 const POLICY = { exists: true, rules: [RULE], errors: [] };
 
-function stdinOf(payload) {
-  return Readable.from([Buffer.from(typeof payload === 'string' ? payload : JSON.stringify(payload))]);
+// `bin/landfall.mjs` reads stdin once, up front, into a raw string (`input.mjs`,
+// #227) and hands it through `deps.input` — this mirrors that shape rather
+// than a stream, so these tests exercise the same contract production does.
+function inputOf(payload) {
+  return typeof payload === 'string' ? payload : JSON.stringify(payload);
 }
 
 function bashEvent(command) {
@@ -68,7 +70,7 @@ test('a matched command with no confirmation sends nothing', async () => {
   const s = spy({ confirmed: false });
   const { exitCode, result } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod get po')),
+    input: inputOf(bashEvent('kubectl --context=prod get po')),
   });
 
   assert.equal(result, 'declined');
@@ -81,7 +83,7 @@ test('the prompt names the rule and the classification, never the command', asyn
   const s = spy({ confirmed: false });
   await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod exec -it payments -- cat /run/secrets/db')),
+    input: inputOf(bashEvent('kubectl --context=prod exec -it payments -- cat /run/secrets/db')),
   });
 
   const [question] = s.calls.confirms;
@@ -95,7 +97,7 @@ test('on confirmation the intent is sent — and it is exactly the rule', async 
   const s = spy({ confirmed: true, outcome: { decision: 'attach', incidentId: 'abc', workspaceUrl: 'https://app/x' } });
   const { result } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod get secret db-root -o yaml')),
+    input: inputOf(bashEvent('kubectl --context=prod get secret db-root -o yaml')),
   });
 
   assert.equal(result, 'declared');
@@ -119,7 +121,7 @@ test('a non-shell tool stops before the policy is even read', async () => {
   const s = spy();
   const { result, exitCode } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf({ tool_name: 'Edit', tool_input: { file_path: '/etc/hosts' } }),
+    input: inputOf({ tool_name: 'Edit', tool_input: { file_path: '/etc/hosts' } }),
   });
 
   assert.equal(result, 'not-a-shell-command');
@@ -134,7 +136,7 @@ test('a shell command matching no rule reaches neither the terminal nor the netw
   const s = spy();
   const { result } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('git status')),
+    input: inputOf(bashEvent('git status')),
   });
 
   assert.equal(result, 'no-match');
@@ -148,7 +150,7 @@ test('with no policy file nothing on the machine is reportable', async () => {
   const s = spy({ policy: { exists: false, rules: [], errors: [] } });
   const { result } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod get po')),
+    input: inputOf(bashEvent('kubectl --context=prod get po')),
   });
 
   assert.equal(result, 'no-policy');
@@ -160,7 +162,7 @@ test('an unreadable policy is announced, not silently ignored', async () => {
   const s = spy({ policy: { exists: true, rules: [], errors: ['prod-policy.json is not valid JSON'] } });
   const { result } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod get po')),
+    input: inputOf(bashEvent('kubectl --context=prod get po')),
   });
 
   assert.equal(result, 'no-policy');
@@ -173,7 +175,7 @@ test('an unsendable intent is not worth a prompt — and still exits 0', async (
   const s = spy({ confirmed: true, target: { ok: false, reason: 'not signed in — run `landfall login`' } });
   const { result, exitCode } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod get po')),
+    input: inputOf(bashEvent('kubectl --context=prod get po')),
   });
 
   assert.equal(result, 'no-target');
@@ -187,7 +189,7 @@ test('a server that opened nothing is reported plainly, exit 0', async () => {
   const s = spy({ confirmed: true, outcome: { decision: 'none', reason: 'declared intent not accepted (HTTP 404)' } });
   const { result, exitCode } = await runHookEvent('pre-tool-use', {
     ...s.deps,
-    stdin: stdinOf(bashEvent('kubectl --context=prod get po')),
+    input: inputOf(bashEvent('kubectl --context=prod get po')),
   });
 
   assert.equal(result, 'declared-none');
@@ -198,7 +200,7 @@ test('a server that opened nothing is reported plainly, exit 0', async () => {
 test('garbage on stdin is inert, never an error in the agent turn', async () => {
   for (const payload of ['', 'not json', '[]', '{"tool_name":"Bash"}', '{"tool_name":"Bash","tool_input":{"command":"   "}}']) {
     const s = spy();
-    const { exitCode, result } = await runHookEvent('pre-tool-use', { ...s.deps, stdin: stdinOf(payload) });
+    const { exitCode, result } = await runHookEvent('pre-tool-use', { ...s.deps, input: inputOf(payload) });
     assert.equal(exitCode, 0, `payload ${JSON.stringify(payload)}`);
     assert.equal(result, 'not-a-shell-command');
     assert.equal(s.calls.policyReads, 0);

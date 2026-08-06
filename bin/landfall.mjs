@@ -34,7 +34,7 @@
 // war room from a plain incident URL or LANDFALL_SLUG+LANDFALL_INCIDENT with NO
 // share link — you join as your authenticated member identity.
 import { EdgeBridgeClient } from '../src/client.mjs';
-import { buildBridgeTools, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
+import { buildBridgeTools, consumeUpTo, createBridgeSession, EDGE_AGENT_INSTRUCTIONS } from '../src/tools.mjs';
 import { runStdioServer } from '../src/mcp.mjs';
 import { redeemShareLink } from '../src/link.mjs';
 import { watchIncident, describeEvent } from '../src/live.mjs';
@@ -43,6 +43,9 @@ import { runInstall, runUninstall } from '../src/install/commands.mjs';
 import { formatOutcomeLine } from '../src/install/report.mjs';
 import { runHooksInstall, runHooksUninstall, runHooksPolicy, parseHookFlags } from '../src/hooks/commands.mjs';
 import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
+import { readHookInput } from '../src/hooks/input.mjs';
+import { startHookSocket } from '../src/hooks/socket.mjs';
+import { createDoorbell } from '../src/hooks/doorbell.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -128,12 +131,18 @@ async function resolveConfig(link) {
  * agent's next tool call can carry it — the stderr line only reaches a human
  * who happens to be watching the terminal.
  */
-function keepLive(client, cfg, session) {
+function keepLive(client, cfg, session, doorbell) {
   const beat = setInterval(() => { client.heartbeat('investigating').catch(() => {}); }, HEARTBEAT_MS);
   const unwatch = watchIncident(cfg, {
     ownInstanceId: () => client.agentInstanceId,
     onEvent: (evt) => {
-      session?.enqueueEvent(evt);
+      // #227: ring the doorbell on the 0 → non-empty EDGE only. A session
+      // that already owes context will be shown this event too when the bell
+      // it has yet to answer is answered; re-ringing on every event would
+      // wake an idle agent once per message in a busy room.
+      const wasEmpty = (session?.pending?.length ?? 0) === 0;
+      const queued = session?.enqueueEvent(evt);
+      if (doorbell && queued && wasEmpty) doorbell.ring(session.pending.length);
       log(describeEvent(evt));
     },
     log,
@@ -222,16 +231,26 @@ async function main() {
   }
 
   if (cmd === 'hooks') {
-    const { rest: subArgs, uninstall: uninstallFlag } = parseHookFlags(rest);
+    const { rest: subArgs, uninstall: uninstallFlag, host } = parseHookFlags(rest);
     const sub = subArgs[0];
 
-    // `landfall hooks <event>` is what a registered hook entry itself runs, so
-    // it must stay silent on stdout (the host parses that channel) and say
-    // everything it has to say through the exit code.
+    // `landfall hooks <event>` is what a registered hook entry itself runs. The
+    // host writes the hook's context to stdin (it carries `stop_hook_active`,
+    // the loop guard) and reads the answer back on the channels it parses.
+    // How it answers depends on the host that registered it (#228): under the
+    // exit-2 convention (Claude Code, Codex) stdout stays STRUCTURED — a JSON
+    // object or nothing at all, never a log line — and the exit code plus
+    // stderr carry a refusal; under Cursor's protocol it writes exactly one
+    // JSON object to stdout and always exits 0. `--host` is on the command
+    // line because we wrote that command line — inferring the contract from
+    // an unfamiliar payload would be a guess. See ../src/hooks/run.mjs for
+    // which event uses which, and why.
     if (HOOK_EVENT_IDS.includes(sub)) {
-      // `log` is stderr — the hook's own channel to the human. stdout stays
-      // empty for the host.
-      const { exitCode, error } = await runHookEvent(sub, { log });
+      // `log` is stderr — every handler's own channel to the human. stdout
+      // stays empty except where a protocol (Cursor's JSON contract) requires it.
+      const input = await readHookInput();
+      const { exitCode, error, stdout } = await runHookEvent(sub, { input, host, log });
+      if (stdout) process.stdout.write(stdout);
       if (error) log(error);
       process.exitCode = exitCode;
       return;
@@ -248,7 +267,9 @@ async function main() {
     }
 
     if (sub !== 'install' && sub !== 'uninstall') {
-      log(`usage: landfall hooks <install|uninstall|policy|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall]`);
+      log(
+        `usage: landfall hooks <install|uninstall|policy|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall] [--host <id>]`,
+      );
       process.exitCode = 2;
       return;
     }
@@ -285,12 +306,16 @@ async function main() {
 
   // default: serve — expose incident MCP tools over stdio; each call narrates.
   let stopLive = null;
+  // #227: the doorbell an idle session's FileChanged hook watches. It carries a
+  // timestamp and a count — never room content; the events themselves stay on
+  // the query socket and out of the user's repository.
+  const doorbell = createDoorbell({ log });
   const session = createBridgeSession({
     agentLabel: process.env.LANDFALL_AGENT_LABEL ?? 'edge-agent',
     baseUrl: process.env.LANDFALL_BASE_URL,
     onJoined: (s, cfg) => {
       stopLive?.();
-      stopLive = keepLive(s.client, cfg, s);
+      stopLive = keepLive(s.client, cfg, s, doorbell);
       log(`joined incident ${cfg.incidentId} as "${s.agentLabel}" (instance ${s.client.agentInstanceId}).`);
     },
   });
@@ -300,14 +325,23 @@ async function main() {
     const client = new EdgeBridgeClient(cfg);
     await client.join();
     session.client = client;
-    stopLive = keepLive(client, cfg, session);
+    stopLive = keepLive(client, cfg, session, doorbell);
     log(`joined incident ${cfg.incidentId} as "${cfg.agentLabel}" (instance ${client.agentInstanceId}).`);
   } else {
     log('not joined yet — the agent should call join_war_room with a Landfall share link.');
   }
 
+  // The local query socket (#225): lifecycle hooks are separate, short-lived
+  // processes and cannot reach `session.pending` / `session.cursor` in this
+  // process's memory. Binding here is what makes them answerable — no separate
+  // daemon, and best-effort, since a serve process that cannot offer the socket
+  // must still serve MCP.
+  const hookSocket = await startHookSocket(session, { consume: consumeUpTo, log });
+  if (hookSocket) log(`hook query socket at ${hookSocket.socketPath}`);
+
   const shutdown = async () => {
     stopLive?.();
+    await hookSocket?.close().catch(() => {});
     await session.client?.leave().catch(() => {});
     process.exit(0);
   };

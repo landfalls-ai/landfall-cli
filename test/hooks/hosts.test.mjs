@@ -16,10 +16,24 @@ test('Claude Code: matcher-group shape, every event, under hooks.<Event>', async
     assert.deepEqual(await readJson(path.join(homeDir, '.claude', 'settings.json')), {
       hooks: {
         Stop: [{ hooks: [{ type: 'command', command: 'landfall hooks stop' }] }],
-        FileChanged: [{ hooks: [{ type: 'command', command: 'landfall hooks file-changed' }] }],
-        // PreToolUse is the one event carrying a matcher, and it is load-bearing
-        // rather than decorative: #233 requires a non-matching command to add
-        // zero overhead, and scoping the registration to the shell tool is what
+        // FileChanged carries a matcher and Stop does not, deliberately (#227).
+        // For FileChanged the matcher is REQUIRED, not a refinement: Claude
+        // Code watches a list of literal filenames, and an empty or omitted
+        // matcher watches nothing and never fires — which is what #222's
+        // matcher-less registration did. A path or glob is equally inert.
+        FileChanged: [
+          {
+            matcher: 'room_events',
+            hooks: [{ type: 'command', command: 'landfall hooks file-changed' }],
+          },
+        ],
+        // The delivery half (#227). No matcher — the event does not support one
+        // and always fires, which is precisely why it is the half that speaks:
+        // it is guaranteed to run when an idle session resumes.
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'landfall hooks user-prompt-submit' }] }],
+        // PreToolUse is the one event carrying a matcher for a different reason
+        // than FileChanged: #233 requires a non-matching command to add zero
+        // overhead, and scoping the registration to the shell tool is what
         // stops an Edit or a Read from spawning a process at all.
         PreToolUse: [
           { matcher: 'Bash', hooks: [{ type: 'command', command: 'landfall hooks pre-tool-use' }] },
@@ -34,10 +48,30 @@ test('Cursor: lowercase event name, bare {command} entry, version stamped', asyn
     await fs.mkdir(path.join(homeDir, '.cursor'), { recursive: true });
     await runCli(['hooks', 'install', '--only', 'cursor']);
 
+    // `--host cursor` is what tells the handler to answer in JSON on stdout
+    // rather than exit 2 + stderr, which Cursor never reads (#228).
     assert.deepEqual(await readJson(path.join(homeDir, '.cursor', 'hooks.json')), {
       version: 1,
-      hooks: { stop: [{ command: 'landfall hooks stop' }] },
+      hooks: { stop: [{ command: 'landfall hooks stop --host cursor' }] },
     });
+  });
+});
+
+test('Claude Code and Codex keep the bare command — only a host needing another output shape is flagged', async () => {
+  await withSandbox(async ({ homeDir }) => {
+    await fs.mkdir(path.join(homeDir, '.claude'), { recursive: true });
+    await fs.mkdir(path.join(homeDir, '.codex'), { recursive: true });
+    await runCli(['hooks', 'install', '--only', 'claude-code,codex']);
+
+    const claude = await readJson(path.join(homeDir, '.claude', 'settings.json'));
+    const codex = await readJson(path.join(homeDir, '.codex', 'hooks.json'));
+    for (const command of [
+      claude.hooks.Stop[0].hooks[0].command,
+      claude.hooks.FileChanged[0].hooks[0].command,
+      codex.hooks.Stop[0].hooks[0].command,
+    ]) {
+      assert.equal(command.includes('--host'), false, `${command} must stay byte-identical across the #228 upgrade`);
+    }
   });
 });
 

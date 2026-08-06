@@ -57,7 +57,7 @@ function registrations() {
       keyPath: `${KEY_PREFIX}.${EVENT_KEY[eventId]}`,
       entry: {
         ...(matcher ? { matcher } : {}),
-        hooks: [{ type: 'command', command: hookCommand(eventId) }],
+        hooks: [{ type: 'command', command: hookCommand(eventId, id) }],
       },
     };
   });

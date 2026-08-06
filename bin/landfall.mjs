@@ -41,7 +41,7 @@ import { watchIncident, describeEvent } from '../src/live.mjs';
 import { login, logout, getCachedAccessToken, explainExpiredCredential } from '../src/auth.mjs';
 import { runInstall, runUninstall } from '../src/install/commands.mjs';
 import { formatOutcomeLine } from '../src/install/report.mjs';
-import { runHooksInstall, runHooksUninstall, parseHookFlags } from '../src/hooks/commands.mjs';
+import { runHooksInstall, runHooksUninstall, runHooksPolicy, parseHookFlags } from '../src/hooks/commands.mjs';
 import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
 import { readHookInput } from '../src/hooks/input.mjs';
 import { startHookSocket } from '../src/hooks/socket.mjs';
@@ -166,6 +166,8 @@ Commands:
   hooks install [--only <ids>] [--dry-run] [--uninstall]  register lifecycle hooks so room context
                                                           reaches a local session it can't ignore
   hooks uninstall [--only <ids>]                          remove only landfall's hook entries
+  hooks policy [--init]                                   print the local production allow-list and
+                                                          exactly what each rule would report
 
 Run 'landfall <command>' with no further arguments for command-specific behavior.
 Docs: https://github.com/landfalls-ai/landfall-cli`;
@@ -244,17 +246,29 @@ async function main() {
     // an unfamiliar payload would be a guess. See ../src/hooks/run.mjs for
     // which event uses which, and why.
     if (HOOK_EVENT_IDS.includes(sub)) {
+      // `log` is stderr — every handler's own channel to the human. stdout
+      // stays empty except where a protocol (Cursor's JSON contract) requires it.
       const input = await readHookInput();
-      const { exitCode, error, stdout } = await runHookEvent(sub, { input, host });
+      const { exitCode, error, stdout } = await runHookEvent(sub, { input, host, log });
       if (stdout) process.stdout.write(stdout);
       if (error) log(error);
       process.exitCode = exitCode;
       return;
     }
 
+    // `hooks policy` prints the local prod allow-list and exactly what each
+    // rule would send (#233). It is the answer to "what leaves my machine?",
+    // so it prints to stdout like every other reporting subcommand.
+    if (sub === 'policy') {
+      const { lines, exitCode } = await runHooksPolicy(rest);
+      for (const line of lines) console.log(line);
+      process.exitCode = exitCode;
+      return;
+    }
+
     if (sub !== 'install' && sub !== 'uninstall') {
       log(
-        `usage: landfall hooks <install|uninstall|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall] [--host <id>]`,
+        `usage: landfall hooks <install|uninstall|policy|${HOOK_EVENT_IDS.join('|')}> [--only <ids>] [--dry-run] [--uninstall] [--host <id>]`,
       );
       process.exitCode = 2;
       return;

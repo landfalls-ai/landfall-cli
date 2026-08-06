@@ -8,7 +8,7 @@ import path from 'node:path';
 import { withSandbox, runCli, readJson } from '../install/helpers.mjs';
 import { enableFlagText } from '../../src/hooks/hosts/codex.mjs';
 
-test('Claude Code: matcher-group shape, all three events, under hooks.<Event>', async () => {
+test('Claude Code: matcher-group shape, every event, under hooks.<Event>', async () => {
   await withSandbox(async ({ homeDir }) => {
     await fs.mkdir(path.join(homeDir, '.claude'), { recursive: true });
     await runCli(['hooks', 'install', '--only', 'claude-code']);
@@ -31,6 +31,13 @@ test('Claude Code: matcher-group shape, all three events, under hooks.<Event>', 
         // and always fires, which is precisely why it is the half that speaks:
         // it is guaranteed to run when an idle session resumes.
         UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'landfall hooks user-prompt-submit' }] }],
+        // PreToolUse is the one event carrying a matcher for a different reason
+        // than FileChanged: #233 requires a non-matching command to add zero
+        // overhead, and scoping the registration to the shell tool is what
+        // stops an Edit or a Read from spawning a process at all.
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'landfall hooks pre-tool-use' }] },
+        ],
       },
     });
   });
@@ -97,7 +104,12 @@ test('Codex: hooks.json written AND codex_hooks flipped on in config.toml', asyn
     assert.match(stdout, /^Codex CLI: configured — set codex_hooks = true in /m);
 
     assert.deepEqual(await readJson(path.join(homeDir, '.codex', 'hooks.json')), {
-      hooks: { Stop: [{ hooks: [{ type: 'command', command: 'landfall hooks stop' }] }] },
+      hooks: {
+        Stop: [{ hooks: [{ type: 'command', command: 'landfall hooks stop' }] }],
+        PreToolUse: [
+          { matcher: 'Bash', hooks: [{ type: 'command', command: 'landfall hooks pre-tool-use' }] },
+        ],
+      },
     });
 
     const text = await fs.readFile(toml, 'utf8');

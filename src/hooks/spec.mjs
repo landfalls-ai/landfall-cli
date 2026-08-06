@@ -2,7 +2,7 @@
 // registers, in ONE place, so the installer, the uninstaller and the hook
 // handlers themselves can never disagree about what was written.
 //
-// Three events, all from story #190 (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1):
+// Four events (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1, §6):
 //
 //   stop          — refuse a silent conclusion while room events newer than the
 //                   session's last consumed seq exist (#225)
@@ -13,6 +13,12 @@
 //   user-prompt-submit
 //                 — DELIVER that staged digest as `additionalContext` on the
 //                   session's next prompt (#227). The half that can speak.
+//   pre-tool-use  — match a command about to run against the local prod
+//                   allow-list and, on the engineer's confirmation, declare the
+//                   classified intent (#233, story #192). Not registered for
+//                   Cursor: mapping our hooks onto its event vocabulary and
+//                   `{continue:false}` semantics is #228's job, and an entry
+//                   nothing yet honors is worse than no entry.
 //
 // The command every entry runs starts `landfall hooks <id>`. That prefix is
 // also how uninstall recognizes a landfall-authored entry it must NOT delete
@@ -52,6 +58,17 @@ export const HOOK_EVENTS = [
     // delivery half — it is the one event guaranteed to run when an idle
     // session resumes, and unlike `file-changed` its output is not discarded.
   },
+  {
+    id: 'pre-tool-use',
+    hosts: ['claude-code', 'codex'],
+    purpose: 'declare a confirmed production investigation to the war room',
+    // The one event where the matcher is load-bearing rather than meaningless.
+    // #233 requires that a non-matching command add zero overhead, and the
+    // cheapest way to add none at all is for the host never to spawn us:
+    // scoping the registration to the shell tool means an Edit, a Read or a
+    // web fetch costs nothing, not even a process.
+    matcher: 'Bash',
+  },
 ];
 
 /**
@@ -71,7 +88,7 @@ export function hookCommand(eventId, hostId) {
   return protocolForHost(hostId) === EXIT2 ? base : `${base} --host ${hostId}`;
 }
 
-/** The matcher an event registers with, or null when it needs none. */
+/** The tool-name matcher an event registers with, or null when it needs none. */
 export function matcherFor(eventId) {
   return HOOK_EVENTS.find((e) => e.id === eventId)?.matcher ?? null;
 }

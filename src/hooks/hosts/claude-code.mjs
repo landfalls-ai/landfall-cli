@@ -19,10 +19,17 @@ export const displayName = 'Claude Code';
 
 // Claude Code's hook shape: each event holds a list of matcher groups, each
 // group a list of `{type: 'command', command}` hooks. `matcher` is omitted for
-// Stop and UserPromptSubmit, neither of which supports one, and carried for
-// FileChanged — where it is not a refinement but the whole watch list, since an
-// absent matcher there watches nothing at all. See spec.mjs.
-const EVENT_KEY = { stop: 'Stop', 'file-changed': 'FileChanged', 'user-prompt-submit': 'UserPromptSubmit' };
+// Stop and UserPromptSubmit, neither of which supports one; carried for
+// FileChanged, where it is not a refinement but the whole watch list, since an
+// absent matcher there watches nothing at all; and carried for PreToolUse,
+// where narrowing to the shell tool is what keeps a non-matching command free
+// — see spec.mjs.
+const EVENT_KEY = {
+  stop: 'Stop',
+  'file-changed': 'FileChanged',
+  'user-prompt-submit': 'UserPromptSubmit',
+  'pre-tool-use': 'PreToolUse',
+};
 
 export function configPath() {
   return path.join(homedir(), '.claude', 'settings.json');

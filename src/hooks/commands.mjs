@@ -18,9 +18,12 @@
 //    detects; `--only` narrows it. The multi-select checklist exists for MCP
 //    registration because registering an agent it into a war room is a choice
 //    per agent. Hooks are the enhancement tier for hosts already registered.
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
 import { HOOK_HOSTS as DEFAULT_HOSTS } from './hosts.mjs';
 import { exitCodeForOutcomes } from '../install/report.mjs';
 import { isOnPath as defaultIsOnPath } from '../install/platform.mjs';
+import { loadPolicy, policyPath, starterPolicy, intentFor } from './policy.mjs';
 
 /**
  * Parse `landfall hooks` flags: `--only <ids>`, `--dry-run`, `--uninstall`, and
@@ -153,4 +156,63 @@ export async function runHooksUninstall(rest, deps = {}) {
   }
 
   return { outcomes, exitCode: exitCodeForOutcomes(outcomes) };
+}
+
+/**
+ * `landfall hooks policy [--init]` — print the production allow-list and,
+ * for every rule, the EXACT request body it would send.
+ *
+ * This command is not a convenience. #233's acceptance criterion is that "the
+ * engineer can read exactly what leaves the machine", and a policy file plus a
+ * promise about how it is interpreted does not satisfy that — the interpreter
+ * has to show its work. Because a rule's payload is built only from literals in
+ * the rule (see policy.mjs), what this prints IS the complete set of values
+ * this machine can ever send, with no caveats about what a matched command
+ * might add.
+ *
+ * `--init` writes a documented starter file, and refuses to touch an existing
+ * one: overwriting a policy someone tuned would be the worst possible outcome
+ * of a command that reads like an explanation.
+ */
+export async function runHooksPolicy(rest, deps = {}) {
+  const { load = loadPolicy, filePath = policyPath(), now = new Date(0) } = deps;
+  const lines = [];
+  const init = rest.includes('--init');
+
+  if (init) {
+    if (await fs.access(filePath).then(() => true, () => false)) {
+      lines.push(`policy already exists: ${filePath} (not overwritten)`);
+    } else {
+      await fs.mkdir(path.dirname(filePath), { recursive: true });
+      await fs.writeFile(filePath, JSON.stringify(starterPolicy(), null, 2) + '\n', 'utf8');
+      lines.push(`wrote starter policy: ${filePath}`);
+      lines.push('edit it, then re-run `landfall hooks policy` to see what each rule would send.');
+      return { lines, exitCode: 0 };
+    }
+  }
+
+  const { exists, rules, errors } = await load(filePath);
+  lines.push(`policy: ${filePath}`);
+  if (!exists) {
+    lines.push('  (no policy file — no command on this machine is reported; `--init` writes a starter)');
+    return { lines, exitCode: 0 };
+  }
+  for (const error of errors) lines.push(`  ! ${error}`);
+  if (!rules.length) {
+    lines.push('  (no usable rules — nothing is reported)');
+    return { lines, exitCode: errors.length ? 1 : 0 };
+  }
+
+  for (const rule of rules) {
+    lines.push('');
+    lines.push(`  ${rule.id}${rule.description ? ` — ${rule.description}` : ''}`);
+    lines.push(`    matches: ${rule.command}${rule.allOf.length ? ` containing all of ${rule.allOf.map((s) => JSON.stringify(s)).join(', ')}` : ' (any invocation)'}`);
+    if (rule.noneOf.length) {
+      lines.push(`    unless it contains any of ${rule.noneOf.map((s) => JSON.stringify(s)).join(', ')}`);
+    }
+    lines.push(`    sends: ${JSON.stringify({ ...intentFor(rule, now), startedAt: '<when you confirm>' })}`);
+  }
+  lines.push('');
+  lines.push('Nothing else is sent. The command line itself never leaves this machine.');
+  return { lines, exitCode: errors.length ? 1 : 0 };
 }

@@ -18,7 +18,7 @@
 // hook too. `never consume without delivering` is the invariant; delivery
 // happens in user-prompt-submit.mjs, and the cursor moves there.
 import { queryHookSockets } from './socket.mjs';
-import { buildInjection, INJECT_MAX } from './digest.mjs';
+import { buildInjection, owesUpdates, INJECT_MAX } from './digest.mjs';
 import { writeStage } from './stage.mjs';
 import { clearDoorbell } from './doorbell.mjs';
 
@@ -49,22 +49,25 @@ export async function runFileChangedHook({
     return { exitCode: 0, staged: false, context: '' };
   }
 
-  const injection = buildInjection(peeks);
+  // The peeks that are actually owed something, per session — not the assembled
+  // text. Delivery may need to speak for some of these sessions and not others
+  // (see `stage.mjs`), and that cut can only be made while they are still
+  // separate. Sessions owing nothing are dropped here so they never widen the
+  // stage beyond what it is entitled to deliver, and the same filtered array
+  // then answers both remaining questions: is there anything to say, and how
+  // much.
+  const owed = peeks.filter(owesUpdates);
+
+  const injection = buildInjection(owed);
   if (!injection.inject) {
     // Some other file changed, or another session already took this context.
     // Nothing to stage, and nothing we can prove is a stale bell.
     return { exitCode: 0, staged: false, context: '' };
   }
 
-  // The peeks that are actually owed something, per session — not the assembled
-  // text. Delivery may need to speak for some of these sessions and not others
-  // (see `stage.mjs`), and that cut can only be made while they are still
-  // separate. Sessions owing nothing are dropped here so they never widen the
-  // stage beyond what it is entitled to deliver.
-  const owed = peeks.filter((p) => (p?.response?.count ?? 0) > 0 || (p?.response?.dropped ?? 0) > 0);
   const staged = await stage({ peeks: owed }, { cwd, env, platform });
 
-  const total = peeks.reduce((n, p) => n + (p.response?.count ?? 0) + (p.response?.dropped ?? 0), 0);
+  const total = owed.reduce((n, p) => n + (p.response?.count ?? 0) + (p.response?.dropped ?? 0), 0);
   notify(nudgeLine(total));
 
   // Clear the bell only once the digest is safely staged. If staging failed the

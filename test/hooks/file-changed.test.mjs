@@ -231,32 +231,38 @@ function stagedPeek(socketPath, seq, text) {
   };
 }
 
-test('delivery prefers a live socket, and falls back to the stage', () => {
-  const live = { inject: true, context: 'live', consumes: [{ socketPath: '/s', upTo: 4 }] };
+/** A session that replied to the peek and has nothing left to hand over. */
+function silentPeek(socketPath, cursor = 4) {
+  return { socketPath, response: { ok: true, count: 0, dropped: 0, cursor, maxSeq: cursor, digest: [] } };
+}
+
+test('a live socket delivers, and the stage covers one that is gone', () => {
   const staged = { peeks: [stagedPeek('/gone', 9, 'staged')] };
 
-  assert.equal(chooseDelivery(live, staged).source, 'socket');
-  assert.equal(chooseDelivery(live, staged).context, 'live');
+  const live = chooseDelivery([stagedPeek('/s', 4, 'live')], null);
+  assert.equal(live.source, 'socket');
+  assert.match(live.context, /#4 .* live/);
   // serve exited between the wake and the prompt: the socket is gone, but the
   // context should still arrive. That case is the only reason a stage exists.
-  assert.equal(chooseDelivery({ inject: false }, staged).source, 'stage');
-  assert.match(chooseDelivery({ inject: false }, staged).context, /#9 .* staged/);
-  assert.equal(chooseDelivery({ inject: false }, null).inject, false);
-  assert.equal(chooseDelivery({ inject: false }, { peeks: [] }).inject, false);
+  assert.equal(chooseDelivery([], staged).source, 'stage');
+  assert.match(chooseDelivery([], staged).context, /#9 .* staged/);
+  assert.equal(chooseDelivery([], null).inject, false);
+  assert.equal(chooseDelivery([], { peeks: [] }).inject, false);
 });
 
-test('a session that answered outranks the stage even when it owes nothing', () => {
+test('a session that answered retires its own staged entry even when it owes nothing', () => {
   const staged = { peeks: [stagedPeek('/a', 9, 'a-only')] };
 
   // The distinction the whole rule turns on. "Nothing owed" from a session that
   // REPLIED means the events reached the agent some other way — flushPending
   // rides every tool call — so the stage is spent, not pending.
-  const answered = chooseDelivery({ inject: false }, staged, { answered: ['/a'] });
+  const answered = chooseDelivery([silentPeek('/a', 9)], staged);
   assert.equal(answered.inject, false, 'a spent stage must never re-inject');
   assert.equal(answered.staleStage, true, 'and must be dropped, not left to surface later');
 
-  // Same stage, same silent live answer — but its session never replied.
-  const gone = chooseDelivery({ inject: false }, staged, { answered: ['/someone-else'] });
+  // Same stage, same silent live answer — but from a different session, so /a
+  // itself was never reached.
+  const gone = chooseDelivery([silentPeek('/someone-else')], staged);
   assert.equal(gone.source, 'stage');
   assert.equal(gone.staleStage, false);
 });
@@ -270,7 +276,7 @@ test('a partially-reachable stage delivers ONLY the sessions that never answered
   // event, captioned "while you were idle".
   const both = { peeks: [stagedPeek('/a', 9, 'already-read-by-a'), stagedPeek('/b', 3, 'only-copy-for-b')] };
 
-  const partial = chooseDelivery({ inject: false }, both, { answered: ['/a'] });
+  const partial = chooseDelivery([silentPeek('/a', 9)], both);
   assert.equal(partial.source, 'stage');
   assert.match(partial.context, /only-copy-for-b/, 'the orphaned session still gets its context');
   assert.doesNotMatch(partial.context, /already-read-by-a/, 'the answering session must not be re-told');
@@ -282,24 +288,49 @@ test('a partially-reachable stage delivers ONLY the sessions that never answered
   );
 
   // Both gone: both portions are the only surviving copies, so both go.
-  const neither = chooseDelivery({ inject: false }, both, { answered: [] });
+  const neither = chooseDelivery([], both);
   assert.match(neither.context, /already-read-by-a/);
   assert.match(neither.context, /only-copy-for-b/);
 
   // Both answered: nothing left for the stage to speak for.
-  const spent = chooseDelivery({ inject: false }, both, { answered: ['/a', '/b'] });
+  const spent = chooseDelivery([silentPeek('/a', 9), silentPeek('/b', 3)], both);
   assert.equal(spent.inject, false);
   assert.equal(spent.staleStage, true);
+});
+
+test('live content never eclipses a staged session that is gone — both are delivered', () => {
+  // The third round of the same defect, in the opposite direction to the two
+  // above. Two windows share one workspace, so one stage covers both. /b's
+  // serve dies; /a is still live and still owes #9 of its own. Ranking the
+  // sources ("anyone owes something live → deliver that, source: socket")
+  // returns before the stage is ever read — and the caller then unstages
+  // unconditionally, DELETING /b's only surviving copy undelivered. So the
+  // sources must be unioned, not ranked.
+  const staged = { peeks: [stagedPeek('/a', 9, 'also-owed-live-by-a'), stagedPeek('/b', 3, 'only-copy-for-b')] };
+  const out = chooseDelivery([stagedPeek('/a', 9, 'also-owed-live-by-a')], staged);
+
+  assert.equal(out.inject, true);
+  assert.equal(out.source, 'socket+stage', 'both sources contributed, so neither may be named alone');
+  assert.match(out.context, /only-copy-for-b/, 'the dead session is delivered, not discarded behind a live one');
+  assert.match(out.context, /also-owed-live-by-a/, 'and the live session still gets its own');
+  assert.match(out.context, /^⚡ 2 update\(s\)/, 'one digest, one honest total across both sources');
+  assert.deepEqual(
+    out.consumes.map((c) => c.socketPath).sort(),
+    ['/a', '/b'],
+    'every session folded into the block has its cursor advanced',
+  );
+  assert.equal(out.staleStage, false);
+
+  // …and /a's staged entry is not delivered TWICE for being in both sources.
+  assert.equal(out.context.match(/also-owed-live-by-a/g).length, 1);
 });
 
 test('a stage whose orphaned sessions owe nothing is spent, not delivered empty', () => {
   // An orphan can be present and still have nothing to say — a stage written
   // for a session that was then consumed by another path before dying. It must
   // be dropped rather than injected as a zero-update block.
-  const empty = {
-    peeks: [{ socketPath: '/b', response: { ok: true, count: 0, dropped: 0, cursor: 4, maxSeq: 4, digest: [] } }],
-  };
-  const out = chooseDelivery({ inject: false }, empty, { answered: [] });
+  const empty = { peeks: [silentPeek('/b')] };
+  const out = chooseDelivery([], empty);
   assert.equal(out.inject, false);
   assert.equal(out.staleStage, true);
 });
@@ -420,6 +451,29 @@ test('the stage is dropped even when its sockets are gone, so it cannot re-injec
   assert.equal(res.injected, true);
   assert.equal(res.source, 'stage');
   assert.equal(unstaged, true, 'a delivered stage must never be delivered twice');
+});
+
+test('the prompt never unstages a session it did not deliver', async () => {
+  // The end-to-end shape of the union rule: window A is live and owes #9,
+  // window B's serve died holding #3, and one stage covers both. The block that
+  // goes out must contain B's event BEFORE `unstage()` destroys the only copy
+  // of it.
+  let emitted = '';
+  let unstagedAfter = null;
+  const res = await runUserPromptSubmitHook({
+    query: async () => [stagedPeek('/a', 9, 'live-for-a')],
+    stage: async () => ({ peeks: [stagedPeek('/a', 9, 'live-for-a'), stagedPeek('/b', 3, 'only-copy-for-b')] }),
+    send: async (socketPath) => { if (socketPath === '/b') throw new Error('ECONNREFUSED'); },
+    unstage: async () => { unstagedAfter = emitted; },
+    clear: async () => {},
+    emit: (t) => { emitted = t; },
+  });
+
+  assert.equal(res.injected, true);
+  assert.equal(res.source, 'socket+stage');
+  assert.match(res.context, /only-copy-for-b/, 'B was delivered, not deleted behind A');
+  assert.match(res.context, /live-for-a/);
+  assert.ok(unstagedAfter?.includes('only-copy-for-b'), 'and the stage went only after that block was emitted');
 });
 
 test('a partial consume failure leaves the bell ringing for the session it missed', async () => {
@@ -602,7 +656,9 @@ test('no polling: nothing in the hook path schedules a repeat', async () => {
   // modules would be a regression back to polling.
   const here = path.dirname(new URL(import.meta.url).pathname);
   const srcDir = path.join(here, '..', '..', 'src', 'hooks');
-  for (const file of ['doorbell.mjs', 'file-changed.mjs', 'stop.mjs', 'socket.mjs']) {
+  const files = ['doorbell.mjs', 'file-changed.mjs', 'stop.mjs', 'socket.mjs',
+    'user-prompt-submit.mjs', 'stage.mjs', 'digest.mjs'];
+  for (const file of files) {
     const text = await fs.readFile(path.join(srcDir, file), 'utf8');
     assert.ok(!/setInterval/.test(text), `${file} polls`);
   }

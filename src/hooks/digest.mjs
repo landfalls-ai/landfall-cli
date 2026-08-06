@@ -10,13 +10,23 @@ export const INJECT_MAX = 10_000;
 const DIGEST_MAX_LINES = 12;
 
 /**
+ * Does this `peek` answer have anything left to hand over? The one predicate
+ * that decides whether a session widens a digest, a stage or a delivery, so it
+ * lives here rather than being re-spelled at each of those three call sites.
+ *
+ * `dropped` counts too: a session whose queue overflowed owes the fact that it
+ * overflowed even when nothing readable survived.
+ */
+export function owesUpdates(peek) {
+  return (peek?.response?.count ?? 0) > 0 || (peek?.response?.dropped ?? 0) > 0;
+}
+
+/**
  * @param {{socketPath: string, response: object}[]} peeks
  * @returns {{inject: boolean, context: string, consumes: {socketPath: string, upTo: number}[]}}
  */
 export function buildInjection(peeks, { maxChars = INJECT_MAX } = {}) {
-  const owed = (Array.isArray(peeks) ? peeks : []).filter(
-    (p) => (p?.response?.count ?? 0) > 0 || (p?.response?.dropped ?? 0) > 0,
-  );
+  const owed = (Array.isArray(peeks) ? peeks : []).filter(owesUpdates);
   const total = owed.reduce((n, p) => n + (p.response.count ?? 0) + (p.response.dropped ?? 0), 0);
   if (!total) return { inject: false, context: '', consumes: [] };
 

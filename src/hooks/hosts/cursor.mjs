@@ -13,15 +13,24 @@
 // entry is declared superseded in ../spec.mjs so an upgrade replaces it in
 // place instead of stranding it as a permanent conflict.
 //
-// WHAT IS DELIBERATELY NOT REGISTERED HERE: `beforeSubmitPrompt`. It was named
-// as Cursor's stand-in for Claude Code's `FileChanged` — Cursor has no
-// file-watch hook — but its output schema is `{continue}` alone: it can refuse
-// a prompt and it cannot inject context, so it cannot deliver #227's spooled
-// digest to the model. What to do instead is a product question (drop it, or
-// repurpose it as a gate that refuses the HUMAN's next prompt while unread
-// room context exists), and it is open on issue #228. Registering it on a
-// guess would put an entry in a user's config that either does nothing or
-// silently blocks their typing — the exact mistake #222 avoided.
+// WHAT IS DELIBERATELY NOT REGISTERED HERE, AND WHY THAT IS NOW SETTLED:
+// `beforeSubmitPrompt`. It was named as Cursor's stand-in for Claude Code's
+// `FileChanged` — Cursor has no file-watch hook — but its output schema is
+// `{continue}` alone: it can refuse a prompt and it cannot inject context, so
+// it cannot deliver #227's spooled digest to the model.
+//
+// That left a product question — drop it, or repurpose it as a gate that
+// refuses the HUMAN's next prompt while unread room context exists — which was
+// DECIDED on issue #228 (2026-08-06): **drop it.** Cursor registers `stop` and
+// nothing else. A gate that refuses the person typing puts friction on a human
+// to solve an agent's problem, and `beforeSubmitPrompt` carries no channel to
+// explain itself, so the refusal would read as the editor silently breaking.
+//
+// Cursor therefore has no idle-session injection, on purpose. The only Cursor
+// events that CAN inject are `sessionStart` and `postToolUse` (both take
+// `additional_context`); pursuing those is tracked separately and is not this
+// file's business. Do not add `beforeSubmitPrompt` back — the guard test in
+// test/hooks/cursor-adapter.test.mjs pins the registered event set to `stop`.
 import path from 'node:path';
 import {
   planHookInstall,

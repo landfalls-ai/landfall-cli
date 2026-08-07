@@ -337,14 +337,20 @@ test('the superseded list names the exact string the old installer wrote', () =>
   assert.deepEqual(supersededHookCommands('file-changed', 'claude-code'), []);
 });
 
-test('beforeSubmitPrompt is deliberately not registered while its behaviour is undecided (#228)', async () => {
+test('Cursor registers `stop` and nothing else — beforeSubmitPrompt was dropped, not deferred (#228)', async () => {
   await withSandbox(async ({ homeDir }) => {
     const config = await cursorHome(homeDir);
     await runCli(['hooks', 'install', '--only', 'cursor']);
     // Cursor's beforeSubmitPrompt output schema is `{continue}` alone — it can
     // refuse a prompt, it cannot inject context, so it cannot carry #227's
-    // digest. Registering it on a guess would put an entry in a user's config
-    // that either does nothing or silently blocks their typing.
+    // digest. The alternative reading — a gate refusing the HUMAN's next prompt
+    // while unread room context exists — was DECIDED against on #228
+    // (2026-08-06): it puts friction on a person to solve an agent's problem,
+    // and the event carries no channel to explain the refusal.
+    //
+    // So this is a settled exclusion, not a placeholder. Asserting the exact
+    // key set (rather than just the absence of beforeSubmitPrompt) also keeps
+    // any OTHER event from being registered on Cursor without a decision.
     assert.deepEqual(Object.keys((await readJson(config)).hooks), ['stop']);
   });
 });

@@ -26,8 +26,12 @@ import {
   validateRoleArn,
 } from './aws.mjs';
 import { getCachedAccessToken, getCachedOrgSlug } from '../auth.mjs';
+import { DEFAULT_INSTANCE } from '../instance.mjs';
 
-const DEFAULT_API = 'https://api.landfalls.ai';
+// This file used to carry `const DEFAULT_API = 'https://api.landfalls.ai'`
+// while that hostname resolved NOWHERE, which is why `connect aws` had never
+// worked for anybody. The address now comes from the shared instance module,
+// and the hostname is real.
 
 /** Parse `connect aws` flags from argv (already past the subcommand words). */
 export function parseConnectFlags(argv) {
@@ -69,7 +73,7 @@ export async function runConnectAws(flags, deps = {}) {
   const getToken = deps.getToken ?? getCachedAccessToken;
   const getSlug = deps.getSlug ?? getCachedOrgSlug;
   const env = deps.env ?? process.env;
-  const baseUrl = (deps.baseUrl ?? env.LANDFALL_BASE_URL ?? DEFAULT_API).replace(/\/$/, '');
+  const baseUrl = (deps.baseUrl ?? env.LANDFALL_BASE_URL ?? DEFAULT_INSTANCE.api).replace(/\/$/, '');
 
   // 1. Session (FR-005) — before anything touches AWS or the network.
   const token = await getToken();
@@ -105,7 +109,7 @@ export async function runConnectAws(flags, deps = {}) {
   if (infoRes.status === 404) {
     error(
       'This Landfall deployment does not support automated AWS onboarding yet (no onboarding-info ' +
-        'endpoint). Use the manual path: https://docs.landfalls.ai/integrations/aws',
+        `endpoint). Use the manual path: ${DEFAULT_INSTANCE.docs}/integrations/aws`,
     );
     return 1;
   }
@@ -121,7 +125,7 @@ export async function runConnectAws(flags, deps = {}) {
   if (!info.available) {
     error(
       `Automated role onboarding is not available on this deployment: ${info.reason}\n` +
-        'Use keys-mode setup instead: https://docs.landfalls.ai/integrations/aws',
+        `Use keys-mode setup instead: ${DEFAULT_INSTANCE.docs}/integrations/aws`,
     );
     return 1;
   }

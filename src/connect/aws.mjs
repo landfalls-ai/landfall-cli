@@ -15,6 +15,10 @@
 // no value this module handles is ever interpolated into a shell string.
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
+// Documentation links come from the shared instance module, never a literal:
+// these messages used to hardcode a docs hostname that resolved nowhere, so
+// the "manual path" they offered as a fallback was itself a dead end.
+import { DEFAULT_INSTANCE } from '../instance.mjs';
 
 /** The one template this CLI build will hand to the customer's AWS tooling.
  * Changing any field is a reviewed CLI release, never a runtime decision. */
@@ -51,13 +55,13 @@ export async function fetchTemplate(fetchImpl = globalThis.fetch, pin = TEMPLATE
   } catch (e) {
     throw new Error(
       `could not fetch the pinned role template (${templateUrl(pin)}): ${e?.message ?? e}\n` +
-        `Check your network, or use the manual path: https://docs.landfalls.ai/integrations/aws`,
+        `Check your network, or use the manual path: ${DEFAULT_INSTANCE.docs}/integrations/aws`,
     );
   }
   if (!response.ok) {
     throw new Error(
       `the pinned role template answered HTTP ${response.status} (${templateUrl(pin)}).\n` +
-        `Use the manual path instead: https://docs.landfalls.ai/integrations/aws`,
+        `Use the manual path instead: ${DEFAULT_INSTANCE.docs}/integrations/aws`,
     );
   }
   const text = await response.text();
@@ -67,7 +71,7 @@ export async function fetchTemplate(fetchImpl = globalThis.fetch, pin = TEMPLATE
       `the fetched role template does not match the checksum this CLI release pinned ` +
         `(expected ${pin.sha256}, got ${digest}). Refusing to run it. ` +
         `Update the CLI (a newer release may pin a newer template), or use the manual path: ` +
-        `https://docs.landfalls.ai/integrations/aws`,
+        `${DEFAULT_INSTANCE.docs}/integrations/aws`,
     );
   }
   return text;

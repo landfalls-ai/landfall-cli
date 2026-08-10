@@ -12,8 +12,13 @@
 // hook's. The hook reports and relays; it never decides that a war room should
 // exist.
 import { getCachedAccessToken, getCachedOrgSlug } from '../auth.mjs';
+import { DEFAULT_INSTANCE } from '../instance.mjs';
 
-const DEFAULT_BASE_URL = 'http://localhost:3001';
+// No private default here. This file used to carry its own
+// `http://localhost:3001`, one of four separate answers to "where is
+// Landfall" that between them made the published CLI unusable. The resolved
+// address is passed in; DEFAULT_INSTANCE is the shared fallback, never a
+// locally-invented one.
 
 /** How long to wait on the API before giving up. A hook must not hang a shell. */
 export const DECLARE_TIMEOUT_MS = 5_000;
@@ -43,7 +48,7 @@ export async function resolveTarget(deps = {}) {
   }
   return {
     ok: true,
-    baseUrl: (env.LANDFALL_BASE_URL || DEFAULT_BASE_URL).replace(/\/$/, ''),
+    baseUrl: (env.LANDFALL_BASE_URL || DEFAULT_INSTANCE.api).replace(/\/$/, ''),
     slug,
     token,
   };

@@ -45,6 +45,13 @@ import { runHooksInstall, runHooksUninstall, runHooksPolicy, parseHookFlags } fr
 import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
 import { parseConnectFlags, runConnectAws } from '../src/connect/commands.mjs';
 import { readHookInput } from '../src/hooks/input.mjs';
+import {
+  DEFAULT_INSTANCE,
+  resolveInstance,
+  saveNomination,
+  clearNomination,
+  parseAddress,
+} from '../src/instance.mjs';
 import { startHookSocket } from '../src/hooks/socket.mjs';
 import { createDoorbell } from '../src/hooks/doorbell.mjs';
 
@@ -77,7 +84,7 @@ function parseArgs(argv) {
 function envConfig() {
   const env = process.env;
   const cfg = {
-    baseUrl: env.LANDFALL_BASE_URL ?? 'http://localhost:3001',
+    baseUrl: env.LANDFALL_BASE_URL ?? DEFAULT_INSTANCE.api,
     slug: env.LANDFALL_SLUG,
     incidentId: env.LANDFALL_INCIDENT,
     token: env.LANDFALL_TOKEN,
@@ -114,7 +121,7 @@ async function resolveConfig(link) {
     const token = await getCachedAccessToken();
     if (token) {
       log(`authenticated — joining incident ${target.incidentId} (workspace ${target.slug}) with no share link.`);
-      return { baseUrl: baseUrl ?? 'http://localhost:3001', slug: target.slug, incidentId: target.incidentId, token, agentLabel };
+      return { baseUrl: baseUrl ?? DEFAULT_INSTANCE.api, slug: target.slug, incidentId: target.incidentId, token, agentLabel };
     }
     // Feature 043 (T061, FR-055): an EXPIRED credential — including a legacy
     // Keycloak one this CLI can no longer refresh — produces an explicit
@@ -156,8 +163,9 @@ const HELP_TEXT = `landfall — join a Landfall war room from your terminal
 Usage: landfall <command> [options]
 
 Commands:
-  login                                                  sign in (browser); caches the session
+  login [--url <address>] [--save]                       sign in (browser); caches the session
   logout                                                 clear the cached session
+  instance [set <address> | reset]                       show or change which Landfall you use
   serve [--link URL]                                     (default) join + expose incident MCP tools over stdio
   join [URL]                                             join + keep presence alive (no MCP) — Ctrl-C to leave
   note "<text>"                                          post a one-off finding, then exit
@@ -187,7 +195,18 @@ async function main() {
   const { cmd, link, rest } = parseArgs(argv);
 
   if (cmd === 'login') {
-    await login(log);
+    // `--url` points this sign-in at a specific Landfall; `--save` also makes
+    // it the default for later commands. Both are opt-in: a customer who
+    // passes neither reaches the hosted service, which is the whole point.
+    const urlIdx = rest.indexOf('--url');
+    const url = urlIdx >= 0 ? rest[urlIdx + 1] : null;
+    const save = rest.includes('--save');
+    const instance = await resolveInstance({ url });
+    await login(log, { url, instance });
+    if (save) {
+      await saveNomination({ name: instance.name, web: instance.web, api: instance.api, docs: instance.docs });
+      log(`saved ${instance.web} as your Landfall. Undo with \`landfall instance reset\`.`);
+    }
     log('signed in — session cached. You can now join a war room with no share link.');
     return;
   }
@@ -195,6 +214,32 @@ async function main() {
   if (cmd === 'logout') {
     await logout();
     log('signed out — cleared the cached session.');
+    return;
+  }
+
+  // Which Landfall am I talking to, and why? The "why" is not decoration:
+  // seeing an unexpected address is only actionable if you can also see which
+  // setting produced it.
+  if (cmd === 'instance') {
+    const sub = rest[0];
+    if (sub === 'set') {
+      const address = parseAddress(rest[1], { label: 'instance address' });
+      await saveNomination({ name: 'custom', web: address, api: address, docs: DEFAULT_INSTANCE.docs });
+      log(`Landfall instance set to ${address}. Sign in with \`landfall login\`.`);
+      return;
+    }
+    if (sub === 'reset') {
+      const removed = await clearNomination();
+      log(removed ? `reset to the default (${DEFAULT_INSTANCE.web}).` : 'already using the default.');
+      return;
+    }
+    const instance = await resolveInstance();
+    const from = {
+      default: 'the built-in default',
+      config: 'your saved setting (`landfall instance reset` to clear)',
+      flag: 'the --url flag',
+    }[instance.source] ?? `${instance.source}`;
+    log(`web:  ${instance.web}\napi:  ${instance.api}\ndocs: ${instance.docs}\nfrom: ${from}`);
     return;
   }
 
@@ -386,4 +431,12 @@ async function main() {
   });
 }
 
-main().catch((e) => { log(`fatal: ${e.message}`); process.exit(1); });
+main().catch((e) => {
+  // An unreachable/misconfigured instance exits 2, kept distinct from a general
+  // failure so scripts and onboarding flows can tell "wrong address" from
+  // "wrong credentials". The message already carries the address and the fix,
+  // so it is printed as-is rather than prefixed with "fatal:".
+  if (e?.unreachable) { log(e.message); process.exit(e.exitCode ?? 2); }
+  log(`fatal: ${e.message}`);
+  process.exit(1);
+});

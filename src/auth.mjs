@@ -28,16 +28,27 @@
 //      │ write ~/.config/landfall/credentials.json (0600)
 //
 // Pure Node built-ins (http, crypto, fs) — no new dependency. Tokens are NEVER
-// logged. Config via env: LANDFALL_WEB_URL (sensible localhost default).
+// logged.
+//
+// Where the browser is sent comes from `src/instance.mjs` and NOWHERE else.
+// This file used to own its own `LANDFALL_WEB_URL ?? 'http://localhost:5173'`
+// default, which is the exact line that made `brew install landfall` followed
+// by `landfall login` fail for every customer: it printed a developer's local
+// dev-server address, opened a browser, and reported nothing while the browser
+// showed a connection error.
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { spawn } from 'node:child_process';
-
-/** The Landfall web app the browser is sent to. */
-const WEB_URL = () => (process.env.LANDFALL_WEB_URL ?? 'http://localhost:5173').replace(/\/$/, '');
+import {
+  resolveInstance,
+  probe,
+  describeFailure,
+  REACHABILITY,
+  EXIT_UNREACHABLE,
+} from './instance.mjs';
 
 /** How long to wait for the browser to complete the handoff. */
 const HANDOFF_TIMEOUT_MS = 5 * 60_000;
@@ -65,11 +76,18 @@ function openBrowser(url) {
   }
 }
 
-async function saveSession({ accessToken, expiresAt, orgSlug }) {
+async function saveSession({ accessToken, expiresAt, orgSlug, instance }) {
   await fs.mkdir(cacheDir(), { recursive: true });
   const body = JSON.stringify(
     {
       access_token: accessToken,
+      // WHICH Landfall minted this. Without it, a stored token can be silently
+      // presented to a deployment that never issued it once the resolved
+      // instance changes — the failure then looks like "your session broke"
+      // rather than "you are pointed somewhere else". A credential written
+      // before this field existed reads as unknown, which is treated as a
+      // mismatch and prompts a fresh sign-in rather than being assumed to match.
+      instance: instance ?? null,
       // A Landfall session is short-lived (1h) and is deliberately NOT
       // refreshable — there is no refresh token in this model. On expiry the
       // CLI asks for an explicit `landfall login` rather than silently doing
@@ -157,6 +175,32 @@ export async function logout() {
 }
 
 /**
+ * FR-014: is the cached session for the instance we are now pointed at?
+ *
+ * Returns an explanatory message when it is NOT, and null when it is fine.
+ *
+ * A credential written before this feature carries no instance at all. That
+ * reads as unknown, and unknown is treated as a MISMATCH rather than assumed
+ * to match: assuming would silently present an existing token to a host that
+ * never issued it, which is the precise thing recording the instance exists
+ * to prevent.
+ */
+export async function explainInstanceMismatch(resolved) {
+  const cache = await readCache();
+  if (!cache?.access_token) return null; // nothing cached; not a mismatch
+
+  const cachedApi = cache.instance?.api ?? null;
+  if (cachedApi === resolved.api) return null;
+
+  return cachedApi
+    ? `Your saved session is for ${cachedApi}, but you are now pointed at ${resolved.api}.\n` +
+        '  A session from one Landfall cannot be used against another.\n' +
+        '  Run `landfall login` to sign in to this one.'
+    : 'Your saved session predates instance tracking, so it cannot be confirmed to belong to ' +
+        `${resolved.api}.\n  Run \`landfall login\` to sign in again.`;
+}
+
+/**
  * Sign in via the browser handoff and cache the result. Returns the access
  * token. `log` is a stderr logger (it never prints token text).
  *
@@ -173,15 +217,35 @@ export async function logout() {
  * The nonce is compared in constant time. A timing side channel on a value an
  * attacker can retry is worth closing even when exploiting it is a stretch.
  */
-export async function login(log = () => {}, { orgSlug } = {}) {
+export async function login(log = () => {}, { orgSlug, url = null, instance = null } = {}) {
   const nonce = b64url(crypto.randomBytes(32));
+
+  // Resolved ONCE, and used for every check below. Resolving per-use is how
+  // a login could otherwise validate a callback against one origin while
+  // having sent the browser to another.
+  const resolved = instance ?? (await resolveInstance({ url }));
+  const webUrl = resolved.web;
+
+  // Preflight BEFORE the browser opens. The reported defect was not only the
+  // wrong address, it was being handed a browser error page as the only
+  // diagnosis. A timeout deliberately does not block: a strict check would
+  // turn a slow link or a proxy into "the product is broken".
+  const reach = await probe(webUrl);
+  if (reach === REACHABILITY.TIMEOUT) {
+    log(`warning: ${webUrl} did not answer quickly. Continuing anyway.`);
+  } else if (reach !== REACHABILITY.OK) {
+    const error = new Error(describeFailure(reach, resolved));
+    error.exitCode = EXIT_UNREACHABLE;
+    error.unreachable = true;
+    throw error;
+  }
 
   const session = await new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       // The browser POSTs cross-origin from the web app, so it preflights.
       if (req.method === 'OPTIONS') {
         res.writeHead(204, {
-          'access-control-allow-origin': WEB_URL(),
+          'access-control-allow-origin': webUrl,
           'access-control-allow-methods': 'POST, OPTIONS',
           'access-control-allow-headers': 'content-type',
         });
@@ -194,7 +258,7 @@ export async function login(log = () => {}, { orgSlug } = {}) {
         res.writeHead(404).end();
         return;
       }
-      if ((req.headers.origin ?? '') !== WEB_URL()) {
+      if ((req.headers.origin ?? '') !== webUrl) {
         res.writeHead(403).end();
         return;
       }
@@ -224,7 +288,7 @@ export async function login(log = () => {}, { orgSlug } = {}) {
 
         res.writeHead(200, {
           'content-type': 'application/json',
-          'access-control-allow-origin': WEB_URL(),
+          'access-control-allow-origin': webUrl,
         });
         res.end(JSON.stringify({ ok: true }));
         clearTimeout(timer);
@@ -250,7 +314,7 @@ export async function login(log = () => {}, { orgSlug } = {}) {
     server.listen(0, '127.0.0.1', () => {
       const port = server.address().port;
       const handoffUrl =
-        `${WEB_URL()}/cli-auth?` +
+        `${webUrl}/cli-auth?` +
         new URLSearchParams({
           port: String(port),
           nonce,
@@ -265,7 +329,7 @@ export async function login(log = () => {}, { orgSlug } = {}) {
     });
   });
 
-  await saveSession(session);
+  await saveSession({ ...session, instance: resolved });
   return session.accessToken;
 }
 

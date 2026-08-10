@@ -43,6 +43,7 @@ import { runInstall, runUninstall } from '../src/install/commands.mjs';
 import { formatOutcomeLine } from '../src/install/report.mjs';
 import { runHooksInstall, runHooksUninstall, runHooksPolicy, parseHookFlags } from '../src/hooks/commands.mjs';
 import { runHookEvent, HOOK_EVENT_IDS } from '../src/hooks/run.mjs';
+import { parseConnectFlags, runConnectAws } from '../src/connect/commands.mjs';
 import { readHookInput } from '../src/hooks/input.mjs';
 import { startHookSocket } from '../src/hooks/socket.mjs';
 import { createDoorbell } from '../src/hooks/doorbell.mjs';
@@ -163,6 +164,10 @@ Commands:
   leave                                                   leave the incident
   install [--yes] [--only <ids>] [--dry-run]              register this machine's coding agents
   uninstall [--yes] [--only <ids>]                        remove that registration
+  connect aws [--terraform] [--name <id>] [--region <r>]  connect your AWS account: creates a
+              [--management --member <acct>[,...]]        read-only role with YOUR own aws CLI
+                                                          (or prints Terraform), registers and
+                                                          health-checks the connection
   hooks install [--only <ids>] [--dry-run] [--uninstall]  register lifecycle hooks so room context
                                                           reaches a local session it can't ignore
   hooks uninstall [--only <ids>]                          remove only landfall's hook entries
@@ -228,6 +233,32 @@ async function main() {
     process.on('SIGTERM', shutdown);
     log('presence keep-alive running (Ctrl-C to leave).');
     return; // heartbeat interval keeps the process alive
+  }
+
+  if (cmd === 'connect') {
+    // Feature 081 (landfalls-ai/landfall#1168): one-command AWS onboarding.
+    const provider = rest[0];
+    if (provider !== 'aws') {
+      log(`usage: landfall connect aws [--terraform] [--name <id>] [--region <r>] [--management --member <acct>[,...] [--member-role-name <name>]]`);
+      process.exitCode = 2;
+      return;
+    }
+    const parsed = parseConnectFlags(rest.slice(1));
+    if (parsed.error) {
+      log(parsed.error);
+      process.exitCode = 2;
+      return;
+    }
+    const { createInterface } = await import('node:readline/promises');
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      process.exitCode = await runConnectAws(parsed.flags, {
+        prompt: (q) => rl.question(q),
+      });
+    } finally {
+      rl.close();
+    }
+    return;
   }
 
   if (cmd === 'hooks') {

@@ -38,7 +38,13 @@ import { buildBridgeTools, consumeUpTo, createBridgeSession, EDGE_AGENT_INSTRUCT
 import { runStdioServer } from '../src/mcp.mjs';
 import { redeemShareLink } from '../src/link.mjs';
 import { watchIncident, describeEvent } from '../src/live.mjs';
-import { login, logout, getCachedAccessToken, explainExpiredCredential } from '../src/auth.mjs';
+import {
+  login,
+  logout,
+  getCachedAccessToken,
+  explainExpiredCredential,
+  explainInstanceMismatch,
+} from '../src/auth.mjs';
 import { runInstall, runUninstall } from '../src/install/commands.mjs';
 import { formatOutcomeLine } from '../src/install/report.mjs';
 import { runHooksInstall, runHooksUninstall, runHooksPolicy, parseHookFlags } from '../src/hooks/commands.mjs';
@@ -120,6 +126,18 @@ async function resolveConfig(link) {
   if (target) {
     const token = await getCachedAccessToken();
     if (token) {
+      // FR-014: a token is only good against the Landfall that minted it.
+      // Without this check a session cached against one instance is sent
+      // blindly to another and fails as an opaque 401, which reads as "your
+      // session broke" rather than "you are pointed somewhere else". A
+      // credential written before instances were recorded reads as unknown,
+      // which counts as a mismatch rather than being assumed to match.
+      const resolved = await resolveInstance({ env: process.env });
+      const mismatch = await explainInstanceMismatch({ ...resolved, api: baseUrl ?? resolved.api });
+      if (mismatch) {
+        log(mismatch);
+        return null;
+      }
       log(`authenticated — joining incident ${target.incidentId} (workspace ${target.slug}) with no share link.`);
       return { baseUrl: baseUrl ?? DEFAULT_INSTANCE.api, slug: target.slug, incidentId: target.incidentId, token, agentLabel };
     }

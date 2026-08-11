@@ -15,10 +15,14 @@ brew tap landfalls-ai/landfall
 brew install landfall
 ```
 
-Or without Homebrew, install directly from a tagged release:
+Or without Homebrew, install directly from a tagged release. Replace `<tag>` with the
+newest tag from the [releases page](https://github.com/landfalls-ai/landfall-cli/releases)
+(this line intentionally does not pin one itself — `brew upgrade landfall` tracks new
+releases automatically; a hardcoded version here would go stale on every release with
+nothing to catch it, which is exactly what happened to the `v0.1.0` this used to say):
 
 ```
-npm install -g "github:landfalls-ai/landfall-cli#v0.1.0"
+npm install -g "github:landfalls-ai/landfall-cli#<tag>"
 ```
 
 ## `landfall install`: auto-register every coding agent on your machine

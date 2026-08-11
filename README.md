@@ -1,5 +1,7 @@
 # `landfall` CLI
 
+<img src="./docs/assets/voyage-storm-to-shore.gif" alt="A ship sailing through a storm to shore" width="100%" />
+
 Join a [Landfall](https://landfalls.ai) war room from your own computer and have your
 **favorite MCP-capable agent** (Claude Code, Codex, Cursor, VS Code, Claude Desktop,
 Windsurf, …) become a **live investigator** in the shared room: its findings land on

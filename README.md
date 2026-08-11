@@ -263,10 +263,17 @@ session — after that you join any war room in your org directly, no share link
 
 ```
 landfall login       # opens your browser; you sign in however your org normally does
-landfall logout      # clear the cached session
+landfall logout      # clear the cached session (and revoke it server-side)
 # then, with a plain incident URL or LANDFALL_SLUG + LANDFALL_INCIDENT set:
 landfall serve       # joins as your authenticated identity — no share link needed
 ```
+
+The signed-in session renews itself silently in the background — no re-prompt, no
+flag to turn on. `landfall login`'s 1-hour access token is exchanged for a fresh one
+automatically the moment it's needed, for as long as that stays valid (30 days,
+sliding). You only see the browser again if that itself expires, or is revoked —
+explicitly by `landfall logout`, or organization-wide by an admin's "revoke all
+sessions".
 
 Non-members / guests keep using the single-use **share link** below. If an org admin
 has turned on **Guest join**, an unauthenticated person can redeem a share link as a

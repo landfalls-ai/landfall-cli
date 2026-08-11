@@ -24,11 +24,30 @@
 //      │                               ├─ authenticate via the org's branch
 //      │                               └─ POST /auth/cli-handoff ─► mint a
 //      │                                                            session
-//      │ ◄── POST http://127.0.0.1:<port>/callback { accessToken, … }
+//      │                                                            + refresh
+//      │                                                            token
+//      │ ◄── POST http://127.0.0.1:<port>/callback { accessToken, refreshToken, … }
 //      │ write ~/.config/landfall/credentials.json (0600)
 //
-// Pure Node built-ins (http, crypto, fs) — no new dependency. Tokens are NEVER
-// logged.
+// ── Refresh, seamlessly, in the background (feature 104) ───────────────────
+// The 1-hour access token used to be a dead end: once it expired, every
+// command failed until the user noticed and ran `landfall login` again
+// through a full browser round trip. It no longer is. Every credential this
+// file writes now carries a refresh token too (`POST /auth/cli-refresh`,
+// unauthenticated by session on purpose — it has to work precisely when the
+// access token has already expired), and `getCachedAccessToken()` uses it
+// silently: an expired-or-near-expiry access token is exchanged for a fresh
+// rotated pair before the caller ever sees a `null`. No visible re-auth
+// prompt, no flag to opt in — this is what "signed in" now means. The only
+// time a human sees a prompt again is when the refresh token itself is dead:
+// expired past its own (30-day, sliding) window, or revoked — explicitly by
+// `landfall logout` (now a real server call, not just a local file delete),
+// or organization-wide by that org's own "revoke all sessions" action, which
+// a pinned refresh silently re-checks on every use. `explainExpiredCredential`
+// is what prints the fallback instruction at that point.
+//
+// Pure Node built-ins (http, crypto, fs, fetch) — no new dependency. Tokens
+// are NEVER logged.
 //
 // Where the browser is sent comes from `src/instance.mjs` and NOWHERE else.
 // This file used to own its own `LANDFALL_WEB_URL ?? 'http://localhost:5173'`
@@ -76,7 +95,7 @@ function openBrowser(url) {
   }
 }
 
-async function saveSession({ accessToken, expiresAt, orgSlug, instance }) {
+async function saveSession({ accessToken, refreshToken, expiresAt, orgSlug, instance }) {
   await fs.mkdir(cacheDir(), { recursive: true });
   const body = JSON.stringify(
     {
@@ -88,10 +107,12 @@ async function saveSession({ accessToken, expiresAt, orgSlug, instance }) {
       // before this field existed reads as unknown, which is treated as a
       // mismatch and prompts a fresh sign-in rather than being assumed to match.
       instance: instance ?? null,
-      // A Landfall session is short-lived (1h) and is deliberately NOT
-      // refreshable — there is no refresh token in this model. On expiry the
-      // CLI asks for an explicit `landfall login` rather than silently doing
-      // anything on the user's behalf.
+      // The access token is short-lived (1h) but IS refreshable (feature
+      // 104) — `refresh_token` is the credential `refreshAccessToken` presents
+      // to renew it silently, in the background, with no visible prompt.
+      // Absent only for a credential written by a pre-104 CLI/server pair
+      // (graceful degradation: treated as legacy, never assumed refreshable).
+      refresh_token: refreshToken ?? null,
       expires_at: typeof expiresAt === 'string' ? Date.parse(expiresAt) : Date.now() + 3_540_000,
       org_slug: orgSlug ?? null,
       iss: 'landfall-core',
@@ -111,25 +132,88 @@ async function readCache() {
   }
 }
 
+// How much of the access token's remaining lifetime is "close enough to
+// expired" to refresh proactively, rather than waiting for a caller to see a
+// 401 mid-request. 1 minute — generous next to the 1h access-token TTL, cheap
+// against the 30-day refresh-token one.
+const REFRESH_SKEW_MS = 60_000;
+
 /**
- * A valid cached access token, or `null` if the user must `landfall login`.
- * Never triggers a browser flow on its own.
+ * A valid cached access token, refreshing it silently in the background first
+ * if it is expired or within {@link REFRESH_SKEW_MS} of expiring — or `null`
+ * if the user must `landfall login` (no cached session, or the refresh token
+ * itself is dead: expired, reused, or revoked). Never triggers a BROWSER flow
+ * on its own; the background refresh is a single unauthenticated HTTP call
+ * (feature 104) — see {@link refreshAccessToken}.
  *
  * ── Graceful degradation of an existing Keycloak credential (T061, FR-055) ──
  * A credential cached by the PREVIOUS Keycloak flow is still honoured until it
  * expires — the API continues to accept Keycloak tokens (for internal
  * organizations), so nothing breaks mid-session. Once expired it cannot be
- * refreshed by this file any more, and {@link explainExpiredCredential}
- * produces an explicit instruction. Never a silent failure: a CLI that quietly
- * stops working during an incident is worse than one that says what to do.
+ * refreshed (it predates refresh tokens entirely — `refresh_token` is absent,
+ * so {@link refreshAccessToken} declines rather than guessing), and
+ * {@link explainExpiredCredential} produces an explicit instruction. Never a
+ * silent failure: a CLI that quietly stops working during an incident is
+ * worse than one that says what to do.
  */
-export async function getCachedAccessToken() {
+export async function getCachedAccessToken({ fetchImpl } = {}) {
   const cache = await readCache();
   if (!cache?.access_token) return null;
-  if (typeof cache.expires_at === 'number' && cache.expires_at > Date.now()) {
+  if (typeof cache.expires_at === 'number' && cache.expires_at - Date.now() > REFRESH_SKEW_MS) {
     return cache.access_token;
   }
-  return null;
+  return await refreshAccessToken({ fetchImpl });
+}
+
+/**
+ * Silently exchange the cached refresh token for a fresh, rotated pair
+ * (`POST /auth/cli-refresh`, contracts/cli-refresh.md) and persist the
+ * result. Returns the new access token, or `null` — with nothing written —
+ * if there is nothing to refresh with, the call fails, or the server refuses
+ * it (FR-011: every refusal reason collapses to the same shape here — an
+ * unknown, expired, reused, or org-revoked refresh token all look identical
+ * from this side, on purpose; the specific cause lives only in the server's
+ * own audit record).
+ *
+ * Targets `cache.instance.api` — the SAME Landfall that minted the chain —
+ * never whichever instance happens to be currently resolved. A credential
+ * predating instance tracking (`instance` absent) has nothing to target and
+ * is declined the same as one with no refresh token at all.
+ */
+export async function refreshAccessToken({ fetchImpl = globalThis.fetch } = {}) {
+  const cache = await readCache();
+  if (!cache?.refresh_token || !cache?.instance?.api) return null;
+
+  let res;
+  try {
+    res = await fetchImpl(`${cache.instance.api}/auth/cli-refresh`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ refreshToken: cache.refresh_token }),
+    });
+  } catch {
+    // Offline, DNS failure, whatever — indistinguishable from "could not
+    // refresh" here. The caller falls back to the expired-credential path.
+    return null;
+  }
+  if (!res.ok) return null; // 401: uniform refusal — see doc comment above.
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    return null;
+  }
+  if (typeof body.accessToken !== 'string' || typeof body.refreshToken !== 'string') return null;
+
+  await saveSession({
+    accessToken: body.accessToken,
+    refreshToken: body.refreshToken,
+    expiresAt: body.expiresAt,
+    orgSlug: cache.org_slug ?? null,
+    instance: cache.instance,
+  });
+  return body.accessToken;
 }
 
 /** True if an unexpired session is cached. */
@@ -170,7 +254,31 @@ export async function explainExpiredCredential() {
     : 'Your Landfall session has expired. Run `landfall login` to sign in again.';
 }
 
-export async function logout() {
+/**
+ * Sign out. Revokes the refresh chain server-side FIRST (`POST
+ * /auth/cli-logout`, feature 104, FR-008) — without this, a stray copy of the
+ * old credential file left on a backup or another machine could keep
+ * refreshing silently after an explicit sign-out, which would make "sign
+ * out" a lie. Best-effort and silent on failure (RFC 7009's own convention,
+ * matching what the endpoint itself does for an unknown token): local
+ * sign-out must still succeed even offline, so a failed or unreachable
+ * revoke call never blocks clearing the local file. A pre-104 credential (no
+ * `refresh_token`/`instance` recorded) has nothing to revoke and skips
+ * straight to the local delete, exactly as before this feature existed.
+ */
+export async function logout({ fetchImpl = globalThis.fetch } = {}) {
+  const cache = await readCache();
+  if (cache?.refresh_token && cache?.instance?.api) {
+    try {
+      await fetchImpl(`${cache.instance.api}/auth/cli-logout`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ refreshToken: cache.refresh_token }),
+      });
+    } catch {
+      /* offline or unreachable — local sign-out still proceeds below */
+    }
+  }
   await fs.rm(cachePath(), { force: true });
 }
 
@@ -295,6 +403,11 @@ export async function login(log = () => {}, { orgSlug, url = null, instance = nu
         server.close();
         resolve({
           accessToken: payload.accessToken,
+          // Feature 104: present on every server new enough to mint one.
+          // Tolerated as absent against an older API (graceful degradation —
+          // the credential is then simply not refreshable, same as a legacy
+          // Keycloak one) rather than rejecting the handoff over it.
+          refreshToken: typeof payload.refreshToken === 'string' ? payload.refreshToken : undefined,
           expiresAt: payload.expiresAt,
           orgSlug: payload.orgSlug ?? orgSlug ?? null,
         });

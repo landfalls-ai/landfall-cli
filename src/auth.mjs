@@ -12,22 +12,47 @@
 // FR-056 and SC-010 say there must be exactly one such place, and it lives in
 // the core API's own auth-branch resolver — this CLI never re-implements it.
 //
-// So the CLI now does the least it possibly can: bind a loopback listener, open
-// the Landfall web app, and wait for a session to be handed back. The browser
-// authenticates through WHICHEVER branch that organization uses — password, the
-// organization's own OIDC provider, or (personnel only) Keycloak — and the CLI
-// never learns or cares which.
+// So the CLI does the least it possibly can: open the Landfall web app and
+// wait for a session to be handed back. The browser authenticates through
+// WHICHEVER branch that organization uses — password, the organization's own
+// OIDC provider, or (personnel only) Keycloak — and the CLI never learns or
+// cares which.
 //
 //     CLI                          browser                 Landfall web / API
-//      │ bind 127.0.0.1:<port>
-//      │ open ────────────────────► /cli-auth?port=…&nonce=…
+//      │ open ────────────────────► /cli-auth?nonce=…
 //      │                               ├─ authenticate via the org's branch
-//      │                               └─ POST /auth/cli-handoff ─► mint a
-//      │                                                            session
-//      │                                                            + refresh
-//      │                                                            token
-//      │ ◄── POST http://127.0.0.1:<port>/callback { accessToken, refreshToken, … }
+//      │                               └─ POST /auth/cli-handoff ─► mint +
+//      │                                                            STORE a
+//      │                                                            redeemable
+//      │                                                            grant
+//      │ poll ─── POST /auth/cli-handoff/poll {nonce} ─────────────► redeem
+//      │ ◄──────────────────────────────────────────── { accessToken, … }
 //      │ write ~/.config/landfall/credentials.json (0600)
+//
+// ── Why this is a POLL now, not a loopback listener (2026-08-11) ──────────
+// This used to bind `http.createServer` on a loopback port and have the
+// BROWSER push the finished session to it (`POST http://<host>:<port>/
+// callback`). That mechanism needed three separate patches in one day and
+// was still broken:
+//   1. Chrome's Private Network Access policy silently failed the push
+//      unless the preflight response carried an extra header (fixed).
+//   2. Safari refused the push entirely regardless of that header — tried
+//      fetching `127.0.0.1`, then `localhost` after a live report, neither
+//      fixed it.
+//   3. The actual cause, found by inspecting Safari's own Network panel
+//      live: zero request entry at all — WebKit refuses to even ATTEMPT an
+//      `https:` page's `fetch()` to any `http:` target, loopback or not. No
+//      hostname choice fixes a categorical block.
+//
+// Rather than a fourth patch to the same mechanism, the monorepo's
+// `POST /auth/cli-handoff` now ALSO stores a redeemable grant server-side
+// (keyed by this same `nonce`), and the CLI retrieves it over an ordinary
+// outbound HTTPS poll — exactly the same shape as `refreshAccessToken`/
+// `logout` below already use. No browser involvement in this half of the
+// flow at all, so CORS/mixed-content/Private-Network-Access simply do not
+// apply — there is no cross-origin request for any of them to govern.
+// `preflightHeaders`/the loopback `http.createServer` this file used to
+// export are gone with it; see git history if you need the old shape.
 //
 // ── Refresh, seamlessly, in the background (feature 104) ───────────────────
 // The 1-hour access token used to be a dead end: once it expired, every
@@ -55,7 +80,6 @@
 // by `landfall login` fail for every customer: it printed a developer's local
 // dev-server address, opened a browser, and reported nothing while the browser
 // showed a connection error.
-import http from 'node:http';
 import crypto from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
@@ -72,6 +96,17 @@ import {
 /** How long to wait for the browser to complete the handoff. */
 const HANDOFF_TIMEOUT_MS = 5 * 60_000;
 
+/** How often to poll `POST /auth/cli-handoff/poll` while waiting. Short
+ * enough that signing in feels immediate once the browser tab shows
+ * "Command line connected"; long enough that a login storm from many
+ * teammates behind one office NAT stays well under the endpoint's
+ * per-IP rate limit (120/min at the time of writing). */
+const POLL_INTERVAL_MS = 1_500;
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function cacheDir() {
   const base = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config');
   return path.join(base, 'landfall');
@@ -82,35 +117,6 @@ function cachePath() {
 
 function b64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-
-/**
- * CORS + Chrome Private Network Access preflight headers for the loopback
- * callback listener `login()` binds. Pulled out into its own function so it
- * is unit-testable without going through `login()` itself — that function
- * also `probe()`s the web app and calls `openBrowser()` (a real, best-effort
- * `spawn('open'|'xdg-open', …)`), which is exactly why no test in this suite
- * drives it end to end (see test/cli-refresh.test.mjs's header comment).
- *
- * `access-control-allow-private-network: true` is the one that matters and
- * was MISSING until this fix: Chrome's Private Network Access policy gives
- * an HTTPS page fetching a private/loopback address (this listener) a
- * SEPARATE preflight check on top of ordinary CORS, and silently fails the
- * whole request — no error surfaced to the page's JS beyond a generic
- * "Failed to fetch" — unless the preflight response carries this header.
- * Without it, every `landfall login` handoff hung on "Connecting your
- * command line…" until the 5-minute timeout, in EVERY Chromium browser
- * enforcing PNA (Chrome, Edge, Brave, …) — confirmed live against real
- * Chrome, 2026-08-11. Firefox/Safari don't enforce PNA and were never
- * affected, which is exactly why this went unnoticed until now.
- */
-export function preflightHeaders(webUrl) {
-  return {
-    'access-control-allow-origin': webUrl,
-    'access-control-allow-methods': 'POST, OPTIONS',
-    'access-control-allow-headers': 'content-type',
-    'access-control-allow-private-network': 'true',
-  };
 }
 
 /** Open a URL in the user's default browser (best-effort, cross-platform). */
@@ -338,28 +344,78 @@ export async function explainInstanceMismatch(resolved) {
 }
 
 /**
+ * Poll `POST /auth/cli-handoff/poll` for the session the browser's
+ * `POST /auth/cli-handoff` call already stashed under this `nonce`.
+ *
+ * ── Why the nonce alone is enough here ──────────────────────────────────
+ * This is the SAME nonce `login()` put in the URL it sent the browser to —
+ * a 256-bit value nobody else ever sees, so presenting it back is proof of
+ * having been the one who opened that link. The server enforces the rest:
+ * an exact-hash lookup only (no listing/enumeration is possible), and
+ * single-use via an atomic conditional update, so a retried poll — a
+ * normal event; this loop has no way to know its previous request landed —
+ * can never redeem the same grant twice.
+ *
+ * A 404 means "not yet" and is indistinguishable, on purpose, from "never
+ * existed" — this loop treats both identically and just keeps polling
+ * until `HANDOFF_TIMEOUT_MS`. A network blip gets the same treatment: the
+ * browser side of this flow can take minutes (typing a password, clicking
+ * through an SSO redirect), so one failed request is never a reason to
+ * give up early.
+ */
+export async function pollForHandoff(
+  apiUrl,
+  nonce,
+  orgSlug,
+  { fetchImpl = globalThis.fetch, intervalMs = POLL_INTERVAL_MS, timeoutMs = HANDOFF_TIMEOUT_MS } = {},
+) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    await sleep(intervalMs);
+
+    let res;
+    try {
+      res = await fetchImpl(`${apiUrl}/auth/cli-handoff/poll`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nonce }),
+      });
+    } catch {
+      continue; // offline / DNS blip — keep polling until the deadline
+    }
+    if (!res.ok) continue; // 404 "not yet" (or any other refusal) — keep polling
+
+    let body;
+    try {
+      body = await res.json();
+    } catch {
+      continue;
+    }
+    if (typeof body.accessToken !== 'string' || body.accessToken.length === 0) continue;
+
+    return {
+      accessToken: body.accessToken,
+      // Feature 104: present on every server new enough to mint one.
+      // Tolerated as absent against an older API (graceful degradation —
+      // the credential is then simply not refreshable, same as a legacy
+      // Keycloak one) rather than rejecting the handoff over it.
+      refreshToken: typeof body.refreshToken === 'string' ? body.refreshToken : undefined,
+      expiresAt: body.expiresAt,
+      orgSlug: body.orgSlug ?? orgSlug ?? null,
+    };
+  }
+  throw new Error('timed out waiting for the browser to complete sign-in');
+}
+
+/**
  * Sign in via the browser handoff and cache the result. Returns the access
  * token. `log` is a stderr logger (it never prints token text).
- *
- * ── Why the loopback listener does not simply trust whatever arrives ───────
- * `127.0.0.1:<port>` is reachable by EVERY process on the machine, so an
- * unrelated local program could POST a token of its own choosing and make the
- * CLI act as an attacker's account. Two checks prevent that, and both matter:
- *
- *   • a one-time `nonce` the CLI generated and passed in the opening URL must
- *     come back — so only something that saw that URL can complete the flow;
- *   • the `Origin` must be the Landfall web app — so an unrelated page in the
- *     user's browser cannot post to the listener.
- *
- * The nonce is compared in constant time. A timing side channel on a value an
- * attacker can retry is worth closing even when exploiting it is a stretch.
  */
 export async function login(log = () => {}, { orgSlug, url = null, instance = null } = {}) {
   const nonce = b64url(crypto.randomBytes(32));
 
   // Resolved ONCE, and used for every check below. Resolving per-use is how
-  // a login could otherwise validate a callback against one origin while
-  // having sent the browser to another.
+  // a login could otherwise probe one origin while polling another.
   const resolved = instance ?? (await resolveInstance({ url }));
   const webUrl = resolved.web;
 
@@ -377,109 +433,21 @@ export async function login(log = () => {}, { orgSlug, url = null, instance = nu
     throw error;
   }
 
-  const session = await new Promise((resolve, reject) => {
-    const server = http.createServer((req, res) => {
-      // The browser POSTs cross-origin from the web app, so it preflights —
-      // see preflightHeaders()'s doc comment for what's in the response and why.
-      if (req.method === 'OPTIONS') {
-        res.writeHead(204, preflightHeaders(webUrl));
-        res.end();
-        return;
-      }
+  const handoffUrl =
+    `${webUrl}/cli-auth?` +
+    new URLSearchParams({
+      nonce,
+      ...(orgSlug ? { org: orgSlug } : {}),
+    }).toString();
+  log(
+    `opening your browser to sign in… if it does not open, visit:\n${handoffUrl}\n` +
+      'You will sign in the same way you sign in to Landfall on the web — with your ' +
+      'password, or through your organization’s identity provider.',
+  );
+  openBrowser(handoffUrl);
 
-      const url = new URL(req.url, 'http://127.0.0.1');
-      if (url.pathname !== '/callback' || req.method !== 'POST') {
-        res.writeHead(404).end();
-        return;
-      }
-      if ((req.headers.origin ?? '') !== webUrl) {
-        res.writeHead(403).end();
-        return;
-      }
-
-      let body = '';
-      req.on('data', (chunk) => {
-        body += chunk;
-        // A local process must not be able to exhaust memory here.
-        if (body.length > 16_384) req.destroy();
-      });
-      req.on('end', () => {
-        let payload;
-        try {
-          payload = JSON.parse(body);
-        } catch {
-          res.writeHead(400).end();
-          return;
-        }
-        if (!constantTimeEquals(String(payload.nonce ?? ''), nonce)) {
-          res.writeHead(403).end();
-          return;
-        }
-        if (typeof payload.accessToken !== 'string' || payload.accessToken.length === 0) {
-          res.writeHead(400).end();
-          return;
-        }
-
-        res.writeHead(200, {
-          'content-type': 'application/json',
-          'access-control-allow-origin': webUrl,
-        });
-        res.end(JSON.stringify({ ok: true }));
-        clearTimeout(timer);
-        server.close();
-        resolve({
-          accessToken: payload.accessToken,
-          // Feature 104: present on every server new enough to mint one.
-          // Tolerated as absent against an older API (graceful degradation —
-          // the credential is then simply not refreshable, same as a legacy
-          // Keycloak one) rather than rejecting the handoff over it.
-          refreshToken: typeof payload.refreshToken === 'string' ? payload.refreshToken : undefined,
-          expiresAt: payload.expiresAt,
-          orgSlug: payload.orgSlug ?? orgSlug ?? null,
-        });
-      });
-    });
-
-    const timer = setTimeout(() => {
-      server.close();
-      reject(new Error('timed out waiting for the browser to complete sign-in'));
-    }, HANDOFF_TIMEOUT_MS);
-
-    server.on('error', (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-
-    server.listen(0, '127.0.0.1', () => {
-      const port = server.address().port;
-      const handoffUrl =
-        `${webUrl}/cli-auth?` +
-        new URLSearchParams({
-          port: String(port),
-          nonce,
-          ...(orgSlug ? { org: orgSlug } : {}),
-        }).toString();
-      log(
-        `opening your browser to sign in… if it does not open, visit:\n${handoffUrl}\n` +
-          'You will sign in the same way you sign in to Landfall on the web — with your ' +
-          'password, or through your organization’s identity provider.',
-      );
-      openBrowser(handoffUrl);
-    });
-  });
+  const session = await pollForHandoff(resolved.api, nonce, orgSlug);
 
   await saveSession({ ...session, instance: resolved });
   return session.accessToken;
-}
-
-/** Timing-safe string comparison that tolerates unequal lengths. */
-function constantTimeEquals(a, b) {
-  const ab = Buffer.from(a);
-  const bb = Buffer.from(b);
-  if (ab.length !== bb.length) {
-    // Still burn a comparison so the length is not itself a fast path.
-    crypto.timingSafeEqual(ab, ab);
-    return false;
-  }
-  return crypto.timingSafeEqual(ab, bb);
 }

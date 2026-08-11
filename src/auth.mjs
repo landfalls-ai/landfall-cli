@@ -84,6 +84,35 @@ function b64url(buf) {
   return buf.toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
+/**
+ * CORS + Chrome Private Network Access preflight headers for the loopback
+ * callback listener `login()` binds. Pulled out into its own function so it
+ * is unit-testable without going through `login()` itself — that function
+ * also `probe()`s the web app and calls `openBrowser()` (a real, best-effort
+ * `spawn('open'|'xdg-open', …)`), which is exactly why no test in this suite
+ * drives it end to end (see test/cli-refresh.test.mjs's header comment).
+ *
+ * `access-control-allow-private-network: true` is the one that matters and
+ * was MISSING until this fix: Chrome's Private Network Access policy gives
+ * an HTTPS page fetching a private/loopback address (this listener) a
+ * SEPARATE preflight check on top of ordinary CORS, and silently fails the
+ * whole request — no error surfaced to the page's JS beyond a generic
+ * "Failed to fetch" — unless the preflight response carries this header.
+ * Without it, every `landfall login` handoff hung on "Connecting your
+ * command line…" until the 5-minute timeout, in EVERY Chromium browser
+ * enforcing PNA (Chrome, Edge, Brave, …) — confirmed live against real
+ * Chrome, 2026-08-11. Firefox/Safari don't enforce PNA and were never
+ * affected, which is exactly why this went unnoticed until now.
+ */
+export function preflightHeaders(webUrl) {
+  return {
+    'access-control-allow-origin': webUrl,
+    'access-control-allow-methods': 'POST, OPTIONS',
+    'access-control-allow-headers': 'content-type',
+    'access-control-allow-private-network': 'true',
+  };
+}
+
 /** Open a URL in the user's default browser (best-effort, cross-platform). */
 function openBrowser(url) {
   const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
@@ -350,13 +379,10 @@ export async function login(log = () => {}, { orgSlug, url = null, instance = nu
 
   const session = await new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
-      // The browser POSTs cross-origin from the web app, so it preflights.
+      // The browser POSTs cross-origin from the web app, so it preflights —
+      // see preflightHeaders()'s doc comment for what's in the response and why.
       if (req.method === 'OPTIONS') {
-        res.writeHead(204, {
-          'access-control-allow-origin': webUrl,
-          'access-control-allow-methods': 'POST, OPTIONS',
-          'access-control-allow-headers': 'content-type',
-        });
+        res.writeHead(204, preflightHeaders(webUrl));
         res.end();
         return;
       }

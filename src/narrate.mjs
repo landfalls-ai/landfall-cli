@@ -90,6 +90,21 @@ export function eventText(payload) {
 }
 
 /**
+ * Feature 20260812-010632 (US5/T050a, FR-029): is this event's text a fixed
+ * template with no real synthesis behind it (`chat-reaction.service.ts`'s
+ * fixed-slot reply, e.g.) rather than genuine analysis? The server sets BOTH
+ * `synthesized:false` and the explicit `disclosedAsTemplated:true` marker
+ * together on exactly this content — checking the explicit marker, not just
+ * `synthesized===false`, matches the server's own distinction precisely: an
+ * event with neither field present is simply old data from before this
+ * marker existed, not a claim about whether it was synthesized.
+ */
+export function isTemplated(payload) {
+  const p = payload && typeof payload === 'object' ? payload : {};
+  return p.disclosedAsTemplated === true;
+}
+
+/**
  * One compact line per shared event, attributed to human · agent. The single
  * renderer for every place a queued room event is spelled out: the in-band
  * block on a tool result (tools.mjs), and the `peek` digest a lifecycle hook
@@ -99,7 +114,11 @@ export function formatEventLine(e) {
   // feature 024: attribute by the human name, never the raw humanActorId.
   const who = eventActor(e?.payload);
   const what = eventText(e?.payload);
-  return `#${e?.seq} ${e?.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}`;
+  // FR-029: a templated reply must not read like real analysis in a terminal
+  // digest any more than it should on the canvas — the same distinction the
+  // monorepo-side badge fix (T034) makes for the web UI, applied here.
+  const marker = isTemplated(e?.payload) ? ' (no evidence — templated, not analysis)' : '';
+  return `#${e?.seq} ${e?.type}${who ? ` [${who}]` : ''}${what ? ` — ${what}` : ''}${marker}`;
 }
 
 function truncate(s, n = 80) {

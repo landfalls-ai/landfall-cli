@@ -60,6 +60,7 @@ import {
 } from '../src/instance.mjs';
 import { startHookSocket } from '../src/hooks/socket.mjs';
 import { createDoorbell } from '../src/hooks/doorbell.mjs';
+import { runStatus } from '../src/status.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -185,6 +186,9 @@ Commands:
   logout                                                 clear the cached session
   instance [set <address> | reset]                       show or change which Landfall you use
   serve [--link URL]                                     (default) join + expose incident MCP tools over stdio
+  status                                                 one-line room status (incident, new events, votes
+                                                          awaited) — for a Claude Code statusLine; prints
+                                                          nothing when no session is running
   join [URL]                                             join + keep presence alive (no MCP) — Ctrl-C to leave
   note "<text>"                                          post a one-off finding, then exit
   leave                                                   leave the incident
@@ -258,6 +262,16 @@ async function main() {
       flag: 'the --url flag',
     }[instance.source] ?? `${instance.source}`;
     log(`web:  ${instance.web}\napi:  ${instance.api}\ndocs: ${instance.docs}\nfrom: ${from}`);
+    return;
+  }
+
+  if (cmd === 'status') {
+    // Feature 20260812-010632 (US5/T048): a short-lived, statusline-shaped
+    // read — queries this workspace's hook-socket(s) the same way a lifecycle
+    // hook does, prints one line (or nothing), always exits 0. Never touches
+    // stdin/stdout beyond that one write, so it is safe to invoke as a
+    // Claude Code `statusLine` command on every render tick.
+    await runStatus();
     return;
   }
 

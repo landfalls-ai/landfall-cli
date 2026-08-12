@@ -125,6 +125,21 @@ export function handleSocketRequest(request, session, { pid = process.pid, consu
         cursor: session?.cursor ?? -1,
         pending: pending.length,
         dropped: session?.pendingDropped ?? 0,
+        // Feature 20260812-010632 (US5/T047): `landfall status`'s own consumer
+        // (a Claude Code statusline command, run on the host's normal render
+        // cadence). ADDITIVE, same as `attention` on `peek` (#252) — the
+        // protocol version does not move, an older hook ignores the field.
+        //
+        // Deliberately last-known, not force-refreshed: unlike `peek` (which
+        // gates a hard Stop-hook decision and therefore awaits
+        // `settleAttention()`), a statusline render is advisory and happens on
+        // every prompt — forcing a network round trip on that cadence would be
+        // the wrong cost for an informational display. `session.attention` is
+        // already kept reasonably current reactively (any `claim.*`/`context.*`
+        // event sets `attentionDirty` and fires a background refresh — see
+        // touchesAttention() in ../attention.mjs and its caller in tools.mjs);
+        // this just reads whatever that background process last landed.
+        votesAwaited: Array.isArray(session?.attention?.votesAwaited) ? session.attention.votesAwaited.length : 0,
       };
 
     case 'peek':

@@ -356,6 +356,30 @@ test('peek names the incident, so a hook can tell two rooms in one checkout apar
   assert.equal(handleSocketRequest({ op: 'peek' }, session, { pid: 1 }).incidentId, 'inc-1');
 });
 
+// -------------------------------- feature 20260812-010632 (US5/T047): status carries votesAwaited
+
+test('status carries a votesAwaited COUNT — landfall status formats a number, not a raw list', () => {
+  const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+  session.attention = attention({ votesAwaited: [awaited(), awaited({ claimSeq: 49 })] });
+  const res = handleSocketRequest({ op: 'status' }, session, { pid: 1 });
+  assert.equal(res.votesAwaited, 2);
+});
+
+test('status answers votesAwaited: 0 (not a throw) when no attention snapshot exists yet', () => {
+  const res = handleSocketRequest({ op: 'status' }, createBridgeSession({}), { pid: 1 });
+  assert.equal(res.votesAwaited, 0);
+});
+
+test('status is additive — every pre-#T047 field is still present unchanged', () => {
+  const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+  const res = handleSocketRequest({ op: 'status' }, session, { pid: 1 });
+  assert.equal(res.incidentId, 'inc-1');
+  assert.equal(res.connected, true);
+  assert.equal(typeof res.cursor, 'number');
+  assert.equal(typeof res.pending, 'number');
+  assert.equal(typeof res.dropped, 'number');
+});
+
 test('a quarantine arriving with NO tool call in between still reaches the Stop hook', async () => {
   // The real chain, not an injected snapshot: an event lands on the realtime
   // socket, the agent makes no further tool call (the Stop path makes none),

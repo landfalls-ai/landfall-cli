@@ -155,6 +155,17 @@ test('MCP: initialize injects server instructions when provided (so the share pa
   assert.match(EDGE_AGENT_INSTRUCTIONS, /propose-only/);
 });
 
+// -------------------------------- feature 20260812-010632 (US5/T050b, FR-030/SC-014)
+
+test('EDGE_AGENT_INSTRUCTIONS states the delivery-timing ceiling plainly — no mid-turn push is ever implied', () => {
+  assert.match(EDGE_AGENT_INSTRUCTIONS, /never mid-turn, unprompted/);
+  assert.match(EDGE_AGENT_INSTRUCTIONS, /no push into an in-progress turn/i);
+  // "realtime" (line 1) describes what OTHER participants see of YOUR
+  // publishes — the ceiling line must not contradict that, only clarify what
+  // it does and does not promise about the reverse direction.
+  assert.match(EDGE_AGENT_INSTRUCTIONS, /realtime/);
+});
+
 test('MCP tools/call narrates: a post_finding call heartbeats + posts a finding contribution', async () => {
   const posted = [];
   const fakeClient = {
@@ -223,6 +234,60 @@ test('join_war_room tool joins via the magic link and unlocks the other tools', 
 
   const brief = await handleMcpMessage({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_brief' } }, { tools });
   assert.match(brief.result.content[0].text, /Incident timeline/);
+});
+
+// ---- feature 20260812-010632 (US5/T046): join_war_room returns the brief inline ----
+
+test('join_war_room includes the brief inline — no second get_brief call required to see current state', async () => {
+  let getBriefCalls = 0;
+  const fakeClient = {
+    agentInstanceId: 'a-2',
+    async join() {},
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() {
+      getBriefCalls += 1;
+      return [{ seq: 0, type: 'incident.opened', payload: {} }];
+    },
+    async getUpdates() { return []; },
+    async leave() {},
+  };
+  const session = createBridgeSession({
+    agentLabel: 'Claude Code',
+    redeemImpl: async (url) => ({ baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-2', token: 'edge-tok', shareUrl: url }),
+    clientFactory: () => fakeClient,
+  });
+  const tools = buildBridgeTools(session);
+
+  const res = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'join_war_room', arguments: { shareUrl: SHARE_URL } } }, { tools });
+  const text = res.result.content[0].text;
+  assert.match(text, /Joined war room for incident inc-2/);
+  // The brief content — not just a pointer telling the model to call get_brief.
+  assert.match(text, /Incident timeline: 1 events/);
+  assert.equal(getBriefCalls, 1);
+});
+
+test('join_war_room still succeeds if the inline brief fetch fails — the join itself must not fail', async () => {
+  const fakeClient = {
+    agentInstanceId: 'a-3',
+    async join() {},
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() { throw new Error('network blip'); },
+    async getUpdates() { return []; },
+    async leave() {},
+  };
+  const session = createBridgeSession({
+    agentLabel: 'Claude Code',
+    redeemImpl: async (url) => ({ baseUrl: 'http://api.test', slug: 'acme', incidentId: 'inc-3', token: 'edge-tok', shareUrl: url }),
+    clientFactory: () => fakeClient,
+  });
+  const tools = buildBridgeTools(session);
+
+  const res = await handleMcpMessage({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'join_war_room', arguments: { shareUrl: SHARE_URL } } }, { tools });
+  assert.equal(res.result.isError, undefined);
+  assert.match(res.result.content[0].text, /Joined war room for incident inc-3/);
+  assert.match(res.result.content[0].text, /call get_brief/);
 });
 
 test('get_updates pulls only past the durable cursor and advances it', async () => {

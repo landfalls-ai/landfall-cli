@@ -39,6 +39,11 @@ test('Claude Code: matcher-group shape, every event, under hooks.<Event>', async
           { matcher: 'Bash', hooks: [{ type: 'command', command: 'landfall hooks pre-tool-use' }] },
         ],
       },
+      // Feature 20260812-010632 (US5/T048): a separate config surface in the
+      // same file — Claude Code's statusLine, one key holding one object, not
+      // a hooks.<Event> list. Only Claude Code gets this (Cursor/Codex have no
+      // statusLine concept), so it appears only in this test, not the two below.
+      statusLine: { type: 'command', command: 'landfall status' },
     });
   });
 });

@@ -12,7 +12,7 @@
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
 import { contributionFor, formatEventLine, narrateDoing } from './narrate.mjs';
-import { touchesAttention, voteRequestBlock } from './attention.mjs';
+import { touchesAttention, voteRequestBlock, divergenceBlock } from './attention.mjs';
 import { EdgeBridgeClient } from './client.mjs';
 import { redeemShareLink } from './link.mjs';
 
@@ -149,6 +149,48 @@ export function createBridgeSession({
     // Vote requests already announced in-band, so the same claim is not
     // re-appended to every tool result for the rest of the session.
     attentionNotified: new Set(),
+    // T043/T044: divergence nudges already announced this session, same
+    // once-per-pair discipline as attentionNotified above — the server has
+    // no notion of "already told this terminal" (divergence.mjs's own header),
+    // so de-duplication is entirely this session's responsibility.
+    divergenceNotified: new Set(),
+    // Feature 20260812-010632 (US4/T049): the divergence read
+    // (`GET .../vetting/divergence`), background-refreshed and read by the
+    // hook socket's `status` op. Deliberately SIMPLER than attention's
+    // settle/abandon-stale-read machinery above: nothing hard depends on this
+    // being maximally fresh (it feeds a tier-0 statusline nudge, not a
+    // Stop-hook block), so a plain coalesced background refresh — same
+    // "last-known is fine" principle T047 already established for
+    // `votesAwaited` — is enough. `null` until the first refresh lands.
+    divergence: null,
+    divergenceDirty: true,
+    divergenceInFlight: null,
+    // Two triggers, mirroring what the server-side projection actually
+    // depends on (divergence.ts's own header): the room's established
+    // direction (an admitted causal claim — the SAME `claim.*`/`context.*`
+    // events that dirty attention) and THIS session's own read history (a
+    // `search_context` call producing a new `edge.query`). See the two call
+    // sites below (`enqueueEvent` and `narrated`'s query-contribution path).
+    refreshDivergence() {
+      if (!session.client || typeof session.client.getDivergence !== 'function') return Promise.resolve(null);
+      if (session.divergenceInFlight) return session.divergenceInFlight;
+      session.divergenceDirty = false;
+      const inFlight = (async () => {
+        try {
+          const next = await session.client.getDivergence();
+          if (session.divergenceInFlight === inFlight) session.divergence = next;
+        } catch {
+          // Best-effort: leave the previous answer in place, re-dirty so the
+          // next trigger retries rather than trusting a read that failed.
+          if (session.divergenceInFlight === inFlight) session.divergenceDirty = true;
+        } finally {
+          if (session.divergenceInFlight === inFlight) session.divergenceInFlight = null;
+        }
+        return session.divergence;
+      })();
+      session.divergenceInFlight = inFlight;
+      return inFlight;
+    },
     /**
      * Re-read the attention projection, best-effort. Never throws and never
      * blocks a tool call: an unreachable server means "nothing known to be
@@ -271,6 +313,11 @@ export function createBridgeSession({
       // claim events costs one read, and a failed one leaves the flag set for
       // the next caller.
       if (touchesAttention(evt)) {
+        // T049: the same claim/context arrival that can change what awaits
+        // this agent's VOTE can also change the room's ESTABLISHED direction
+        // — both dirty together, one background read each.
+        session.divergenceDirty = true;
+        void session.refreshDivergence();
         session.attentionDirty = true;
         void session.refreshAttention();
       }
@@ -307,6 +354,14 @@ export function createBridgeSession({
       // left — and `claimSeq` is a per-incident counter, so acting on it in the
       // new room records a position on an unrelated claim.
       session.attentionInFlight = null;
+      // T043/T044: the same room-switch reset, for the same reason — a
+      // divergence nudge naming a subject from the OLD room would be at best
+      // confusing and at worst wrong, and an in-flight read against the old
+      // client must not write into the new room's snapshot.
+      session.divergence = null;
+      session.divergenceDirty = true;
+      session.divergenceNotified = new Set();
+      session.divergenceInFlight = null;
       await onJoined?.(session, cfg);
       return cfg;
     },
@@ -420,6 +475,32 @@ async function flushVoteRequests(session) {
 }
 
 /**
+ * Drain a new divergence nudge onto a tool result (T043/T044) — the third
+ * tier-0 piggyback, alongside vote requests. Deliberately does NOT force a
+ * refresh the way `flushVoteRequests` does for attention: divergence is
+ * background-refreshed by its own two triggers (`enqueueEvent`'s
+ * claim/context arrival, `narrated`'s own query-contribution path above) and
+ * this just reads whatever landed — the "last-known is fine" principle
+ * already established for the socket's `status` verb (T047), applied here to
+ * the piggyback channel too. Forcing a synchronous fetch on every tool call
+ * would add real latency to the fast path this whole feature exists to keep
+ * fast (US4's own acceptance criterion: "normal MCP tool use stays exactly as
+ * fast as today").
+ *
+ * Returns '' when there is nothing new (no read yet, not diverging, or this
+ * exact pair was already announced). Never throws.
+ */
+function flushDivergenceNudge(session) {
+  try {
+    const { text, keys } = divergenceBlock(session.divergence, { notified: session.divergenceNotified });
+    for (const k of keys) session.divergenceNotified.add(k);
+    return text;
+  } catch {
+    return '';
+  }
+}
+
+/**
  * Build the MCP tool set. Accepts a session from {@link createBridgeSession},
  * or (legacy, feature 012) a bare joined EdgeBridgeClient.
  */
@@ -444,6 +525,13 @@ export function buildBridgeTools(sessionOrClient) {
     try { await client.heartbeat(doing); } catch { /* narration is best-effort */ }
     const contrib = contributionFor(name, args);
     if (contrib) { try { await client.contribute(contrib.kind, contrib.body); } catch { /* best-effort */ } }
+    // T049: a `query`-kind contribution IS this session's own new `edge.query`
+    // — the other half of what divergence depends on (the room's established
+    // direction is the other half, dirtied above in `enqueueEvent`).
+    if (contrib?.kind === 'query') {
+      session.divergenceDirty = true;
+      void session.refreshDivergence();
+    }
     const result = await run(args, doing, client);
     // Flush AFTER the handler: a pull the agent made itself has already advanced
     // the cursor past what it delivered, so the block only ever carries what the
@@ -454,8 +542,15 @@ export function buildBridgeTools(sessionOrClient) {
     // what happened, and burying an "answer this" under a tool result and a
     // digest is how it gets skimmed past.
     const asked = await flushVoteRequests(session);
+    // T043: a divergence nudge is the SAME tier — a piggyback line the agent
+    // is already reading, never a second round trip — but a softer one (an
+    // invitation to reconsider, not "answer this"), so it is ordered AFTER a
+    // pending vote request when both fire on the same result: a claim
+    // genuinely awaiting this agent's position is the more urgent of the two.
+    const nudge = flushDivergenceNudge(session);
     const body = flushed ? `${result}\n\n${flushed}` : result;
-    return asked ? `${asked}\n\n${body}` : body;
+    const withNudge = nudge ? `${nudge}\n\n${body}` : body;
+    return asked ? `${asked}\n\n${withNudge}` : withNudge;
   };
 
   return [

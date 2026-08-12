@@ -137,4 +137,18 @@ export class EdgeBridgeClient {
     const since = Number.isFinite(sinceSeq) ? sinceSeq : -1;
     return this.#get(`/events?sinceSeq=${encodeURIComponent(since)}`);
   }
+
+  /**
+   * Feature 20260812-010632 (US4/T049): is THIS agent's recent read history
+   * drifting from the room's established causal claim? Same `agentInstanceId`
+   * discipline as `getAttention()` above — server-verified against this
+   * incident's own join grant (#249/#252), never trusted as a bare claim.
+   * The server recomputes this fresh from the durable timeline on every
+   * call — no server-side session state to poll differently — so this is a
+   * plain, stateless GET, same shape as `getAttention()`.
+   */
+  getDivergence() {
+    const q = this.agentInstanceId ? `?agentInstanceId=${encodeURIComponent(this.agentInstanceId)}` : '';
+    return this.#get(`/vetting/divergence${q}`);
+  }
 }

@@ -13,6 +13,8 @@ import { EdgeBridgeClient } from '../src/client.mjs';
 import { ATTENTION_SETTLE_MS, buildBridgeTools, createBridgeSession } from '../src/tools.mjs';
 import {
   describeStopBlockers,
+  divergenceBlock,
+  divergenceKey,
   formatDuration,
   hasStopBlockers,
   stopBlockers,
@@ -95,6 +97,31 @@ test('omits the parameter entirely before the server has issued an instance', as
   assert.equal(f.calls[0].search, '');
 });
 
+// -------------------------------------- feature 20260812-010632 (US4/T049): getDivergence
+
+test('getDivergence asks for THIS agent\'s read history, same discipline as getAttention', async () => {
+  const f = fakeFetch({
+    routes: {
+      '/o/acme/incidents/inc-1/vetting/divergence': {
+        status: 200,
+        json: { diverging: true, establishedSubject: 'cli-handoff/redeem', observedSubject: 'cloudfront/5xxerrorrate' },
+      },
+    },
+  });
+  const c = new EdgeBridgeClient(CFG, f);
+  c.agentInstanceId = 'a-9';
+  const res = await c.getDivergence();
+  assert.equal(f.calls[0].path, '/o/acme/incidents/inc-1/vetting/divergence');
+  assert.equal(f.calls[0].search, '?agentInstanceId=a-9');
+  assert.deepEqual(res, { diverging: true, establishedSubject: 'cli-handoff/redeem', observedSubject: 'cloudfront/5xxerrorrate' });
+});
+
+test('getDivergence omits agentInstanceId before an instance has been issued, same as getAttention', async () => {
+  const f = fakeFetch({ routes: { '/o/acme/incidents/inc-1/vetting/divergence': { status: 200, json: { diverging: false } } } });
+  await new EdgeBridgeClient(CFG, f).getDivergence();
+  assert.equal(f.calls[0].search, '');
+});
+
 // ------------------------------------------------------- the piggyback block
 
 test('renders a vote request with what it is, who asked, and what it needs', () => {
@@ -155,6 +182,52 @@ test('never mutates the caller’s notified set', () => {
   const notified = new Set();
   voteRequestBlock(attention({ votesAwaited: [awaited()] }), { notified });
   assert.equal(notified.size, 0); // the caller marks them, once it has the block
+});
+
+// ---------------------------------------- feature 20260812-010632 (US4/T043/T044): divergenceBlock
+
+function diverging(over = {}) {
+  return { diverging: true, establishedSubject: 'cli-handoff/redeem', observedSubject: 'cloudfront/5xxerrorrate', ...over };
+}
+
+test('divergenceBlock is silent when not diverging, absent, or malformed', () => {
+  assert.equal(divergenceBlock({ diverging: false }).text, '');
+  assert.equal(divergenceBlock(null).text, '');
+  assert.equal(divergenceBlock(undefined).text, '');
+  assert.equal(divergenceBlock({}).text, '');
+});
+
+test('divergenceBlock names both the established and observed subject, and reads as an invitation', () => {
+  const { text } = divergenceBlock(diverging());
+  assert.match(text, /cli-handoff\/redeem/);
+  assert.match(text, /cloudfront\/5xxerrorrate/);
+  assert.match(text, /invitation, not a block/);
+});
+
+test('divergenceBlock announces a given established/observed pair once, not on every call', () => {
+  const notified = new Set();
+  const first = divergenceBlock(diverging(), { notified });
+  assert.notEqual(first.text, '');
+  for (const k of first.keys) notified.add(k);
+
+  // Same pair again: silence.
+  assert.equal(divergenceBlock(diverging(), { notified }).text, '');
+
+  // A genuinely DIFFERENT pair (different observed subject): announced again.
+  const different = divergenceBlock(diverging({ observedSubject: 'coralogix/query' }), { notified });
+  assert.notEqual(different.text, '');
+  assert.notEqual(divergenceKey(diverging()), divergenceKey(diverging({ observedSubject: 'coralogix/query' })));
+});
+
+test('divergenceBlock never mutates the caller\'s notified set', () => {
+  const notified = new Set();
+  divergenceBlock(diverging(), { notified });
+  assert.equal(notified.size, 0);
+});
+
+test('divergenceKey is stable for the same pair and distinct across different pairs', () => {
+  assert.equal(divergenceKey(diverging()), divergenceKey(diverging()));
+  assert.notEqual(divergenceKey(diverging()), divergenceKey(diverging({ establishedSubject: 'something-else' })));
 });
 
 // ------------------------------------------------- the block on a tool result
@@ -378,6 +451,65 @@ test('status is additive — every pre-#T047 field is still present unchanged', 
   assert.equal(typeof res.cursor, 'number');
   assert.equal(typeof res.pending, 'number');
   assert.equal(typeof res.dropped, 'number');
+});
+
+// ---------------------------------------- feature 20260812-010632 (US4/T049): status.divergence
+
+test('status omits divergence entirely until a background refresh has actually landed — never a misleading default', () => {
+  const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+  const res = handleSocketRequest({ op: 'status' }, session, { pid: 1 });
+  assert.equal('divergence' in res, false);
+});
+
+test('status carries whatever session.divergence last landed, including a false-y-looking but real {diverging:false}', () => {
+  const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+  session.divergence = { diverging: false };
+  const res = handleSocketRequest({ op: 'status' }, session, { pid: 1 });
+  assert.deepEqual(res.divergence, { diverging: false });
+});
+
+test('status carries a real diverging:true answer verbatim', () => {
+  const session = createBridgeSession({ client: { cfg: { slug: 'acme', incidentId: 'inc-1' } } });
+  session.divergence = { diverging: true, establishedSubject: 'cli-handoff/redeem', observedSubject: 'cloudfront/5xxerrorrate' };
+  const res = handleSocketRequest({ op: 'status' }, session, { pid: 1 });
+  assert.equal(res.divergence.diverging, true);
+  assert.equal(res.divergence.establishedSubject, 'cli-handoff/redeem');
+});
+
+test('refreshDivergence is coalesced (one in-flight read, not one per caller) and best-effort on failure', async () => {
+  let calls = 0;
+  let resolve1;
+  const session = createBridgeSession({
+    client: {
+      cfg: { slug: 'acme', incidentId: 'inc-1' },
+      getDivergence: () => { calls += 1; return new Promise((r) => { resolve1 = r; }); },
+    },
+  });
+  const p1 = session.refreshDivergence();
+  const p2 = session.refreshDivergence(); // joins the same in-flight read
+  assert.equal(calls, 1);
+  resolve1({ diverging: false });
+  await Promise.all([p1, p2]);
+  assert.deepEqual(session.divergence, { diverging: false });
+});
+
+test('a query-kind contribution (search_context) triggers a background divergence refresh', async () => {
+  let calls = 0;
+  const fakeClient = {
+    agentInstanceId: 'a-1',
+    cfg: { slug: 'acme', incidentId: 'inc-1' },
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() { return []; },
+    async getDivergence() { calls += 1; return { diverging: false }; },
+  };
+  const session = createBridgeSession({ client: fakeClient });
+  const tools = buildBridgeTools(session);
+  const searchTool = tools.find((t) => t.name === 'search_context');
+  await searchTool.handler({ query: 'cloudfront' });
+  // The refresh is fire-and-forget (void), so give the microtask queue a turn.
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(calls, 1);
 });
 
 test('a quarantine arriving with NO tool call in between still reaches the Stop hook', async () => {
@@ -640,4 +772,87 @@ test('formatDuration is locale-free and never negative', () => {
   assert.equal(formatDuration(15 * 60_000), '15m');
   assert.equal(formatDuration(107 * 60_000), '1h 47m');
   assert.equal(formatDuration(Number.NaN), '0m');
+});
+
+// ---------------------------- feature 20260812-010632 (US4/T044): end-to-end nudge wiring
+
+function fakeDivergenceClient(divergenceSequence) {
+  let i = 0;
+  return {
+    agentInstanceId: 'a-1',
+    cfg: { slug: 'acme', incidentId: 'inc-1' },
+    async heartbeat() {},
+    async contribute() {},
+    async getBrief() { return []; },
+    async getDivergence() {
+      const next = divergenceSequence[Math.min(i, divergenceSequence.length - 1)];
+      i += 1;
+      return next;
+    },
+  };
+}
+
+test('a tool result carries the nudge exactly once for a given established/observed pair across a sequence of calls, then falls silent', async () => {
+  // Deliberately agnostic about WHICH call in the sequence ends up carrying
+  // it — search_context's own handler body awaits client.getBrief(), which
+  // can give the fire-and-forget refresh triggered at its start enough of a
+  // microtask turn to land before that SAME call's own closing flush, so the
+  // nudge may appear on the triggering call itself rather than only a later
+  // one. The real guarantee under test is the count across the sequence:
+  // exactly once, never zero, never more than once.
+  const client = fakeDivergenceClient([diverging()]);
+  const session = createBridgeSession({ client });
+  const tools = buildBridgeTools(session);
+  const search = tools.find((t) => t.name === 'search_context');
+  const brief = tools.find((t) => t.name === 'get_brief');
+
+  const results = [];
+  results.push(await search.handler({ query: 'cloudfront' }));
+  await new Promise((r) => setTimeout(r, 0)); // let any still-in-flight refresh land
+  results.push(await brief.handler({}));
+  results.push(await brief.handler({}));
+  results.push(await brief.handler({}));
+
+  const withNudge = results.filter((r) => r.includes('cli-handoff/redeem'));
+  assert.equal(withNudge.length, 1, `expected the nudge exactly once across the sequence, got ${withNudge.length}`);
+  assert.match(withNudge[0], /invitation, not a block/);
+});
+
+test('a tool result carries NO nudge when the read says {diverging:false}', async () => {
+  const client = fakeDivergenceClient([{ diverging: false }]);
+  const session = createBridgeSession({ client });
+  const tools = buildBridgeTools(session);
+  const search = tools.find((t) => t.name === 'search_context');
+  await search.handler({ query: 'cli-handoff' });
+  await new Promise((r) => setTimeout(r, 0));
+
+  const brief = tools.find((t) => t.name === 'get_brief');
+  const result = await brief.handler({});
+  assert.equal(result.includes('diverging'), false);
+  assert.equal(result.includes('invitation'), false);
+});
+
+test('a tool result carries no nudge before any divergence read has ever landed', async () => {
+  // No search_context call at all — session.divergence stays null.
+  const client = fakeDivergenceClient([diverging()]);
+  const session = createBridgeSession({ client });
+  const tools = buildBridgeTools(session);
+  const brief = tools.find((t) => t.name === 'get_brief');
+  const result = await brief.handler({});
+  assert.equal(result.includes('cli-handoff/redeem'), false);
+});
+
+test('divergence, however sustained, NEVER touches stopBlockers()/tier-1 — it is tier-0 only', () => {
+  // stopBlockers() takes an attention snapshot and has no divergence parameter
+  // at all — the type signature itself is the proof this tier is untouched,
+  // exercised here so a future edit that tried to thread divergence through
+  // it would break this test rather than silently widening what blocks a
+  // conclusion.
+  const blockers = stopBlockers(attention({ flaggedOwnContext: [], votesAwaited: [] }));
+  assert.equal(hasStopBlockers(blockers), false);
+  // A room with an active, sustained, repeatedly-diverging investigator is
+  // exactly the scenario a hypothetical tier-1 divergence block would fire
+  // on — stopBlockers's signature does not even accept a divergence read, so
+  // there is no path by which it could.
+  assert.equal(stopBlockers.length, 1, 'stopBlockers takes only an attention snapshot, never a divergence read');
 });

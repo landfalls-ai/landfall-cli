@@ -97,6 +97,45 @@ export function voteRequestBlock(attention, { notified = new Set(), max = VOTE_L
   return { text: lines.join('\n'), keys: shown.map(voteKey) };
 }
 
+// ---------------------------------------------------- feature 20260812-010632 (US4/T043/T044)
+//
+// A THIRD tier-0 piggyback, alongside vote requests: is this investigator's
+// recent read history drifting from the room's admitted causal claim? An
+// INVITATION, exactly like a vote request — never a tier-1 Stop-hook block
+// (stopBlockers below is untouched by this section). The server (`GET …/
+// vetting/divergence`) is the whole judgment; this is presentation only,
+// same discipline `voteRequestBlock` above already documents for itself.
+//
+// De-duplication is THIS session's own responsibility, not the server's — a
+// stateless server has no notion of "already told this terminal", so the
+// once-per-pair guarantee lives here, the same class of local state
+// `attentionNotified` already is for vote requests.
+
+/** The key a divergence nudge is remembered by, so the same established/
+ * observed pair is not re-announced on every tool call this session. */
+export function divergenceKey(d) {
+  return `${d?.establishedSubject}::${d?.observedSubject}`;
+}
+
+/**
+ * Build the piggyback block for a `diverging:true` read, or `{text:'', keys:
+ * []}` when there is nothing to say — silent by construction when the read
+ * is absent, `diverging:false`, or already announced for this exact pair.
+ */
+export function divergenceBlock(divergence, { notified = new Set() } = {}) {
+  if (!divergence?.diverging) return { text: '', keys: [] };
+  const key = divergenceKey(divergence);
+  if (notified.has(key)) return { text: '', keys: [] };
+  const established = divergence.establishedSubject ? `"${oneLine(divergence.establishedSubject, 100)}"` : 'a different subject';
+  const observed = divergence.observedSubject ? `"${oneLine(divergence.observedSubject, 100)}"` : 'something else';
+  return {
+    text:
+      `↷ the room's established root cause is ${established}; your recent reads have been about ${observed} — ` +
+      'worth a look before you go further. (This is an invitation, not a block — carry on if your work genuinely does not depend on it.)',
+    keys: [key],
+  };
+}
+
 /** `2h 15m`, `12m` — no locale, no dependency. */
 export function formatDuration(ms) {
   if (!Number.isFinite(ms) || ms <= 0) return '0m';

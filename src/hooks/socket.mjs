@@ -140,6 +140,15 @@ export function handleSocketRequest(request, session, { pid = process.pid, consu
         // touchesAttention() in ../attention.mjs and its caller in tools.mjs);
         // this just reads whatever that background process last landed.
         votesAwaited: Array.isArray(session?.attention?.votesAwaited) ? session.attention.votesAwaited.length : 0,
+        // T049: same last-known, background-refreshed discipline as
+        // votesAwaited above — session.divergence is kept current by
+        // tools.mjs's own two triggers (a claim/context arrival, or this
+        // session's own search_context call), never force-fetched here.
+        // Only included once something has actually landed (`null` until the
+        // first refresh completes, or when the server has nothing to report)
+        // — omitted rather than a misleading `{diverging:false}` default that
+        // would look like a real answer before one exists.
+        ...(session?.divergence ? { divergence: session.divergence } : {}),
       };
 
     case 'peek':

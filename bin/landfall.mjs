@@ -61,6 +61,7 @@ import {
 import { startHookSocket } from '../src/hooks/socket.mjs';
 import { createDoorbell } from '../src/hooks/doorbell.mjs';
 import { runStatus } from '../src/status.mjs';
+import { parseRemediationApproveFlags, runRemediationApprove } from '../src/remediation/commands.mjs';
 
 /** Parse slug + incidentId from a plain incident URL (no ticket) for the OAuth path. */
 function parseIncidentUrl(url) {
@@ -198,6 +199,10 @@ Commands:
               [--management --member <acct>[,...]]        read-only role with YOUR own aws CLI
                                                           (or prints Terraform), registers and
                                                           health-checks the connection
+  remediation approve <id> --incident <incidentId>        approve a proposed remediation (your
+              [--org <slug>] [--override "<reason>"]      own landfall login session, never an
+                                                          MCP tool); --override is for a genuinely
+                                                          solo responder, audited, one-time-only
   hooks install [--only <ids>] [--dry-run] [--uninstall]  register lifecycle hooks so room context
                                                           reaches a local session it can't ignore
   hooks uninstall [--only <ids>]                          remove only landfall's hook entries
@@ -272,6 +277,27 @@ async function main() {
     // stdin/stdout beyond that one write, so it is safe to invoke as a
     // Claude Code `statusLine` command on every render tick.
     await runStatus();
+    return;
+  }
+
+  if (cmd === 'remediation') {
+    // Feature 20260812-010632 (US2/T030): human-typed only, never an MCP
+    // tool — see remediation/commands.mjs's own header for why. Uses the
+    // CLI's own `landfall login` session, the same pattern `connect aws`
+    // already established, not the edge-bridge bearer token.
+    const sub = rest[0];
+    if (sub !== 'approve') {
+      log('usage: landfall remediation approve <remediationId> --incident <incidentId> [--org <slug>] [--override "<reason>"]');
+      process.exitCode = 2;
+      return;
+    }
+    const parsed = parseRemediationApproveFlags(rest.slice(1));
+    if (parsed.error) {
+      log(parsed.error);
+      process.exitCode = 2;
+      return;
+    }
+    process.exitCode = await runRemediationApprove(parsed.flags, { log, error: log });
     return;
   }
 

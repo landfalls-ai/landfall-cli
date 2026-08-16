@@ -242,8 +242,8 @@ test('a vote request is PREPENDED to the tool result it rides on', async () => {
   const out = await tools.find((t) => t.name === 'get_brief').handler({});
 
   assert.match(out.split('\n')[0], /⚠ vote requested: claim #48/);
-  assert.match(out, /Incident timeline/);
-  assert.ok(out.indexOf('vote requested') < out.indexOf('Incident timeline'));
+  assert.match(out, /No findings or open items yet/);
+  assert.ok(out.indexOf('vote requested') < out.indexOf('No findings or open items yet'));
 });
 
 test('a quiet room costs exactly ONE attention read for the whole session', async () => {
@@ -284,7 +284,7 @@ test('an attention read that fails never breaks the tool call', async () => {
   const session = await joinedSession(f);
   const tools = buildBridgeTools(session);
   const out = await tools.find((t) => t.name === 'get_brief').handler({});
-  assert.match(out, /Incident timeline/);
+  assert.match(out, /No findings or open items yet/);
   assert.doesNotMatch(out, /vote requested/);
 });
 
@@ -501,6 +501,7 @@ test('a query-kind contribution (search_context) triggers a background divergenc
     async heartbeat() {},
     async contribute() {},
     async getBrief() { return []; },
+    async searchContext() { return { hits: [] }; },
     async getDivergence() { calls += 1; return { diverging: false }; },
   };
   const session = createBridgeSession({ client: fakeClient });
@@ -784,6 +785,11 @@ function fakeDivergenceClient(divergenceSequence) {
     async heartbeat() {},
     async contribute() {},
     async getBrief() { return []; },
+    async getContextFrame() {
+      return { asOfSeq: -1, version: 0, freshnessMs: 0, incident: {}, brief: { established: [], workingTheory: [], disproved: [], open: [] }, participants: [] };
+    },
+    async getContextDelta(since) { return { sinceVersion: since, toVersion: since, items: [], routineCount: 0 }; },
+    async searchContext() { return { hits: [] }; },
     async getDivergence() {
       const next = divergenceSequence[Math.min(i, divergenceSequence.length - 1)];
       i += 1;

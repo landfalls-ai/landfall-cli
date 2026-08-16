@@ -11,10 +11,11 @@
 
 import { readFile } from 'node:fs/promises';
 import { basename, extname } from 'node:path';
-import { contributionFor, formatEventLine, narrateDoing } from './narrate.mjs';
+import { contributionFor, narrateDoing } from './narrate.mjs';
 import { touchesAttention, voteRequestBlock, divergenceBlock } from './attention.mjs';
 import { EdgeBridgeClient } from './client.mjs';
 import { redeemShareLink } from './link.mjs';
+import { frameCursor, renderDelta, renderFrame, renderSearchHits } from './context-render.mjs';
 
 // Client-side pre-check policy (feature 025) — a FAST local error mirroring the
 // server. The SERVER remains the source of truth (FR-005); this just avoids a
@@ -402,48 +403,37 @@ export function consumeUpTo(session, upTo) {
   return session.cursor;
 }
 
-/** One compact line per shared event, attributed to human · agent. */
-const formatEvent = formatEventLine;
-
 /**
- * Events spelled out in full on one tool result before the block becomes a
- * digest. A tool result is the agent's only in-band channel, not a place to
- * dump a timeline.
- */
-const FLUSH_MAX = 5;
-
-/**
- * Drain the pending queue onto a tool result, newest events spelled out and any
- * older overflow counted. The cursor advances past everything the block
- * accounts for — that is what stops `get_updates` re-delivering it — which is
- * why the digest names the `sinceSeq` that re-fetches what it left out.
+ * Drain what's owed onto a tool result (feature 116, cross-repo-followup.md
+ * item 2). The LOCAL queue (`session.pending`/`pendingDropped`) is used only
+ * as the TRIGGER — "did the live socket say something arrived since we last
+ * checked" — so a quiet room still costs zero extra requests per tool call,
+ * exactly as before. Once triggered, the CONTENT is always the server's own
+ * classification (`GET .../edge/context/delta`), never the raw locally-queued
+ * events: the server is the one place that knows what's addressed to this
+ * viewer versus routine plumbing, so re-deriving that client-side would be a
+ * second, competing (and certainly worse) ranking.
+ *
  * Returns '' when there is nothing owed, so an ordinary result is untouched.
+ * A failed fetch leaves the queue in place for the next flush attempt rather
+ * than silently discarding what it was owed.
  */
-function flushPending(session) {
+async function flushPending(session) {
   const queued = Array.isArray(session.pending) ? session.pending : [];
   const dropped = session.pendingDropped ?? 0;
   if (!queued.length && !dropped) return '';
+  if (!session.client || typeof session.client.getContextDelta !== 'function') return '';
 
-  const resumeSeq = session.cursor;
-  const shown = queued.slice(-FLUSH_MAX);
-  const hidden = queued.slice(0, queued.length - shown.length);
-  const omitted = hidden.length + dropped;
-
-  const lines = [
-    `⚠ ${queued.length + dropped} update(s) from other investigators since your last tool call:`,
-    ...shown.map(formatEvent),
-  ];
-  if (omitted) {
-    const kinds = hidden.length ? ` (${summarize(hidden)})` : '';
-    lines.push(
-      `+${omitted} earlier update(s) not shown${kinds} — call get_updates with sinceSeq=${resumeSeq} for the full detail.`,
-    );
+  try {
+    const delta = await session.client.getContextDelta(session.cursor);
+    const rendered = renderDelta(delta);
+    if (typeof delta?.toVersion === 'number' && delta.toVersion > session.cursor) session.cursor = delta.toVersion;
+    session.pending = session.pending.filter((e) => e.seq > session.cursor);
+    if (!session.pending.length) session.pendingDropped = 0;
+    return rendered;
+  } catch {
+    return '';
   }
-
-  advanceCursor(session, shown);
-  session.pending = [];
-  session.pendingDropped = 0;
-  return lines.join('\n');
 }
 
 /**
@@ -536,7 +526,7 @@ export function buildBridgeTools(sessionOrClient) {
     // Flush AFTER the handler: a pull the agent made itself has already advanced
     // the cursor past what it delivered, so the block only ever carries what the
     // socket pushed beyond that — never a duplicate of the result above it.
-    const flushed = flushPending(session);
+    const flushed = await flushPending(session);
     // Vote requests ride the same channel and are PREPENDED (#252): they are
     // the one thing here that is addressed to the agent rather than reporting
     // what happened, and burying an "answer this" under a tool result and a
@@ -561,18 +551,17 @@ export function buildBridgeTools(sessionOrClient) {
       inputSchema: { type: 'object', properties: { shareUrl: { type: 'string' } }, required: ['shareUrl'] },
       handler: async (a) => {
         const cfg = await session.joinWarRoom(String(a.shareUrl ?? ''));
-        // Feature 20260812-010632 (US5/T046, research.md D11): the brief used
-        // to be a pointer relying on EDGE_AGENT_INSTRUCTIONS telling the model
-        // to call get_brief next — a full round trip for something the join
-        // handler already has available. Returned inline now, the same way
-        // get_brief's own handler formats it (advanceCursor + summarize), so
-        // the two paths can never drift. get_brief itself is unchanged and
-        // still callable — this is additive, not a removal (contracts §3).
+        // Feature 116: the inline brief is now the rendered ContextFrame
+        // (title/severity/status + established/open + participants), not a
+        // bare event-type histogram — the "usable brief in one call" spec.md's
+        // US1 is about. get_brief below renders the identical thing on
+        // request, from the SAME renderFrame(), so the two can never drift.
         let briefLine = '';
         try {
-          const events = await session.client.getBrief();
-          advanceCursor(session, events);
-          briefLine = `\n\nIncident timeline: ${Array.isArray(events) ? events.length : 0} events. ${summarize(events)}`;
+          const frame = await session.client.getContextFrame();
+          const cursor = frameCursor(frame);
+          if (typeof cursor === 'number' && cursor > session.cursor) session.cursor = cursor;
+          briefLine = `\n\n${renderFrame(frame)}`;
         } catch {
           // Best-effort: a brief fetch failing right after a successful join
           // must not fail the join itself — the model still has get_brief.
@@ -590,24 +579,28 @@ export function buildBridgeTools(sessionOrClient) {
     {
       name: 'get_updates',
       description:
-        'Pull shared war-room events newer than your cursor (what other investigators found since you last looked). Call at task boundaries and before concluding.',
+        'Pull what changed since you last checked — classified into addressed-to-you (always shown in full) and ' +
+        'substantive findings from others; routine activity is counted, not spelled out. Call at task boundaries ' +
+        'and before concluding.',
       inputSchema: { type: 'object', properties: { sinceSeq: { type: 'number' } }, required: [] },
       handler: narrated('get_updates', async (a, _doing, client) => {
         const since = typeof a.sinceSeq === 'number' ? a.sinceSeq : session.cursor;
-        const events = await client.getUpdates(since);
-        advanceCursor(session, events);
-        if (!Array.isArray(events) || !events.length) return `No new shared context since seq ${since}.`;
-        return `${events.length} new event(s) since seq ${since}:\n${events.map(formatEvent).join('\n')}`;
+        const delta = await client.getContextDelta(since);
+        if (typeof delta?.toVersion === 'number' && delta.toVersion > session.cursor) session.cursor = delta.toVersion;
+        const rendered = renderDelta(delta);
+        return rendered || `No new shared context since seq ${since}.`;
       }),
     },
     {
       name: 'get_brief',
-      description: 'Get the current incident brief (the shared war-room timeline).',
+      description:
+        'Get the current incident brief: title/severity/status, an established-vs-open summary, and who is here.',
       inputSchema: { type: 'object', properties: {} },
       handler: narrated('get_brief', async (_a, _doing, client) => {
-        const events = await client.getBrief();
-        advanceCursor(session, events);
-        return `Incident timeline: ${Array.isArray(events) ? events.length : 0} events. ${summarize(events)}`;
+        const frame = await client.getContextFrame();
+        const cursor = frameCursor(frame);
+        if (typeof cursor === 'number' && cursor > session.cursor) session.cursor = cursor;
+        return renderFrame(frame);
       }),
     },
     {
@@ -622,13 +615,12 @@ export function buildBridgeTools(sessionOrClient) {
     },
     {
       name: 'search_context',
-      description: 'Search the incident context for a term (narrated to the room).',
+      description: 'Search the incident context for a term — returns the actual matching items, not a count.',
       inputSchema: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] },
       handler: narrated('search_context', async (a, _doing, client) => {
-        const events = await client.getBrief();
-        const q = String(a.query ?? '').toLowerCase();
-        const hits = (Array.isArray(events) ? events : []).filter((e) => JSON.stringify(e).toLowerCase().includes(q));
-        return `${hits.length} matching event(s) for "${a.query}".`;
+        const query = String(a.query ?? '');
+        const result = await client.searchContext(query);
+        return renderSearchHits(result, query);
       }),
     },
     {
@@ -886,9 +878,3 @@ async function position(client, args, stance) {
   }
 }
 
-function summarize(events) {
-  if (!Array.isArray(events) || !events.length) return 'No activity yet.';
-  const types = {};
-  for (const e of events) types[e.type] = (types[e.type] ?? 0) + 1;
-  return Object.entries(types).map(([t, n]) => `${t}×${n}`).join(', ');
-}

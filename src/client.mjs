@@ -117,6 +117,42 @@ export class EdgeBridgeClient {
     return this.#get('/events');
   }
   /**
+   * The war-room context frame (feature 116): title/severity/status, an
+   * established-vs-open brief, and current participants — everything
+   * `join_war_room`/`get_brief` need to render a real answer in one call,
+   * instead of the bare event-type histogram `getBrief()` alone can offer.
+   */
+  getContextFrame() {
+    return this.#get('/edge/context/frame');
+  }
+  /**
+   * What changed since `sinceVersion` (feature 116), already classified by the
+   * server into addressed-to-you / substantive-from-others / routine-counted-
+   * only — this replaces `getUpdates()`'s raw, unranked event list as the
+   * primary "what's new" read for `get_updates` and the in-band piggyback.
+   * `sinceVersion` is the same durable cursor `getUpdates()`'s `sinceSeq` was —
+   * the server's version counter is the incident's own seq (see
+   * contracts/edge-context-api.md), so no new cursor concept is needed here.
+   *
+   * `agentInstanceId` (server-verified against this incident's join grant, the
+   * SAME discipline `getAttention()`/`getDivergence()` already use) is what
+   * lets the server tell this agent's OWN activity apart from everyone else's
+   * — omit it and every event looks like it came from a stranger.
+   */
+  getContextDelta(sinceVersion) {
+    const since = Number.isFinite(sinceVersion) ? sinceVersion : 0;
+    const agent = this.agentInstanceId ? `&agentInstanceId=${encodeURIComponent(this.agentInstanceId)}` : '';
+    return this.#get(`/edge/context/delta?sinceVersion=${encodeURIComponent(since)}${agent}`);
+  }
+  /**
+   * Real search hits (feature 116) — seq/type/author/snippet, not a bare count.
+   * Structured keyword matching over the room's visible content; no embeddings.
+   */
+  searchContext(query) {
+    const agent = this.agentInstanceId ? `&agentInstanceId=${encodeURIComponent(this.agentInstanceId)}` : '';
+    return this.#get(`/edge/context/search?q=${encodeURIComponent(query)}${agent}`);
+  }
+  /**
    * What the room is waiting on from THIS agent (#252): staged claims awaiting
    * its position, and context it authored or cited that has since been flagged
    * or quarantined.

@@ -208,6 +208,7 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newLoginCommand(ui),
 		newLogoutCommand(ui),
 		newInstanceCommand(ui),
+		newServeCommand(ui, link),
 		newJoinCommand(ui, link),
 		newNoteCommand(ui, link),
 		newLeaveCommand(ui, link),

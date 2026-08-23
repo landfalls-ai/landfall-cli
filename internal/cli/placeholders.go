@@ -8,10 +8,14 @@ package cli
 // name would silently fall through to serve (root.go's defaultCommand rule).
 // None of them implements any behavior.
 //
-//	serve                 → tasks.md T027  (internal/cli/serve.go)
 //	status                → tasks.md T033  (internal/cli/status.go)
 //	connect               → tasks.md T054
 //	remediation           → tasks.md T055
+//
+// LANDED, no longer stubbed: serve (T027, internal/cli/serve.go — which is
+// also the command the defaultCommand rule dispatches to, so it must stay
+// registered for a bare `landfall`, a bare URL, and an unrecognized name to
+// keep behaving as they do today).
 //
 // LANDED, no longer stubbed: install/uninstall (T051, internal/cli/{install,
 // uninstall}.go) and hooks (T052, internal/cli/hooksinstall.go — which owns
@@ -35,7 +39,6 @@ import "github.com/spf13/cobra"
 // explains itself and exits 1.
 func placeholderCommands(ui *UI) []*cobra.Command {
 	names := []struct{ use, task string }{
-		{"serve", "T027"},
 		{"status", "T033"},
 		{"connect", "T054"},
 		{"remediation", "T055"},

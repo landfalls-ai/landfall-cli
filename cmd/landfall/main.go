@@ -15,6 +15,18 @@ import (
 	"github.com/landfalls-ai/landfall-cli/internal/cli"
 )
 
+// version is the build version, stamped in at link time:
+//
+//	go build -ldflags "-X main.version=$(git describe --tags --always)" ./cmd/landfall
+//
+// It is the ONLY place a release version is recorded, and `landfall serve`
+// reports it as the MCP server's own `serverInfo.version` — bin/landfall.mjs:487
+// hardcoded `'0.2.0'` there, which had already drifted three minor releases
+// behind package.json. An un-stamped build (`go run`, `go test`, a plain
+// `go build`) keeps "dev", which is a true statement about it.
+var version = "dev"
+
 func main() {
+	cli.SetVersion(version)
 	os.Exit(cli.Execute(os.Args[1:]))
 }

@@ -296,6 +296,32 @@ func truncate(s string) string {
 	return truncateN(s, 80)
 }
 
+// DescribeEvent is one human-readable stderr line for a LIVE-pushed shared
+// event — src/live.mjs's describeEvent, the doorbell nudge a responder sees
+// the moment another investigator publishes, distinct from FormatEventLine's
+// digest-line format ("#<seq> <type> [who] — text") used when catching up on
+// a batch. describeEvent has its own 100-rune truncation (not the 80-rune
+// default truncate above) and always ends with the same call-to-action,
+// because get_updates — not this line — is what the agent actually acts on;
+// this exists only so a human watching the terminal isn't left guessing.
+func DescribeEvent(e client.Event) string {
+	who := EventActor(e.Payload)
+	what := EventText(e.Payload)
+	body := ""
+	if what != "" {
+		body = fmt.Sprintf(": %q", truncateN(what, 100))
+	}
+	from := ""
+	if who != "" {
+		from = " from " + who
+	}
+	evtType := e.Type
+	if evtType == "" {
+		evtType = "event" // evt?.type ?? 'event' — live.mjs's own fallback
+	}
+	return fmt.Sprintf("⚡ %s%s%s — new shared context; call get_updates.", evtType, from, body)
+}
+
 func truncateN(s string, n int) string {
 	r := []rune(s)
 	if len(r) > n {

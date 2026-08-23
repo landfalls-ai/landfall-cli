@@ -305,3 +305,42 @@ func TestContributionFor_NoteAndFinding_DefaultEmptyTextOnMissing(t *testing.T) 
 		t.Errorf("body = %#v, want empty text", c.Body)
 	}
 }
+
+func TestDescribeEvent_FullShape(t *testing.T) {
+	line := DescribeEvent(client.Event{
+		Type: "edge.finding",
+		Payload: Args{
+			"text":        "origin pool unhealthy",
+			"displayName": "Dana",
+		},
+	})
+	want := `⚡ edge.finding from Dana: "origin pool unhealthy" — new shared context; call get_updates.`
+	if line != want {
+		t.Errorf("line = %q, want %q", line, want)
+	}
+}
+
+func TestDescribeEvent_OmitsFromAndBodyWhenAbsent(t *testing.T) {
+	line := DescribeEvent(client.Event{Type: "edge.finding"})
+	want := "⚡ edge.finding — new shared context; call get_updates."
+	if line != want {
+		t.Errorf("line = %q, want %q", line, want)
+	}
+}
+
+func TestDescribeEvent_FallsBackToEventWhenTypeIsEmpty(t *testing.T) {
+	line := DescribeEvent(client.Event{})
+	if !strings.HasPrefix(line, "⚡ event") {
+		t.Errorf("line = %q, want prefix '⚡ event'", line)
+	}
+}
+
+func TestDescribeEvent_Truncates100Runes_DistinctFrom80RuneTruncate(t *testing.T) {
+	long := strings.Repeat("x", 150)
+	line := DescribeEvent(client.Event{Type: "edge.finding", Payload: Args{"text": long}})
+	// 100 runes total: 99 of "x" plus the ellipsis.
+	want := `⚡ edge.finding: "` + strings.Repeat("x", 99) + "…\" — new shared context; call get_updates."
+	if line != want {
+		t.Errorf("line = %q, want %q", line, want)
+	}
+}

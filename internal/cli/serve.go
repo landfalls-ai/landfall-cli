@@ -143,7 +143,10 @@ func (l *liveSession) start(ctx context.Context, sess *session.Session, cl sessi
 		}
 		// The stderr line only reaches a human who happens to be watching the
 		// terminal; the agent is reached in-band, on its next tool result.
-		l.ui.Log("%s", narrate.FormatEventLine(evt))
+		// DescribeEvent (live.mjs's own nudge format), not FormatEventLine
+		// (the digest-catch-up format used elsewhere) — a live push and a
+		// digest replay are different moments and read differently in Node.
+		l.ui.Log("%s", narrate.DescribeEvent(evt))
 	})
 
 	l.mu.Lock()

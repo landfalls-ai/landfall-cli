@@ -1,0 +1,16 @@
+version: "2"
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - ineffassign
+    - gosimple
+  disable:
+    - forbidigo # re-enabled per-package below once T024's ui abstraction lands
+run:
+  timeout: 3m
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

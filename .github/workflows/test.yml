@@ -7,6 +7,9 @@ on:
 
 jobs:
   test:
+    # The Node source is being replaced in place by the Go rewrite
+    # (specs/20260822-golang-cli-rewrite) — this job stays until the port is
+    # complete and src/ is deleted.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -15,3 +18,23 @@ jobs:
           node-version: "22"
       - run: npm install
       - run: npm test
+
+  go:
+    # Windows is explicitly out of scope for this rewrite's hook-IPC subsystem
+    # (spec FR-012) — macOS + Linux only, matching contracts/socket-ipc.md and
+    # Target Platform in plan.md.
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          version: latest

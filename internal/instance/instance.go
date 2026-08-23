@@ -137,7 +137,10 @@ func ParseAddress(value, label string) (string, error) {
 	}
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
-		return "", fmt.Errorf("the %s is empty. Expected a URL such as %s", label, Hosted().Web)
+		// Capitalized "The ..." to match src/instance.mjs:97's exact wording —
+		// a divergence caught during Wave 3 integration (Go convention would
+		// lowercase this, but FR-001 wants byte-identical stderr).
+		return "", fmt.Errorf("The %s is empty. Expected a URL such as %s", label, Hosted().Web)
 	}
 
 	u, err := url.Parse(trimmed)
@@ -146,14 +149,14 @@ func ParseAddress(value, label string) (string, error) {
 	// reference. An absent scheme or host is what "not a valid URL" means here.
 	if err != nil || u.Scheme == "" || u.Host == "" {
 		return "", fmt.Errorf(
-			"the %s %q is not a valid URL. Expected something like %s", label, value, Hosted().Web)
+			"The %s %q is not a valid URL. Expected something like %s", label, value, Hosted().Web)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("the %s %q must use http or https, not %s:", label, value, u.Scheme)
+		return "", fmt.Errorf("The %s %q must use http or https, not %s:", label, value, u.Scheme)
 	}
 	if u.Scheme == "http" && !isLoopback(u.Hostname()) {
 		return "", fmt.Errorf(
-			"the %s %q uses plain http over the network, which would send your credentials in "+
+			"The %s %q uses plain http over the network, which would send your credentials in "+
 				"clear text. Use https, or a local address if you are running Landfall on this machine.",
 			label, value)
 	}

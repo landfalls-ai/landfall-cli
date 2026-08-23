@@ -49,7 +49,10 @@ func PromptSelection(items []SelectItem, skipPrompt bool, in io.Reader, out io.W
 
 	scanner := bufio.NewScanner(in)
 	for _, item := range items {
-		fmt.Fprintf(out, "Configure %s? [Y/n] ", item.Label)
+		// A failed prompt write is not worth aborting a selection over — the
+		// question simply goes unseen and the item keeps its pre-checked
+		// default, which is the same outcome as the user pressing Enter.
+		_, _ = fmt.Fprintf(out, "Configure %s? [Y/n] ", item.Label)
 		answer := ""
 		if scanner.Scan() {
 			answer = strings.ToLower(strings.TrimSpace(scanner.Text()))

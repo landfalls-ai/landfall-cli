@@ -234,7 +234,7 @@ func TestReadHookInputAnswersEmptyForATTY(t *testing.T) {
 	if err != nil {
 		t.Skip("no controlling terminal in this environment")
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	if got := ReadHookInput(f, 50*time.Millisecond); got != "" {
 		t.Fatalf("got %q", got)
 	}

@@ -12,7 +12,6 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -796,5 +795,5 @@ func waitUntil(t *testing.T, cond func() bool, what string) {
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal(fmt.Sprintf("timed out waiting for %s", what))
+	t.Fatalf("timed out waiting for %s", what)
 }

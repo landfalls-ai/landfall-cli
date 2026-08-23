@@ -211,6 +211,9 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newJoinCommand(ui, link),
 		newNoteCommand(ui, link),
 		newLeaveCommand(ui, link),
+		newInstallCommand(ui),
+		newUninstallCommand(ui),
+		newHooksCommand(ui),
 	)
 	root.AddCommand(placeholderCommands(ui)...)
 	return root

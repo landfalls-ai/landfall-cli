@@ -72,7 +72,7 @@ type settlingSession struct {
 
 func (s *settlingSession) SettleAttention(_ context.Context, _ time.Duration) *client.Attention {
 	s.settled++
-	s.fakeSession.attention = s.next
+	s.attention = s.next
 	return s.next
 }
 
@@ -442,7 +442,7 @@ func TestARealRoundTripAnswersEveryVerb(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind is expected to succeed in this environment")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 
 	status, err := SendToSocket(bound.SocketPath, StatusRequest(), 0)
 	if err != nil {
@@ -478,7 +478,7 @@ func TestAnUnknownOpOverTheWireIsAnsweredNotDropped(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind failed")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 
 	res, err := SendToSocket(bound.SocketPath, SocketRequest{Op: "frobnicate"}, 0)
 	if err != nil {
@@ -495,7 +495,7 @@ func TestAHandlerPanicBecomesAResponseNotADroppedConnection(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind failed")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 
 	res, err := SendToSocket(bound.SocketPath, StatusRequest(), 0)
 	if err != nil {
@@ -512,13 +512,13 @@ func TestAMalformedLineIsAnsweredByTheDefaultBranch(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind failed")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 
 	conn, err := net.Dial("unix", bound.SocketPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
 	if _, err := conn.Write([]byte("{not json at all\n")); err != nil {
 		t.Fatal(err)
@@ -549,7 +549,7 @@ func TestSendToSocketGivesUpRatherThanHangingOnASilentNode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	defer func() { _ = ln.Close() }()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -602,8 +602,8 @@ func TestQueryHookSocketsUnionsLiveAnswersAndDropsUnreachableOnesSilently(t *tes
 	if a == nil || b == nil {
 		t.Fatal("both binds are expected to succeed")
 	}
-	defer a.Close()
-	defer b.Close()
+	defer func() { _ = a.Close() }()
+	defer func() { _ = b.Close() }()
 
 	// A crashed session's leftover node: present in the directory, answering
 	// nothing. It must be skipped, not reported as a failure.
@@ -640,7 +640,7 @@ func TestQueryHookSocketsDropsNotOkAnswers(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind failed")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 
 	if got := QueryHookSockets(SocketRequest{Op: "frobnicate"}, ws, 0); len(got) != 0 {
 		t.Fatalf("only ok:true answers are kept, got %+v", got)
@@ -655,13 +655,13 @@ func TestBindTakesTheNextNameRatherThanEvictingALiveSibling(t *testing.T) {
 	if first == nil {
 		t.Fatal("first bind failed")
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 
 	second := StartHookSocket(context.Background(), &fakeSession{}, StartOptions{Workspace: ws, PID: 1})
 	if second == nil {
 		t.Fatal("second bind failed")
 	}
-	defer second.Close()
+	defer func() { _ = second.Close() }()
 
 	if filepath.Base(second.SocketPath) != "1-1.sock" {
 		t.Fatalf("second socket is %q, want 1-1.sock", filepath.Base(second.SocketPath))
@@ -687,7 +687,7 @@ func TestBindUnlinksAndReusesADeadNodesName(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind over a dead node failed")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 	if bound.SocketPath != stale {
 		t.Fatalf("a dead node's name must be reused, got %q", bound.SocketPath)
 	}
@@ -712,7 +712,7 @@ func TestBindSetsThe0700DirectoryAnd0600SocketModes(t *testing.T) {
 	if bound == nil {
 		t.Fatal("bind failed")
 	}
-	defer bound.Close()
+	defer func() { _ = bound.Close() }()
 
 	dirInfo, err := os.Stat(loc.Dir)
 	if err != nil {
@@ -751,7 +751,7 @@ func TestAnOverLongPathIsANonFatalBindFailureThatNamesTheRealCause(t *testing.T)
 		Workspace: ws, PID: 1, Log: func(msg string) { logged = append(logged, msg) },
 	})
 	if bound != nil {
-		bound.Close()
+		_ = bound.Close()
 		t.Fatal("an over-long socket path cannot bind")
 	}
 	if len(logged) != 1 {

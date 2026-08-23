@@ -610,7 +610,7 @@ func TestTheComposedResultIsAskedThenNudgeThenResultThenDelta(t *testing.T) {
 			t.Fatalf("the %s block is missing from:\n%s", name, out)
 		}
 	}
-	if !(iAsked < iNudge && iNudge < iResult && iResult < iDelta) {
+	if iAsked >= iNudge || iNudge >= iResult || iResult >= iDelta {
 		t.Fatalf("order was asked=%d nudge=%d result=%d delta=%d, want strictly ascending:\n%s",
 			iAsked, iNudge, iResult, iDelta, out)
 	}

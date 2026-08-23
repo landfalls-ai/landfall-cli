@@ -60,7 +60,7 @@ func ConfirmOnTTY(question string, opts ConfirmOptions) bool {
 	if err != nil {
 		return false // no controlling terminal — nobody to ask, so: no
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	fd := int(f.Fd())
 	if !term.IsTerminal(fd) {

@@ -23,12 +23,6 @@ import (
 // request-shape assertions.
 const testAPI = "https://instance.example/api"
 
-// doerFunc adapts a plain function to the Doer interface, mirroring the Node
-// suite's injected fetchImpl.
-type doerFunc func(*http.Request) (*http.Response, error)
-
-func (f doerFunc) Do(req *http.Request) (*http.Response, error) { return f(req) }
-
 // recordedCall captures one request the fake Doer observed, so a test can
 // assert both the outcome and the request shape — the Go analogue of the
 // Node suite's fakeFetch(handler).calls.

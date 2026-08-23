@@ -140,7 +140,7 @@ func ParseAddress(value, label string) (string, error) {
 		// Capitalized "The ..." to match src/instance.mjs:97's exact wording —
 		// a divergence caught during Wave 3 integration (Go convention would
 		// lowercase this, but FR-001 wants byte-identical stderr).
-		return "", fmt.Errorf("The %s is empty. Expected a URL such as %s", label, Hosted().Web)
+		return "", fmt.Errorf("The %s is empty. Expected a URL such as %s", label, Hosted().Web) //nolint:staticcheck // ST1005: intentional, see above
 	}
 
 	u, err := url.Parse(trimmed)
@@ -148,14 +148,14 @@ func ParseAddress(value, label string) (string, error) {
 	// Node source used: "not-a-url" parses successfully as a relative path
 	// reference. An absent scheme or host is what "not a valid URL" means here.
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return "", fmt.Errorf(
+		return "", fmt.Errorf( //nolint:staticcheck // ST1005: matches src/instance.mjs's capitalized wording, FR-001
 			"The %s %q is not a valid URL. Expected something like %s", label, value, Hosted().Web)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", fmt.Errorf("The %s %q must use http or https, not %s:", label, value, u.Scheme)
+		return "", fmt.Errorf("The %s %q must use http or https, not %s:", label, value, u.Scheme) //nolint:staticcheck // ST1005: same
 	}
 	if u.Scheme == "http" && !isLoopback(u.Hostname()) {
-		return "", fmt.Errorf(
+		return "", fmt.Errorf( //nolint:staticcheck // ST1005: same
 			"The %s %q uses plain http over the network, which would send your credentials in "+
 				"clear text. Use https, or a local address if you are running Landfall on this machine.",
 			label, value)

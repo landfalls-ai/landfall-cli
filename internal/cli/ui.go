@@ -37,12 +37,15 @@ type UI struct {
 // directly (enforced by convention here, and worth a golangci-lint
 // forbidigo rule once every command is ported — see .golangci.yml).
 func (u *UI) Printf(format string, args ...any) {
-	fmt.Fprintf(u.Err, format, args...)
+	// A write error to stderr itself is not actionable here — there is no
+	// second channel to report it on — so it's deliberately discarded, not
+	// silently ignored by omission (errcheck flags a bare Fprintf call).
+	_, _ = fmt.Fprintf(u.Err, format, args...)
 }
 
 // Outf writes formatted machine-readable output to Out.
 func (u *UI) Outf(format string, args ...any) {
-	fmt.Fprintf(u.Out, format, args...)
+	_, _ = fmt.Fprintf(u.Out, format, args...)
 }
 
 // New returns a UI wired to the real stdout/stderr.

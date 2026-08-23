@@ -160,7 +160,7 @@ func (d *Doorbell) ring(pending int) error {
 		return err
 	}
 	if _, err := f.WriteString(line); err != nil {
-		f.Close()
+		_ = f.Close()
 		return err
 	}
 	return f.Close()

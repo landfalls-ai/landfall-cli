@@ -10,10 +10,14 @@ package cli
 //
 //	serve                 → tasks.md T027  (internal/cli/serve.go)
 //	status                → tasks.md T033  (internal/cli/status.go)
-//	install / uninstall   → tasks.md T049-T050
-//	connect               → tasks.md T053
+//	connect               → tasks.md T054
 //	remediation           → tasks.md T055
-//	hooks                 → tasks.md T041-T046
+//
+// LANDED, no longer stubbed: install/uninstall (T051, internal/cli/{install,
+// uninstall}.go) and hooks (T052, internal/cli/hooksinstall.go — which owns
+// the `hooks` parent and its install/uninstall subcommands, and delegates the
+// EVENT subcommands to the hooksEventDispatch seam declared there, for
+// T039-T045 to fill in).
 //
 // Replacing one means deleting its entry from placeholderCommands below and
 // adding a real constructor in its own file — nothing else in root.go needs to
@@ -33,11 +37,8 @@ func placeholderCommands(ui *UI) []*cobra.Command {
 	names := []struct{ use, task string }{
 		{"serve", "T027"},
 		{"status", "T033"},
-		{"install", "T049"},
-		{"uninstall", "T050"},
-		{"connect", "T053"},
+		{"connect", "T054"},
 		{"remediation", "T055"},
-		{"hooks", "T041"},
 	}
 	cmds := make([]*cobra.Command, 0, len(names))
 	for _, n := range names {

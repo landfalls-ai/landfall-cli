@@ -1,0 +1,43 @@
+name: release
+
+# Replaces bump-homebrew-tap.yml's single-tarball-checksum flow. That
+# workflow only ever bumped a formula pointing at this repo's own
+# auto-generated source tarball (no compile step existed to produce
+# anything else). A Go binary needs real per-platform build+release+tap
+# steps, which goreleaser does as one pipeline rather than three separate
+# ones -- see .goreleaser.yml for what actually gets built and where it's
+# published.
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  goreleaser:
+    # Guard against a fork ever running this against the real tap.
+    if: github.repository == 'landfalls-ai/landfall-cli'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.24"
+      - uses: goreleaser/goreleaser-action@v6
+        with:
+          distribution: goreleaser
+          version: latest
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Fine-grained PAT, Contents: Read and write, scoped to
+          # landfalls-ai/homebrew-landfall only -- same credential
+          # bump-homebrew-tap.yml used, still set up per RELEASING.md.
+          # goreleaser's homebrew_casks publisher pushes the generated
+          # Casks/landfall.rb there directly; GITHUB_TOKEN above only
+          # covers this repo's own release.
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}

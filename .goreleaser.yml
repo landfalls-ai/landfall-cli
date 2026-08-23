@@ -1,0 +1,89 @@
+version: 2
+
+# Replaces the source-tarball Homebrew formula (inventory.md §9's "single
+# biggest distribution change") with real per-platform compiled binaries.
+# Windows is out of scope for this rewrite (spec FR-012) -- macOS + Linux
+# only, matching plan.md's Target Platform and the hook-IPC subsystem's
+# actual test coverage.
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: landfall
+    main: ./cmd/landfall
+    binary: landfall
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      # main.version is the ONLY place a release version is recorded --
+      # cmd/landfall/main.go's own doc comment explains why (replaces
+      # bin/landfall.mjs:487's hardcoded, already-stale '0.2.0' literal).
+      - -s -w -X main.version={{.Version}}
+
+archives:
+  - id: landfall
+    ids:
+      - landfall
+    formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - LICENSE*
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: landfalls-ai
+    name: landfall-cli
+  # goreleaser writes the release itself; the prior bump-homebrew-tap.yml
+  # workflow's separate tag-triggered job is retired in favor of this one
+  # pipeline doing build+release+tap-update together (see
+  # .github/workflows/release.yml).
+
+homebrew_casks:
+  # `brews:` (the old Formula-publishing key) was formally removed in
+  # goreleaser v2.16 -- homebrew_casks is the current, documented
+  # replacement for distributing a plain compiled binary, and `brew install
+  # landfall` works identically for the end user (goreleaser.com/deprecations
+  # confirms this). Writes to Casks/landfall.rb in the tap, not
+  # Formula/landfall.rb -- the old Formula/landfall.rb this replaces should
+  # be deleted from the tap once this pipeline has shipped a real release
+  # (kept for now so `brew install landfall` doesn't break mid-transition).
+  - name: landfall
+    ids:
+      - landfall
+    binaries:
+      - landfall
+    repository:
+      owner: landfalls-ai
+      name: homebrew-landfall
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    homepage: "https://github.com/landfalls-ai/landfall-cli"
+    description: "Join a Landfall war room from your terminal"
+    # No `depends_on "node"` and no npm install step -- this IS the biggest
+    # behavioral change from today's formula. A compiled binary needs no
+    # runtime dependency at all.
+    commit_author:
+      name: Jhonny
+      email: jhonny@landfalls.ai
+    commit_msg_template: "chore: bump landfall to {{ .Tag }}"

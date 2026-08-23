@@ -1,0 +1,37 @@
+linters:
+  enable:
+    - govet
+    - staticcheck
+    - unused
+    - errcheck
+    - ineffassign
+    - gosimple
+  disable:
+    - forbidigo # re-enabled per-package below once T024's ui abstraction lands
+linters-settings:
+  errcheck:
+    # A deferred/best-effort Close() on a socket, file, or listener is a
+    # standard, low-risk pattern throughout this port (mirroring the Node
+    # source's own best-effort cleanup) -- checking it everywhere would be
+    # noise, not a real correctness signal. Everything else stays checked.
+    exclude-functions:
+      - (io.Closer).Close
+      - (net.Conn).Close
+      - (net.Listener).Close
+run:
+  timeout: 3m
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+  exclude-rules:
+    # connect_aws.go's errors are deliberately full guidance paragraphs shown
+    # directly to a CLI user in a terminal ("...configure credentials ... and
+    # re-run.") -- ST1005's "no ending punctuation" convention is meant for
+    # short errors that get wrapped/chained, not full-sentence user guidance.
+    # Rewording these to satisfy the linter would make them read worse for
+    # the person actually reading them, so the exception is scoped narrowly
+    # here rather than silencing ST1005 project-wide.
+    - path: internal/cli/connect_aws\.go
+      linters:
+        - staticcheck
+      text: "ST1005"

@@ -11,9 +11,12 @@
 package narrate
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
+
+	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
 
 // Args is the arbitrary, JSON-shaped argument bag a tool call carries — the
@@ -56,11 +59,26 @@ type WidgetBody struct {
 	Data       any    `json:"data,omitempty"`
 }
 
-// Event is an incoming shared room event, as rendered by FormatEventLine.
-type Event struct {
-	Seq     int
-	Type    string
-	Payload Args
+// Fields renders the contribution body as the flat key/value map the
+// POST /edge/contributions envelope spreads over itself.
+//
+// The Node original's contributionFor returns a plain object that IS both the
+// typed body and the thing spread onto the wire; Go's typed *Body structs buy
+// the callers a checked shape, and this is the one place that converts back.
+// It goes through the structs' own json tags rather than a hand-written map so
+// the two spellings of the body can never drift apart. A body that cannot be
+// marshalled yields nil, which the client sends as an empty object — the same
+// thing JSON.stringify would have produced for an unrepresentable value.
+func (c Contribution) Fields() map[string]any {
+	encoded, err := json.Marshal(c.Body)
+	if err != nil {
+		return nil
+	}
+	var out map[string]any
+	if err := json.Unmarshal(encoded, &out); err != nil {
+		return nil
+	}
+	return out
 }
 
 // NarrateDoing returns a friendly present-tense phrase for what the agent is
@@ -249,14 +267,19 @@ func IsTemplated(payload Args) bool {
 // FormatEventLine renders one compact line per shared event, attributed to
 // human · agent. The single renderer for every place a queued room event is
 // spelled out.
-func FormatEventLine(e Event) string {
+//
+// Takes internal/client's Event — the same struct the live socket parks on the
+// session's pending queue, which is what the Node original's digest maps over
+// (src/hooks/socket.mjs:169). A nil Seq renders as "undefined" rather than as
+// "#0", since seq 0 is a real event.
+func FormatEventLine(e client.Event) string {
 	who := EventActor(e.Payload)
 	what := EventText(e.Payload)
 	marker := ""
 	if IsTemplated(e.Payload) {
 		marker = " (no evidence — templated, not analysis)"
 	}
-	line := fmt.Sprintf("#%d %s", e.Seq, e.Type)
+	line := fmt.Sprintf("#%s %s", seqOrUndefined(e.Seq), e.Type)
 	if who != "" {
 		line += fmt.Sprintf(" [%s]", who)
 	}

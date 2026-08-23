@@ -3,6 +3,8 @@ package narrate
 import (
 	"strings"
 	"testing"
+
+	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -16,7 +18,7 @@ func TestRenderFrame_NilFrame(t *testing.T) {
 }
 
 func TestRenderFrame_ZeroValueFrameNeverPanics(t *testing.T) {
-	got := RenderFrame(&ContextFrame{})
+	got := RenderFrame(&client.ContextFrame{})
 	if !strings.Contains(got, "(untitled incident)") {
 		t.Errorf("zero-value frame render = %q, want untitled-incident fallback", got)
 	}
@@ -32,25 +34,25 @@ func TestRenderFrame_ZeroValueFrameNeverPanics(t *testing.T) {
 }
 
 func TestRenderFrame_FullFrame(t *testing.T) {
-	frame := &ContextFrame{
-		Incident: Incident{
+	frame := &client.ContextFrame{
+		Incident: client.Incident{
 			Title:       "CloudFront 5xx spike",
 			Severity:    "SEV-2",
 			Status:      "investigating",
 			AlertSource: "CloudWatch",
 		},
-		Brief: Brief{
-			Established:   []BriefItem{{Seq: 3, Statement: "origin pool unhealthy", By: "Dana"}},
-			WorkingTheory: []BriefItem{{Seq: 5, Statement: "cache stampede suspected", By: "Alex"}},
-			Open:          []BriefItem{{Seq: 8, Statement: "confirm rollback safe", By: "Dana"}},
+		Brief: client.Brief{
+			Established:   []client.BriefItem{{Seq: 3, Statement: "origin pool unhealthy", By: "Dana"}},
+			WorkingTheory: []client.BriefItem{{Seq: 5, Statement: "cache stampede suspected", By: "Alex"}},
+			Open:          []client.BriefItem{{Seq: 8, Statement: "confirm rollback safe", By: "Dana"}},
 		},
-		Participants: []Participant{
+		Participants: []client.Participant{
 			{DisplayName: "Dana", Active: boolPtr(true)},
 			{DisplayName: "Alex", EdgeAgentLabel: "claude-code", Active: boolPtr(false)},
 			{DisplayName: "Robo", Active: nil},
 		},
 		FreshnessMs: f64Ptr(4500),
-		AsOfSeq:     intPtr(42),
+		AsOfSeq:     seqPtr(42),
 	}
 	got := RenderFrame(frame)
 
@@ -72,22 +74,30 @@ func TestRenderFrame_FullFrame(t *testing.T) {
 }
 
 func TestRenderFrame_NoTitleFallsBackToUntitled(t *testing.T) {
-	got := RenderFrame(&ContextFrame{})
+	got := RenderFrame(&client.ContextFrame{})
 	if !strings.HasPrefix(got, "(untitled incident)") {
 		t.Errorf("got = %q, want to start with (untitled incident)", got)
 	}
 }
 
 func TestFrameCursor(t *testing.T) {
-	if got := FrameCursor(nil); got != nil {
-		t.Errorf("FrameCursor(nil) = %v, want nil", got)
+	// "No cursor" is NoCursor (-1), not a pointer: it is the same value the
+	// session's own cursor starts at, so handing it to AdvanceCursorTo is a
+	// no-op rather than a rewind.
+	if got := FrameCursor(nil); got != NoCursor {
+		t.Errorf("FrameCursor(nil) = %v, want %v", got, NoCursor)
 	}
-	if got := FrameCursor(&ContextFrame{}); got != nil {
-		t.Errorf("FrameCursor(zero value) = %v, want nil", got)
+	if got := FrameCursor(&client.ContextFrame{}); got != NoCursor {
+		t.Errorf("FrameCursor(zero value) = %v, want %v", got, NoCursor)
 	}
-	f := &ContextFrame{AsOfSeq: intPtr(99)}
-	if got := FrameCursor(f); got == nil || *got != 99 {
+	f := &client.ContextFrame{AsOfSeq: seqPtr(99)}
+	if got := FrameCursor(f); got != 99 {
 		t.Errorf("FrameCursor = %v, want 99", got)
+	}
+	// Seq 0 is a real seq and must not be confused with "absent".
+	zero := &client.ContextFrame{AsOfSeq: seqPtr(0)}
+	if got := FrameCursor(zero); got != 0 {
+		t.Errorf("FrameCursor(asOfSeq 0) = %v, want 0", got)
 	}
 }
 
@@ -95,14 +105,14 @@ func TestRenderDelta_EmptyReturnsEmptyString(t *testing.T) {
 	if got := RenderDelta(nil); got != "" {
 		t.Errorf("RenderDelta(nil) = %q, want empty", got)
 	}
-	if got := RenderDelta(&FrameDelta{}); got != "" {
+	if got := RenderDelta(&client.FrameDelta{}); got != "" {
 		t.Errorf("RenderDelta(zero value) = %q, want empty", got)
 	}
 }
 
 func TestRenderDelta_ItemsAndRoutineCount(t *testing.T) {
-	delta := &FrameDelta{
-		Items: []DeltaItem{
+	delta := &client.FrameDelta{
+		Items: []client.DeltaItem{
 			{Seq: 10, Type: "claim.staged", Class: "addressed", By: "Dana", Summary: "origin is root cause"},
 			{Seq: 11, Type: "edge.finding", Class: "substantive", By: "Alex"},
 		},
@@ -124,7 +134,7 @@ func TestRenderDelta_ItemsAndRoutineCount(t *testing.T) {
 }
 
 func TestRenderDelta_RoutineCountOnlyStillRenders(t *testing.T) {
-	got := RenderDelta(&FrameDelta{RoutineCount: 3})
+	got := RenderDelta(&client.FrameDelta{RoutineCount: 3})
 	if !strings.Contains(got, "⚠ 0 update(s)") || !strings.Contains(got, "(+3 routine update(s)") {
 		t.Errorf("got = %q", got)
 	}
@@ -136,14 +146,14 @@ func TestRenderSearchHits_NoHits(t *testing.T) {
 	if got != want {
 		t.Errorf("RenderSearchHits(nil) = %q, want %q", got, want)
 	}
-	got2 := RenderSearchHits(&SearchResult{}, "5xx")
+	got2 := RenderSearchHits(&client.SearchResult{}, "5xx")
 	if got2 != want {
 		t.Errorf("RenderSearchHits(empty) = %q, want %q", got2, want)
 	}
 }
 
 func TestRenderSearchHits_WithHits(t *testing.T) {
-	result := &SearchResult{Hits: []SearchHit{
+	result := &client.SearchResult{Hits: []client.SearchHit{
 		{Seq: 4, Type: "edge.finding", By: "Dana", Snippet: "…origin pool 5xx…"},
 	}}
 	got := RenderSearchHits(result, "5xx")

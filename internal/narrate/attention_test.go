@@ -3,9 +3,11 @@ package narrate
 import (
 	"strings"
 	"testing"
+
+	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
 
-func intPtr(i int) *int         { return &i }
+func seqPtr(i int64) *int64     { return &i }
 func f64Ptr(f float64) *float64 { return &f }
 
 func TestFormatDuration(t *testing.T) {
@@ -37,29 +39,37 @@ func TestFormatDuration_NonFinite(t *testing.T) {
 }
 
 func TestVoteKey(t *testing.T) {
-	if got := VoteKey(VoteRequest{ClaimSeq: intPtr(5), Stale: false}); got != "5:fresh" {
+	if got := VoteKey(client.VoteAwaited{ClaimSeq: seqPtr(5), Stale: false}); got != "5:fresh" {
 		t.Errorf("VoteKey fresh = %q", got)
 	}
-	if got := VoteKey(VoteRequest{ClaimSeq: intPtr(5), Stale: true}); got != "5:stale" {
+	if got := VoteKey(client.VoteAwaited{ClaimSeq: seqPtr(5), Stale: true}); got != "5:stale" {
 		t.Errorf("VoteKey stale = %q", got)
 	}
-	if got := VoteKey(VoteRequest{}); got != "undefined:fresh" {
+	if got := VoteKey(client.VoteAwaited{}); got != "undefined:fresh" {
 		t.Errorf("VoteKey missing claimSeq = %q", got)
 	}
 }
 
 func TestVoteRequestBlock_Empty(t *testing.T) {
-	b := VoteRequestBlock(Attention{}, nil, 0)
+	b := VoteRequestBlock(&client.Attention{}, nil, 0)
 	if b.Text != "" || len(b.Keys) != 0 {
 		t.Errorf("VoteRequestBlock({}) = %#v, want zero value", b)
+	}
+	// A nil projection is "nothing known to be waiting" — an unreachable
+	// server must leave the tool result untouched, never panic.
+	if b := VoteRequestBlock(nil, nil, 0); b.Text != "" || len(b.Keys) != 0 {
+		t.Errorf("VoteRequestBlock(nil) = %#v, want zero value", b)
+	}
+	if blockers := StopBlockers(nil); HasStopBlockers(blockers) {
+		t.Errorf("StopBlockers(nil) = %#v, want nothing blocking", blockers)
 	}
 }
 
 func TestVoteRequestBlock_FiltersInvalidAndNotified(t *testing.T) {
-	att := Attention{VotesAwaited: []VoteRequest{
+	att := &client.Attention{VotesAwaited: []client.VoteAwaited{
 		{ClaimSeq: nil, Statement: "no seq, filtered"},
-		{ClaimSeq: intPtr(1), Statement: "already notified"},
-		{ClaimSeq: intPtr(2), Statement: "fresh one"},
+		{ClaimSeq: seqPtr(1), Statement: "already notified"},
+		{ClaimSeq: seqPtr(2), Statement: "fresh one"},
 	}}
 	notified := map[string]bool{"1:fresh": true}
 	b := VoteRequestBlock(att, notified, 0)
@@ -75,11 +85,11 @@ func TestVoteRequestBlock_FiltersInvalidAndNotified(t *testing.T) {
 }
 
 func TestVoteRequestBlock_CapsAtMaxAndReportsOmitted(t *testing.T) {
-	att := Attention{VotesAwaited: []VoteRequest{
-		{ClaimSeq: intPtr(1), Statement: "one"},
-		{ClaimSeq: intPtr(2), Statement: "two"},
-		{ClaimSeq: intPtr(3), Statement: "three"},
-		{ClaimSeq: intPtr(4), Statement: "four"},
+	att := &client.Attention{VotesAwaited: []client.VoteAwaited{
+		{ClaimSeq: seqPtr(1), Statement: "one"},
+		{ClaimSeq: seqPtr(2), Statement: "two"},
+		{ClaimSeq: seqPtr(3), Statement: "three"},
+		{ClaimSeq: seqPtr(4), Statement: "four"},
 	}}
 	b := VoteRequestBlock(att, nil, VoteLinesMax)
 	if len(b.Keys) != 3 {
@@ -94,9 +104,9 @@ func TestVoteRequestBlock_CapsAtMaxAndReportsOmitted(t *testing.T) {
 }
 
 func TestVoteRequestBlock_RendersStaleAndExpiry(t *testing.T) {
-	att := Attention{VotesAwaited: []VoteRequest{
-		{ClaimSeq: intPtr(1), Statement: "stale one", Stale: true},
-		{ClaimSeq: intPtr(2), Statement: "expiring one", ExpiresInMs: f64Ptr(135 * 60_000)},
+	att := &client.Attention{VotesAwaited: []client.VoteAwaited{
+		{ClaimSeq: seqPtr(1), Statement: "stale one", Stale: true},
+		{ClaimSeq: seqPtr(2), Statement: "expiring one", ExpiresInMs: f64Ptr(135 * 60_000)},
 	}}
 	b := VoteRequestBlock(att, nil, 0)
 	if !strings.Contains(b.Text, "PAST its freshness window") {
@@ -108,13 +118,13 @@ func TestVoteRequestBlock_RendersStaleAndExpiry(t *testing.T) {
 }
 
 func TestVoteRequestBlock_IncludesAuthorAndShortfall(t *testing.T) {
-	att := Attention{VotesAwaited: []VoteRequest{
+	att := &client.Attention{VotesAwaited: []client.VoteAwaited{
 		{
-			ClaimSeq:      intPtr(9),
+			ClaimSeq:      seqPtr(9),
 			Statement:     "origin is root cause",
 			AuthoredBy:    "Dana",
 			AuthorIsAgent: true,
-			Shortfall:     &Shortfall{Text: "needs a second corroboration"},
+			Shortfall:     &client.Shortfall{Text: "needs a second corroboration"},
 		},
 	}}
 	b := VoteRequestBlock(att, nil, 0)
@@ -127,7 +137,7 @@ func TestVoteRequestBlock_IncludesAuthorAndShortfall(t *testing.T) {
 }
 
 func TestDivergenceKey(t *testing.T) {
-	got := DivergenceKey(Divergence{EstablishedSubject: "origin pool", ObservedSubject: "cache layer"})
+	got := DivergenceKey(client.Divergence{EstablishedSubject: "origin pool", ObservedSubject: "cache layer"})
 	want := "origin pool::cache layer"
 	if got != want {
 		t.Errorf("DivergenceKey = %q, want %q", got, want)
@@ -138,13 +148,13 @@ func TestDivergenceBlock_SilentWhenNotDiverging(t *testing.T) {
 	if b := DivergenceBlock(nil, nil); b.Text != "" {
 		t.Errorf("nil divergence should be silent, got %q", b.Text)
 	}
-	if b := DivergenceBlock(&Divergence{Diverging: false}, nil); b.Text != "" {
+	if b := DivergenceBlock(&client.Divergence{Diverging: false}, nil); b.Text != "" {
 		t.Errorf("diverging:false should be silent, got %q", b.Text)
 	}
 }
 
 func TestDivergenceBlock_SilentWhenAlreadyNotified(t *testing.T) {
-	d := &Divergence{Diverging: true, EstablishedSubject: "origin pool", ObservedSubject: "cache layer"}
+	d := &client.Divergence{Diverging: true, EstablishedSubject: "origin pool", ObservedSubject: "cache layer"}
 	notified := map[string]bool{DivergenceKey(*d): true}
 	if b := DivergenceBlock(d, notified); b.Text != "" {
 		t.Errorf("already-notified pair should be silent, got %q", b.Text)
@@ -152,7 +162,7 @@ func TestDivergenceBlock_SilentWhenAlreadyNotified(t *testing.T) {
 }
 
 func TestDivergenceBlock_RendersInvitation(t *testing.T) {
-	d := &Divergence{Diverging: true, EstablishedSubject: "origin pool", ObservedSubject: "cache layer"}
+	d := &client.Divergence{Diverging: true, EstablishedSubject: "origin pool", ObservedSubject: "cache layer"}
 	b := DivergenceBlock(d, nil)
 	if !strings.Contains(b.Text, `"origin pool"`) || !strings.Contains(b.Text, `"cache layer"`) {
 		t.Errorf("text missing subjects: %q", b.Text)
@@ -166,7 +176,7 @@ func TestDivergenceBlock_RendersInvitation(t *testing.T) {
 }
 
 func TestDivergenceBlock_DefaultsSubjectsWhenAbsent(t *testing.T) {
-	d := &Divergence{Diverging: true}
+	d := &client.Divergence{Diverging: true}
 	b := DivergenceBlock(d, nil)
 	if !strings.Contains(b.Text, "a different subject") || !strings.Contains(b.Text, "something else") {
 		t.Errorf("missing default subject wording: %q", b.Text)
@@ -174,12 +184,12 @@ func TestDivergenceBlock_DefaultsSubjectsWhenAbsent(t *testing.T) {
 }
 
 func TestStopBlockers_QuarantinedButNotMerelyFlagged(t *testing.T) {
-	att := Attention{FlaggedOwnContext: []FlaggedContext{
-		{TargetSeq: 1, State: "flagged"},
-		{TargetSeq: 2, State: "quarantined"},
+	att := &client.Attention{FlaggedOwnContext: []client.FlaggedContext{
+		{TargetSeq: seqPtr(1), State: "flagged"},
+		{TargetSeq: seqPtr(2), State: "quarantined"},
 	}}
 	blockers := StopBlockers(att)
-	if len(blockers.Quarantined) != 1 || blockers.Quarantined[0].TargetSeq != 2 {
+	if len(blockers.Quarantined) != 1 || blockers.Quarantined[0].TargetSeq == nil || *blockers.Quarantined[0].TargetSeq != 2 {
 		t.Errorf("Quarantined = %#v, want only seq 2", blockers.Quarantined)
 	}
 	if !HasStopBlockers(blockers) {
@@ -188,7 +198,7 @@ func TestStopBlockers_QuarantinedButNotMerelyFlagged(t *testing.T) {
 }
 
 func TestStopBlockers_MerelyFlaggedNeverBlocksAlone(t *testing.T) {
-	att := Attention{FlaggedOwnContext: []FlaggedContext{{TargetSeq: 1, State: "flagged"}}}
+	att := &client.Attention{FlaggedOwnContext: []client.FlaggedContext{{TargetSeq: seqPtr(1), State: "flagged"}}}
 	blockers := StopBlockers(att)
 	if HasStopBlockers(blockers) {
 		t.Error("a merely-flagged item must never block")
@@ -196,12 +206,12 @@ func TestStopBlockers_MerelyFlaggedNeverBlocksAlone(t *testing.T) {
 }
 
 func TestStopBlockers_ContradictionBlocksOrdinaryVoteDoesNot(t *testing.T) {
-	att := Attention{VotesAwaited: []VoteRequest{
-		{ClaimSeq: intPtr(1), Statement: "ordinary vote, no contradiction"},
+	att := &client.Attention{VotesAwaited: []client.VoteAwaited{
+		{ClaimSeq: seqPtr(1), Statement: "ordinary vote, no contradiction"},
 		{
-			ClaimSeq:  intPtr(2),
+			ClaimSeq:  seqPtr(2),
 			Statement: "contradicts the record",
-			Shortfall: &Shortfall{Missing: &Missing{Contradiction: []int{7, 8}}},
+			Shortfall: &client.Shortfall{Missing: &client.Missing{Contradiction: []int64{7, 8}}},
 		},
 	}}
 	blockers := StopBlockers(att)
@@ -221,14 +231,14 @@ func TestHasStopBlockers_FalseWhenEmpty(t *testing.T) {
 
 func TestDescribeStopBlockers_RendersBothClasses(t *testing.T) {
 	blockers := Blockers{
-		Quarantined: []FlaggedContext{
-			{TargetSeq: 12, TargetKind: "finding", Relation: "cited", CitedByClaimSeqs: []int{3, 4}, Reason: "debunked"},
+		Quarantined: []client.FlaggedContext{
+			{TargetSeq: seqPtr(12), TargetKind: "finding", Relation: "cited", CitedByClaimSeqs: []int64{3, 4}, Reason: "debunked"},
 		},
-		Contradictions: []VoteRequest{
+		Contradictions: []client.VoteAwaited{
 			{
-				ClaimSeq:  intPtr(9),
+				ClaimSeq:  seqPtr(9),
 				Statement: "origin is root cause",
-				Shortfall: &Shortfall{Missing: &Missing{Contradiction: []int{2}}},
+				Shortfall: &client.Shortfall{Missing: &client.Missing{Contradiction: []int64{2}}},
 			},
 		},
 	}
@@ -246,7 +256,7 @@ func TestDescribeStopBlockers_RendersBothClasses(t *testing.T) {
 }
 
 func TestDescribeStopBlockers_DefaultsMissingKindAndRelation(t *testing.T) {
-	blockers := Blockers{Quarantined: []FlaggedContext{{TargetSeq: 1}}}
+	blockers := Blockers{Quarantined: []client.FlaggedContext{{TargetSeq: seqPtr(1)}}}
 	lines := DescribeStopBlockers(blockers, 0)
 	if len(lines) != 1 || !strings.Contains(lines[0], "this item you used") {
 		t.Errorf("lines = %v, want default kind/relation wording", lines)
@@ -254,8 +264,8 @@ func TestDescribeStopBlockers_DefaultsMissingKindAndRelation(t *testing.T) {
 }
 
 func TestDescribeStopBlockers_CapsAtMax(t *testing.T) {
-	blockers := Blockers{Quarantined: []FlaggedContext{
-		{TargetSeq: 1}, {TargetSeq: 2}, {TargetSeq: 3},
+	blockers := Blockers{Quarantined: []client.FlaggedContext{
+		{TargetSeq: seqPtr(1)}, {TargetSeq: seqPtr(2)}, {TargetSeq: seqPtr(3)},
 	}}
 	lines := DescribeStopBlockers(blockers, 2)
 	if len(lines) != 3 {

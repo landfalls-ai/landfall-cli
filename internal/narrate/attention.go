@@ -5,6 +5,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
 
 // Ported from src/attention.mjs — what the room is waiting on from THIS
@@ -15,6 +17,11 @@ import (
 // and a re-derivation here would be a second implementation of them.
 // Everything in this file is presentation and a decision about when to
 // interrupt.
+//
+// The projection's WIRE TYPES (client.Attention, client.VoteAwaited,
+// client.FlaggedContext, client.Divergence, …) belong to internal/client, the
+// layer that unmarshals them. This file renders them and owns nothing about
+// their shape.
 //
 // TWO CHANNELS, ONE SOURCE.
 //
@@ -35,7 +42,10 @@ const VoteLinesMax = 3
 var AttentionPrefixes = []string{"claim.", "context."}
 
 // TouchesAttention reports whether a room event could change the attention
-// projection — used to refresh on arrival rather than on a timer.
+// projection — used to refresh on arrival rather than on a timer. Takes the
+// event's TYPE rather than the event, so the one implementation serves both
+// the tool-call path and the live-socket path without either of them having
+// to hold a particular event struct.
 func TouchesAttention(eventType string) bool {
 	for _, p := range AttentionPrefixes {
 		if strings.HasPrefix(eventType, p) {
@@ -43,53 +53,6 @@ func TouchesAttention(eventType string) bool {
 		}
 	}
 	return false
-}
-
-// Missing names what a staged claim's shortfall is missing before it can be
-// admitted; Contradiction, when non-empty, lists the admitted claim seqs it
-// contradicts.
-type Missing struct {
-	Contradiction []int
-}
-
-// Shortfall is why a staged claim is not yet admitted.
-type Shortfall struct {
-	Text    string
-	Missing *Missing
-}
-
-// VoteRequest is one entry in Attention.VotesAwaited: a staged claim awaiting
-// this agent's position. ClaimSeq is a pointer because the source filters
-// out any entry whose claimSeq is not a number — a nil ClaimSeq here plays
-// that same "invalid/missing" role.
-type VoteRequest struct {
-	ClaimSeq      *int
-	Stale         bool
-	AuthoredBy    string
-	AuthorIsAgent bool
-	Statement     string
-	Shortfall     *Shortfall
-	// ExpiresInMs is a float64 (not int) so a genuinely non-finite or absent
-	// value can be represented and rejected exactly like Number.isFinite
-	// does in formatDuration/voteRequestBlock; nil means absent.
-	ExpiresInMs *float64
-}
-
-// FlaggedContext is one entry in Attention.FlaggedOwnContext: content this
-// agent authored or cited that has been flagged (and possibly quarantined).
-type FlaggedContext struct {
-	TargetSeq        int
-	State            string // e.g. "quarantined"
-	TargetKind       string
-	Relation         string
-	CitedByClaimSeqs []int
-	Reason           string
-}
-
-// Attention is the server's vetting/attention projection for this agent.
-type Attention struct {
-	VotesAwaited      []VoteRequest
-	FlaggedOwnContext []FlaggedContext
 }
 
 // Block is a piggyback text block plus the dedupe keys it announced, so a
@@ -103,16 +66,12 @@ type Block struct {
 // not re-announced on every tool call. Staleness is part of the key on
 // purpose: a claim about to lapse is genuinely new information, and it is
 // the last moment a position can still count.
-func VoteKey(v VoteRequest) string {
-	seq := "undefined"
-	if v.ClaimSeq != nil {
-		seq = strconv.Itoa(*v.ClaimSeq)
-	}
+func VoteKey(v client.VoteAwaited) string {
 	fresh := "fresh"
 	if v.Stale {
 		fresh = "stale"
 	}
-	return seq + ":" + fresh
+	return seqOrUndefined(v.ClaimSeq) + ":" + fresh
 }
 
 // VoteRequestBlock builds the piggyback block for a tool result.
@@ -122,12 +81,19 @@ func VoteKey(v VoteRequest) string {
 // as notified, so a caller that fails to deliver the block does not lose the
 // announcement. max <= 0 defaults to VoteLinesMax.
 //
+// attention may be nil (an unreachable server means "nothing known to be
+// waiting"), matching the source's own `attention?.votesAwaited` guard.
 // Returns a zero-value Block (Text == "") when there is nothing new to say.
-func VoteRequestBlock(attention Attention, notified map[string]bool, max int) Block {
+func VoteRequestBlock(attention *client.Attention, notified map[string]bool, max int) Block {
+	if attention == nil {
+		return Block{}
+	}
 	if max <= 0 {
 		max = VoteLinesMax
 	}
-	var fresh []VoteRequest
+	// Already sorted by urgency server-side; keep that order rather than
+	// imposing a second one that could disagree with it.
+	var fresh []client.VoteAwaited
 	for _, v := range attention.VotesAwaited {
 		if v.ClaimSeq == nil {
 			continue
@@ -184,17 +150,9 @@ func VoteRequestBlock(attention Attention, notified map[string]bool, max int) Bl
 	return Block{Text: strings.Join(lines, "\n"), Keys: keys}
 }
 
-// Divergence is the server's vetting/divergence read for this agent's recent
-// activity: whether it is drifting from the room's admitted causal claim.
-type Divergence struct {
-	Diverging          bool
-	EstablishedSubject string
-	ObservedSubject    string
-}
-
 // DivergenceKey is the key a divergence nudge is remembered by, so the same
 // established/observed pair is not re-announced on every tool call.
-func DivergenceKey(d Divergence) string {
+func DivergenceKey(d client.Divergence) string {
 	return d.EstablishedSubject + "::" + d.ObservedSubject
 }
 
@@ -208,7 +166,7 @@ func DivergenceKey(d Divergence) string {
 // below is untouched by this). De-duplication is this session's own
 // responsibility (via notified), not the server's — a stateless server has
 // no notion of "already told this terminal".
-func DivergenceBlock(divergence *Divergence, notified map[string]bool) Block {
+func DivergenceBlock(divergence *client.Divergence, notified map[string]bool) Block {
 	if divergence == nil || !divergence.Diverging {
 		return Block{}
 	}
@@ -249,8 +207,8 @@ func FormatDuration(ms float64) string {
 
 // Blockers is the two blocking classes StopBlockers returns.
 type Blockers struct {
-	Quarantined    []FlaggedContext
-	Contradictions []VoteRequest
+	Quarantined    []client.FlaggedContext
+	Contradictions []client.VoteAwaited
 }
 
 // StopBlockers returns the two things that must stop a conclusion:
@@ -269,14 +227,19 @@ type Blockers struct {
 //	position whose shortfall names a contradiction against the admitted
 //	record. Ordinary vote requests do NOT block; most claims do not need
 //	this participant.
-func StopBlockers(attention Attention) Blockers {
-	var quarantined []FlaggedContext
+//
+// attention may be nil, matching the source's `attention?.…` guards.
+func StopBlockers(attention *client.Attention) Blockers {
+	if attention == nil {
+		return Blockers{}
+	}
+	var quarantined []client.FlaggedContext
 	for _, f := range attention.FlaggedOwnContext {
 		if f.State == "quarantined" {
 			quarantined = append(quarantined, f)
 		}
 	}
-	var contradictions []VoteRequest
+	var contradictions []client.VoteAwaited
 	for _, v := range attention.VotesAwaited {
 		if v.Shortfall != nil && v.Shortfall.Missing != nil && len(v.Shortfall.Missing.Contradiction) > 0 {
 			contradictions = append(contradictions, v)
@@ -316,7 +279,7 @@ func DescribeStopBlockers(blockers Blockers, max int) []string {
 			}
 			parts := make([]string, len(f.CitedByClaimSeqs))
 			for i, s := range f.CitedByClaimSeqs {
-				parts[i] = strconv.Itoa(s)
+				parts[i] = strconv.FormatInt(s, 10)
 			}
 			cited = fmt.Sprintf(" (cited by your claim%s #%s)", plural, strings.Join(parts, ", #"))
 		}
@@ -332,8 +295,8 @@ func DescribeStopBlockers(blockers Blockers, max int) []string {
 		if relation == "" {
 			relation = "used"
 		}
-		lines = append(lines, fmt.Sprintf("• seq %d — the room QUARANTINED this %s you %s%s%s",
-			f.TargetSeq, kind, relation, cited, why))
+		lines = append(lines, fmt.Sprintf("• seq %s — the room QUARANTINED this %s you %s%s%s",
+			seqOrUndefined(f.TargetSeq), kind, relation, cited, why))
 	}
 	for _, v := range blockers.Contradictions {
 		var against []string
@@ -342,12 +305,8 @@ func DescribeStopBlockers(blockers Blockers, max int) []string {
 				against = append(against, fmt.Sprintf("#%d", s))
 			}
 		}
-		claimSeq := 0
-		if v.ClaimSeq != nil {
-			claimSeq = *v.ClaimSeq
-		}
-		lines = append(lines, fmt.Sprintf(`• claim #%d "%s" contradicts admitted claim(s) %s and is still awaiting your position`,
-			claimSeq, oneLine(v.Statement, 120), strings.Join(against, ", ")))
+		lines = append(lines, fmt.Sprintf(`• claim #%s "%s" contradicts admitted claim(s) %s and is still awaiting your position`,
+			seqOrUndefined(v.ClaimSeq), oneLine(v.Statement, 120), strings.Join(against, ", ")))
 	}
 
 	if len(lines) <= max {
@@ -356,6 +315,18 @@ func DescribeStopBlockers(blockers Blockers, max int) []string {
 	shown := append([]string{}, lines[:max]...)
 	shown = append(shown, fmt.Sprintf("+%d more — call get_updates for the rest.", len(lines)-max))
 	return shown
+}
+
+// seqOrUndefined renders a wire seq the way a JS template interpolation of it
+// would: the number, or the literal "undefined" when the server omitted it.
+// The wire types carry these as pointers precisely because absent and zero
+// are different things — seq 0 is a real event — so a missing seq must never
+// print as "#0" and read like a position on the incident's first event.
+func seqOrUndefined(seq *int64) string {
+	if seq == nil {
+		return "undefined"
+	}
+	return strconv.FormatInt(*seq, 10)
 }
 
 // oneLine trims an untrusted statement to one bounded line, collapsing

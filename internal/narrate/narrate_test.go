@@ -4,6 +4,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
 
 // Ported 1:1 from test/narrate.test.mjs (feature 20260812-010632, US5/T050a,
@@ -30,8 +32,8 @@ func TestIsTemplated_ReadsExplicitMarkerNotSynthesizedAlone(t *testing.T) {
 }
 
 func TestFormatEventLine_AppendsNoEvidenceMarkerForTemplatedContent(t *testing.T) {
-	line := FormatEventLine(Event{
-		Seq:  25,
+	line := FormatEventLine(client.Event{
+		Seq:  seqPtr(25),
 		Type: "agent.message",
 		Payload: Args{
 			"text":                 "current hypothesis (50%): …",
@@ -48,8 +50,8 @@ func TestFormatEventLine_AppendsNoEvidenceMarkerForTemplatedContent(t *testing.T
 }
 
 func TestFormatEventLine_NoMarkerForOrdinaryContent(t *testing.T) {
-	line := FormatEventLine(Event{
-		Seq:  26,
+	line := FormatEventLine(client.Event{
+		Seq:  seqPtr(26),
 		Type: "edge.finding",
 		Payload: Args{
 			"text":        "origin pool unhealthy",
@@ -62,10 +64,23 @@ func TestFormatEventLine_NoMarkerForOrdinaryContent(t *testing.T) {
 }
 
 func TestFormatEventLine_NoPayloadAtAll(t *testing.T) {
-	got := FormatEventLine(Event{Seq: 1, Type: "incident.opened"})
+	got := FormatEventLine(client.Event{Seq: seqPtr(1), Type: "incident.opened"})
 	want := "#1 incident.opened"
 	if got != want {
 		t.Errorf("FormatEventLine = %q, want %q", got, want)
+	}
+}
+
+func TestFormatEventLine_AbsentSeqRendersUndefinedNotZero(t *testing.T) {
+	// Seq 0 is a real event, so an event whose seq the server omitted must
+	// never render as "#0" — it is "undefined", exactly as the JS template
+	// interpolation in the source renders it.
+	got := FormatEventLine(client.Event{Type: "incident.opened"})
+	if want := "#undefined incident.opened"; got != want {
+		t.Errorf("FormatEventLine(no seq) = %q, want %q", got, want)
+	}
+	if got := FormatEventLine(client.Event{Seq: seqPtr(0), Type: "incident.opened"}); got != "#0 incident.opened" {
+		t.Errorf("FormatEventLine(seq 0) = %q, want %q", got, "#0 incident.opened")
 	}
 }
 
@@ -84,8 +99,8 @@ func TestEventText_UnaffectedByTemplatedMarker(t *testing.T) {
 // ---------------------------------------------------------------- extra coverage
 
 func TestFormatEventLine_AttributesToActor(t *testing.T) {
-	got := FormatEventLine(Event{
-		Seq:  10,
+	got := FormatEventLine(client.Event{
+		Seq:  seqPtr(10),
 		Type: "edge.finding",
 		Payload: Args{
 			"text":           "origin pool unhealthy",
@@ -168,6 +183,11 @@ func TestNarrateDoing(t *testing.T) {
 		{"stage_claim without statement", "stage_claim", nil, "staging a claim"},
 		{"record_activity with doing", "record_activity", Args{"doing": "grepping logs"}, "grepping logs"},
 		{"record_activity without doing", "record_activity", nil, "investigating"},
+		// `String(a.doing ?? 'investigating')` is NULLISH: an explicitly empty
+		// `doing` is a supplied value and stays empty. Only an absent/null one
+		// falls back. A truthiness test here would silently rewrite the agent's
+		// own words.
+		{"record_activity with an empty doing", "record_activity", Args{"doing": ""}, ""},
 		{"unknown tool", "some_future_tool", nil, "using some_future_tool"},
 	}
 	for _, c := range cases {
@@ -237,6 +257,41 @@ func TestContributionFor(t *testing.T) {
 		if c := ContributionFor(tool, nil); c != nil {
 			t.Errorf("%s: want nil contribution, got %#v", tool, c)
 		}
+	}
+}
+
+// Fields is what the /edge/contributions envelope actually spreads, so the
+// typed bodies and the wire keys must agree exactly.
+func TestContribution_FieldsRendersTheWireBody(t *testing.T) {
+	finding := ContributionFor("post_finding", Args{"text": "x", "resource": "s3://bucket"}).Fields()
+	if finding["text"] != "x" || finding["resource"] != "s3://bucket" {
+		t.Errorf("finding fields = %#v", finding)
+	}
+	// An absent resource is OMITTED, never sent as null — `JSON.stringify`
+	// drops an undefined value, and a null would be a claim of its own.
+	bare := ContributionFor("note", Args{"text": "y"}).Fields()
+	if _, present := bare["resource"]; present {
+		t.Errorf("note fields = %#v, want no resource key", bare)
+	}
+
+	query := ContributionFor("search_context", Args{"query": "5xx"}).Fields()
+	if query["source"] != "edge" || query["operation"] != "search" || query["resource"] != "5xx" {
+		t.Errorf("query fields = %#v", query)
+	}
+
+	action := ContributionFor("propose_action", Args{"description": "d", "dryRunPreview": "p"}).Fields()
+	if action["description"] != "d" || action["dryRunPreview"] != "p" {
+		t.Errorf("action fields = %#v", action)
+	}
+
+	widget := ContributionFor("post_widget", Args{"widgetType": "stat", "title": "t"}).Fields()
+	if widget["widgetType"] != "stat" || widget["title"] != "t" {
+		t.Errorf("widget fields = %#v", widget)
+	}
+	// title is always present, even empty — the source writes `a.title ?? ''`.
+	untitled := ContributionFor("post_widget", nil).Fields()
+	if v, present := untitled["title"]; !present || v != "" {
+		t.Errorf("untitled widget fields = %#v, want an empty title key", untitled)
 	}
 }
 

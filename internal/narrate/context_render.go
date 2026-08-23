@@ -5,6 +5,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
 
 // Ported from src/context-render.mjs — pure rendering for the war-room
@@ -15,53 +17,13 @@ import (
 // network discipline as narrate.go/attention.go. Lives in this same package
 // per plan.md's Project Structure: it is the same kind of pure rendering
 // logic as the rest of this package.
-
-// Incident is the incident summary embedded in a Frame.
-type Incident struct {
-	Title       string
-	Severity    string
-	Status      string
-	AlertSource string
-}
-
-// BriefItem is one established/open item in a Brief.
-type BriefItem struct {
-	Seq       int
-	Statement string
-	By        string
-}
-
-// Brief is the established/working-theory/open sections of a Frame.
-type Brief struct {
-	Established   []BriefItem
-	WorkingTheory []BriefItem
-	Open          []BriefItem
-}
-
-// Participant is one war-room participant listed in a Frame.
-type Participant struct {
-	DisplayName    string
-	EdgeAgentLabel string
-	// Active is active/away/unknown — nil means unknown, exactly like
-	// `active === undefined` on the wire when the server's presence store
-	// could not be read. Never fabricated as either known state.
-	Active *bool
-}
-
-// ContextFrame (data-model.md) is the full room context brief join_war_room/
-// get_brief render.
-type ContextFrame struct {
-	Incident     Incident
-	Brief        Brief
-	Participants []Participant
-	// FreshnessMs is nil when the frame carries no freshness figure at all
-	// (renders as "freshness unknown"), matching
-	// `typeof frame.freshnessMs === 'number'` in the source.
-	FreshnessMs *float64
-	// AsOfSeq is nil when absent (renders as "?"), matching
-	// `frame.asOfSeq ?? '?'` in the source.
-	AsOfSeq *int
-}
+//
+// The WIRE TYPES these render (ContextFrame, FrameDelta, SearchResult and
+// their members) belong to internal/client, which is the layer that actually
+// unmarshals the server's JSON. This package consumes them rather than
+// declaring a second, drifting set of its own — a rendering package is not
+// the owner of a wire contract. The dependency is one-way by construction:
+// internal/client has no rendering logic and never imports this package.
 
 func presenceWord(active *bool) string {
 	if active == nil {
@@ -73,7 +35,7 @@ func presenceWord(active *bool) string {
 	return "away"
 }
 
-func participantLabel(p Participant) string {
+func participantLabel(p client.Participant) string {
 	name := p.DisplayName
 	if name == "" {
 		name = "Participant"
@@ -85,7 +47,7 @@ func participantLabel(p Participant) string {
 	return fmt.Sprintf("%s%s (%s)", name, label, presenceWord(p.Active))
 }
 
-func briefLines(items []BriefItem, heading string) []string {
+func briefLines(items []client.BriefItem, heading string) []string {
 	if len(items) == 0 {
 		return nil
 	}
@@ -97,15 +59,15 @@ func briefLines(items []BriefItem, heading string) []string {
 	return lines
 }
 
-// RenderFrame renders a ContextFrame as the text join_war_room/get_brief
-// return — a real, usable brief in one call (SC-002).
+// RenderFrame renders a client.ContextFrame as the text join_war_room/
+// get_brief return — a real, usable brief in one call (SC-002).
 //
 // frame may be nil (renders "No incident context available.") and any of
 // its fields may be their zero value (a genuinely partial frame) — this
 // never panics on a missing field, matching the source's own
 // `if (!frame || typeof frame !== 'object') return '...'` guard plus its
 // liberal use of `?? {}`/optional chaining on every nested field.
-func RenderFrame(frame *ContextFrame) string {
+func RenderFrame(frame *client.ContextFrame) string {
 	if frame == nil {
 		return "No incident context available."
 	}
@@ -126,8 +88,11 @@ func RenderFrame(frame *ContextFrame) string {
 		lines = append(lines, "Alert source: "+frame.Incident.AlertSource)
 	}
 
+	// `disproved` is deliberately NOT rendered: the source composes "Open"
+	// from workingTheory + open only, and a disproved item resurfacing under
+	// an "Open" heading would read as still-live.
 	established := briefLines(frame.Brief.Established, "Established")
-	openItems := make([]BriefItem, 0, len(frame.Brief.WorkingTheory)+len(frame.Brief.Open))
+	openItems := make([]client.BriefItem, 0, len(frame.Brief.WorkingTheory)+len(frame.Brief.Open))
 	openItems = append(openItems, frame.Brief.WorkingTheory...)
 	openItems = append(openItems, frame.Brief.Open...)
 	open := briefLines(openItems, "Open")
@@ -160,43 +125,36 @@ func RenderFrame(frame *ContextFrame) string {
 	}
 	asOfSeq := "?"
 	if frame.AsOfSeq != nil {
-		asOfSeq = strconv.Itoa(*frame.AsOfSeq)
+		asOfSeq = strconv.FormatInt(*frame.AsOfSeq, 10)
 	}
 	lines = append(lines, "", fmt.Sprintf("As of seq %s (%s).", asOfSeq, freshness))
 	return strings.Join(lines, "\n")
 }
 
+// NoCursor is what FrameCursor returns when a frame carries no cursor at all
+// — the same value session.Session's own cursor starts at, so handing it
+// straight to AdvanceCursorTo is a no-op rather than a rewind. It is
+// deliberately NOT a new sentinel: the Node original returns `undefined` and
+// its caller skips the advance, which is exactly what -1 achieves against a
+// monotonic cursor that already begins at -1.
+const NoCursor int64 = -1
+
 // FrameCursor returns the seq to resume delivery from — the frame's own
 // cursor, so a caller does not need to separately track "the highest seq in
-// the brief". Returns nil for a nil frame or an absent AsOfSeq.
-func FrameCursor(frame *ContextFrame) *int {
-	if frame == nil {
-		return nil
+// the brief". Returns NoCursor for a nil frame or an absent AsOfSeq.
+func FrameCursor(frame *client.ContextFrame) int64 {
+	if frame == nil || frame.AsOfSeq == nil {
+		return NoCursor
 	}
-	return frame.AsOfSeq
+	return *frame.AsOfSeq
 }
 
-// DeltaItem is one addressed/substantive item in a FrameDelta.
-type DeltaItem struct {
-	Seq     int
-	Type    string
-	Class   string // e.g. "addressed"
-	By      string
-	Summary string
-}
-
-// FrameDelta (data-model.md) is what RenderDelta renders.
-type FrameDelta struct {
-	Items        []DeltaItem
-	RoutineCount int
-}
-
-// RenderDelta renders a FrameDelta — addressed/substantive items in full,
-// routine activity as a count only (FR-007/FR-008). Returns "" when there is
-// nothing owed (delta is nil, or has neither items nor a routine count), so
-// a caller can drop it from a result untouched rather than emitting an
-// empty/zero-item block.
-func RenderDelta(delta *FrameDelta) string {
+// RenderDelta renders a client.FrameDelta — addressed/substantive items in
+// full, routine activity as a count only (FR-007/FR-008). Returns "" when
+// there is nothing owed (delta is nil, or has neither items nor a routine
+// count), so a caller can drop it from a result untouched rather than
+// emitting an empty/zero-item block.
+func RenderDelta(delta *client.FrameDelta) string {
 	if delta == nil || (len(delta.Items) == 0 && delta.RoutineCount == 0) {
 		return ""
 	}
@@ -222,23 +180,10 @@ func RenderDelta(delta *FrameDelta) string {
 	return strings.Join(lines, "\n")
 }
 
-// SearchHit is one matching event in a SearchResult.
-type SearchHit struct {
-	Seq     int
-	Type    string
-	By      string
-	Snippet string
-}
-
-// SearchResult is what edge/context/search returns.
-type SearchResult struct {
-	Hits []SearchHit
-}
-
 // RenderSearchHits renders real search hits (FR-005/SC-006) — never a bare
 // count. result may be nil (renders the zero-hits line for query).
-func RenderSearchHits(result *SearchResult, query string) string {
-	var hits []SearchHit
+func RenderSearchHits(result *client.SearchResult, query string) string {
+	var hits []client.SearchHit
 	if result != nil {
 		hits = result.Hits
 	}

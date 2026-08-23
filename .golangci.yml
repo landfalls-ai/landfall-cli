@@ -8,16 +8,16 @@ linters:
     - gosimple
   disable:
     - forbidigo # re-enabled per-package below once T024's ui abstraction lands
-  settings:
-    errcheck:
-      # A deferred/best-effort Close() on a socket, file, or listener is a
-      # standard, low-risk pattern throughout this port (mirroring the Node
-      # source's own best-effort cleanup) -- checking it everywhere would be
-      # noise, not a real correctness signal. Everything else stays checked.
-      exclude-functions:
-        - (io.Closer).Close
-        - (net.Conn).Close
-        - (net.Listener).Close
+linters-settings:
+  errcheck:
+    # A deferred/best-effort Close() on a socket, file, or listener is a
+    # standard, low-risk pattern throughout this port (mirroring the Node
+    # source's own best-effort cleanup) -- checking it everywhere would be
+    # noise, not a real correctness signal. Everything else stays checked.
+    exclude-functions:
+      - (io.Closer).Close
+      - (net.Conn).Close
+      - (net.Listener).Close
 run:
   timeout: 3m
 issues:

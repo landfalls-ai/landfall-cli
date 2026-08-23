@@ -262,8 +262,12 @@ test('socket path is keyed by workspace, per-user, and never on a network', () =
   const win = socketLocation({ cwd: '/tmp', env: {}, platform: 'win32' });
   assert.match(win.pathFor(win.nameFor(77)), /^\\\\\.\\pipe\\landfall-/);
 
-  // Two workspaces are two namespaces.
-  assert.notEqual(workspaceKey('/tmp'), workspaceKey(os.tmpdir() === '/tmp' ? '/usr' : '/tmp'));
+  // Two workspaces are two namespaces. Two fixed, always-distinct paths — the previous
+  // `os.tmpdir() === '/tmp' ? '/usr' : '/tmp'` ternary was trying to avoid comparing against
+  // whatever the platform's real tmpdir is, but on macOS (where os.tmpdir() is never '/tmp')
+  // it resolved to comparing workspaceKey('/tmp') against itself, making this assertion
+  // fail on every Mac. The test's intent never depended on the platform's tmpdir at all.
+  assert.notEqual(workspaceKey('/tmp'), workspaceKey('/usr'));
 });
 
 test('a real socket answers peek, then consume, over the wire', async () => {

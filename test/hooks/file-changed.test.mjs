@@ -345,6 +345,21 @@ test('an in-band flush before the prompt spends the stage instead of re-deliveri
         cfg: { slug: 'acme', incidentId: 'inc-1' },
         heartbeat: async () => {},
         getBrief: async () => [],
+        // get_brief's handler now reads the context frame (feature 116), not a raw
+        // event dump — an empty frame is a safe stand-in: renderFrame/frameCursor both
+        // handle a missing/partial frame by design (context-render.mjs), and this test
+        // only cares about the wrapper's in-band flush, not the frame's own content.
+        getContextFrame: async () => ({}),
+        // The wrapper's flushPending step (the actual in-band delivery this test is
+        // about) requires getContextDelta to exist at all (tools.mjs's flushPending
+        // no-ops silently otherwise) — echo the enqueued #7 finding back as the
+        // server's classified delta, the same shape real edge-bridge tests use.
+        getContextDelta: async (since) => ({
+          sinceVersion: since,
+          toVersion: 7,
+          items: [{ seq: 7, type: 'edge.finding', by: 'Dana', summary: 'origin pool unhealthy' }],
+          routineCount: 0,
+        }),
       },
     });
     const bound = await startHookSocket(session, { cwd, env, consume: consumeUpTo, pid: 3201 });

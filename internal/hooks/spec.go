@@ -107,18 +107,13 @@ func FindHookEvent(eventID string) *HookEvent {
 // hookCommandNeedsHostFlag reports whether a host needs `--host <id>` appended
 // to be told which output contract to answer on.
 //
-// This is `protocolForHost(hostId) !== EXIT2` from `src/hooks/protocol.mjs`.
-// T045 owns protocol.go (the EXIT2 / CURSOR_JSON constants and their table);
-// when it lands, COLLAPSE this function's body into that call rather than
-// leaving two tables — the split must have exactly one answer, or a registered
-// command string and the handler that answers it will drift.
+// This is `protocolForHost(hostId) !== EXIT2` from `src/hooks/protocol.mjs`,
+// and it is now literally that call: protocol.go (T045) owns the one host
+// table. The temporary local duplicate that stood here until it landed is gone
+// on purpose — the split must have exactly one answer, or a registered command
+// string and the handler that answers it will drift.
 func hookCommandNeedsHostFlag(hostID string) bool {
-	switch hostID {
-	case "cursor":
-		return true // cursor-json: exit 0 always, one JSON object on stdout
-	default:
-		return false // exit2 (claude-code, codex, and anything unknown)
-	}
+	return ProtocolForHost(hostID) != EXIT2
 }
 
 // HookCommand is the exact shell command a registered hook entry runs.

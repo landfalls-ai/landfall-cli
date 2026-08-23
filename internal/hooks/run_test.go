@@ -125,34 +125,49 @@ func TestRunHookEventRefusesAnUnknownEventID(t *testing.T) {
 	}
 }
 
-func TestRunHookEventAnswersTheProtocolCorrectNoOpUntilAHandlerRegisters(t *testing.T) {
+func TestTheHandlerlessNoOpIsProtocolCorrectForEitherHostShape(t *testing.T) {
 	// The installer registers a command the host runs on every matching event
 	// from the moment it is written, so silence must be a well-formed answer.
-	got := RunHookEvent(context.Background(), "user-prompt-submit", HookDeps{Host: "claude-code"})
-	if got.ExitCode != 0 || got.Stdout != "" {
+	//
+	// Asserted on renderNoOpFor DIRECTLY rather than through RunHookEvent,
+	// because every event HookEvents currently declares now has a handler
+	// (T040-T044 landed) — the dispatcher's fallback is dead code until a future
+	// event is registered ahead of its handler, which is exactly the gap #227 and
+	// #233 each passed through. The same note is in `cursor-adapter.test.mjs`.
+	if got := renderNoOpFor("claude-code"); got.ExitCode != 0 || got.Stdout != "" || got.Stderr != "" {
 		t.Fatalf("exit2 host: got %+v", got)
 	}
 	// Cursor JSON.parse()s stdout unconditionally, so an empty stdout is a parse
 	// error, not a silent allow.
-	got = RunHookEvent(context.Background(), "stop", HookDeps{Host: "cursor"})
-	if got.ExitCode != 0 || got.Stdout != "{}\n" {
+	if got := renderNoOpFor("cursor"); got.ExitCode != 0 || got.Stdout != "{}\n" {
 		t.Fatalf("cursor-json host: got %+v", got)
+	}
+	// And an unrecognized --host answers on the convention two of three share.
+	if got := renderNoOpFor("brand-new-ide"); got.ExitCode != 0 || got.Stdout != "" {
+		t.Fatalf("unknown host: got %+v", got)
 	}
 }
 
 func TestRegisteredHandlersAreDispatchedTo(t *testing.T) {
-	// The four real handlers are a separate track (T040-T044); this proves the
-	// seam they plug into.
+	// `stop` has a real handler now (T040), so this swaps it for the duration
+	// rather than registering a second one — RegisterHookHandler panics on a
+	// double registration on purpose, and that panic is itself asserted below.
+	handlersMu.Lock()
+	saved := handlers["stop"]
+	handlersMu.Unlock()
 	t.Cleanup(func() {
 		handlersMu.Lock()
-		delete(handlers, "stop")
+		handlers["stop"] = saved
 		handlersMu.Unlock()
 	})
+
 	var saw HookDeps
-	RegisterHookHandler("stop", func(_ context.Context, deps HookDeps) HookResult {
+	handlersMu.Lock()
+	handlers["stop"] = func(_ context.Context, deps HookDeps) HookResult {
 		saw = deps
 		return HookResult{ExitCode: 2, Stderr: "you still owe the room a look", Result: "blocked"}
-	})
+	}
+	handlersMu.Unlock()
 
 	got := RunHookEvent(context.Background(), "stop", HookDeps{Input: `{"stop_hook_active":true}`, Host: "codex"})
 	if got.ExitCode != 2 || got.Result != "blocked" {
@@ -161,6 +176,28 @@ func TestRegisteredHandlersAreDispatchedTo(t *testing.T) {
 	if saw.Input != `{"stop_hook_active":true}` || saw.Host != "codex" {
 		t.Fatalf("the handler must receive the shared stdin read and the host id: %+v", saw)
 	}
+}
+
+func TestEveryDeclaredEventHasAHandler(t *testing.T) {
+	// The installer writes a command for every entry in HookEvents from the
+	// moment it runs. An event declared without a handler answers the
+	// protocol-correct no-op — safe, but it means a registered hook does nothing
+	// on somebody's machine, so it should be a deliberate state rather than an
+	// oversight.
+	for _, id := range HookEventIDs() {
+		if handlerFor(id) == nil {
+			t.Fatalf("%s is registered by the installer but has no handler", id)
+		}
+	}
+}
+
+func TestRegisterHookHandlerRefusesADoubleRegistration(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("two handlers for one event would mean one of them silently never runs")
+		}
+	}()
+	RegisterHookHandler("stop", func(context.Context, HookDeps) HookResult { return HookResult{} })
 }
 
 func TestRegisterHookHandlerRefusesAnUnknownEventID(t *testing.T) {

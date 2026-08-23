@@ -42,6 +42,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -86,6 +88,39 @@ type HookDeps struct {
 	Log func(format string, args ...any)
 	// Now supplies the clock. Nil means time.Now.
 	Now func() time.Time
+	// Emit writes one PROTOCOL output (a Cursor verdict, an injection object, a
+	// refusal, a nudge) on the channel the protocol names — ChannelStdout or
+	// ChannelStderr — exactly when the handler calls it.
+	//
+	// Not folded into HookResult.Stdout/Stderr, because WHEN it is written is
+	// part of the contract: `stop` must emit its refusal BEFORE it consumes, and
+	// `user-prompt-submit` must emit its digest BEFORE any cursor moves, so a
+	// crash in between leaves the events queued rather than consumed-but-never-
+	// delivered. Buffering into the result would move both writes after the
+	// consume and quietly invert that.
+	//
+	// Nil writes to the process's real stdout/stderr, which is what a hook
+	// invoked by a host wants; the entrypoint passes its own so the streams stay
+	// injectable, and tests pass a recorder.
+	Emit func(text, channel string)
+}
+
+// emit is Emit, with a nil-safe default that writes to the real process
+// streams, and a no-op for empty text (silence under EXIT2 must not become an
+// empty write). Handlers call this, never the Emit field directly.
+func (d HookDeps) emit(text, channel string) {
+	if text == "" {
+		return
+	}
+	if d.Emit != nil {
+		d.Emit(text, channel)
+		return
+	}
+	if channel == ChannelStdout {
+		_, _ = io.WriteString(os.Stdout, text)
+		return
+	}
+	_, _ = io.WriteString(os.Stderr, text)
 }
 
 // Logf is Log, with a nil-safe default.
@@ -155,18 +190,26 @@ func RunHookEvent(ctx context.Context, eventID string, deps HookDeps) HookResult
 }
 
 // renderNoOpFor is `renderNoOp(protocolForHost(host))` from
-// `src/hooks/protocol.mjs`.
+// `src/hooks/protocol.mjs` — now literally that call, since protocol.go (T045)
+// has landed and owns the one host table.
 //
-// T045 owns protocol.go; when it lands, COLLAPSE this into that call. The single
-// host-shape question is answered by hookCommandNeedsHostFlag (spec.go) so this
-// file does not become a second table.
+// This is the ONE result that carries its text back in the HookResult rather
+// than emitting it: an event with no handler has no ordering constraint to
+// honour, so the entrypoint writing it after the fact is safe. Every real
+// handler emits through HookDeps.Emit instead — see that field.
 func renderNoOpFor(hostID string) HookResult {
-	if hookCommandNeedsHostFlag(hostID) {
-		// cursor-json: Cursor JSON.parse()s stdout unconditionally, so an empty
-		// stdout is a parse error, not a silent allow. `{}` means "let it stop".
-		return HookResult{ExitCode: 0, Stdout: "{}\n"}
+	return resultFromVerdict(RenderNoOp(ProtocolForHost(hostID)))
+}
+
+// resultFromVerdict routes a rendered verdict onto the channel it names.
+func resultFromVerdict(v Verdict) HookResult {
+	r := HookResult{ExitCode: v.ExitCode}
+	if v.Channel == ChannelStdout {
+		r.Stdout = v.Text
+	} else {
+		r.Stderr = v.Text
 	}
-	return HookResult{ExitCode: 0}
+	return r
 }
 
 // ParseEventPayload parses the harness's JSON event payload. An empty map if

@@ -45,6 +45,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/auth"
 	"github.com/landfalls-ai/landfall-cli/internal/instance"
+	"github.com/spf13/cobra"
 )
 
 // RemediationOverride carries an explicit --override "<reason>" — a distinct
@@ -275,4 +276,36 @@ func RunRemediationApprove(ctx context.Context, flags RemediationApproveFlags, u
 	}
 	say("Refused (HTTP %d)%s", res.StatusCode, suffix)
 	return 1
+}
+
+// newRemediationCommand wires `landfall remediation approve <id> [flags]`
+// into the command tree. Per this file's own header: human-typed only, never
+// reachable from internal/tools or internal/mcp — this constructor is called
+// exactly once, from root.go's AddCommand, alongside every other real
+// top-level command.
+func newRemediationCommand(ui *UI) *cobra.Command {
+	remediation := newCommand(ui, "remediation", func(*cobra.Command, []string) error {
+		ui.Log(`usage: landfall remediation approve <remediationId> --incident <incidentId> [--org <slug>] [--override "<reason>"]`)
+		return usage()
+	})
+	remediation.DisableFlagParsing = true
+
+	approve := newCommand(ui, "approve", func(cmd *cobra.Command, args []string) error {
+		flags, err := ParseRemediationApproveFlags(args)
+		if err != nil {
+			ui.Log("%s", err.Error())
+			return usage()
+		}
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if code := RunRemediationApprove(ctx, flags, ui, RemediationApproveDeps{}); code != 0 {
+			return &exitError{code: code}
+		}
+		return nil
+	})
+	approve.DisableFlagParsing = true
+	remediation.AddCommand(approve)
+	return remediation
 }

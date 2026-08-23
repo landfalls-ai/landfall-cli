@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/spf13/cobra"
 )
 
 // statusCacheFile is the last-known-status file, alongside the stage in the same
@@ -141,4 +142,16 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 		_, _ = ui.Out.Write([]byte(line))
 	}
 	return 0
+}
+
+// newStatusCommand wires RunStatus into the command tree. No flags, no
+// subcommands — a bare `landfall status` against the real (zero-value)
+// Workspace every time.
+func newStatusCommand(ui *UI) *cobra.Command {
+	c := newCommand(ui, "status", func(*cobra.Command, []string) error {
+		RunStatus(ui, hooks.Workspace{})
+		return nil
+	})
+	c.DisableFlagParsing = true
+	return c
 }

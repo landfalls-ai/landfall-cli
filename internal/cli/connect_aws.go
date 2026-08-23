@@ -41,6 +41,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/auth"
 	"github.com/landfalls-ai/landfall-cli/internal/instance"
+	"github.com/spf13/cobra"
 )
 
 // TemplatePin identifies the exact pinned CloudFormation role template this
@@ -766,4 +767,35 @@ func RunConnectAWS(ctx context.Context, flags ConnectAWSFlags, ui *UI, deps Conn
 		say("%s", memberInstructions(roleArn, memberRoleName, flags.Members))
 	}
 	return 0
+}
+
+// newConnectCommand wires `landfall connect aws [flags]` into the command
+// tree. "aws" is the only provider today — contracts/cli-commands.md's exit-2
+// row ("flag parse error or a non-aws provider") means an unrecognized
+// provider under `connect` is a usage error, same as a bad flag.
+func newConnectCommand(ui *UI) *cobra.Command {
+	connect := newCommand(ui, "connect", func(*cobra.Command, []string) error {
+		ui.Log(`usage: landfall connect aws [flags]`)
+		return usage()
+	})
+	connect.DisableFlagParsing = true
+
+	aws := newCommand(ui, "aws", func(cmd *cobra.Command, args []string) error {
+		flags, err := ParseConnectAWSFlags(args)
+		if err != nil {
+			ui.Log("%s", err.Error())
+			return usage()
+		}
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if code := RunConnectAWS(ctx, flags, ui, ConnectAWSDeps{}); code != 0 {
+			return &exitError{code: code}
+		}
+		return nil
+	})
+	aws.DisableFlagParsing = true
+	connect.AddCommand(aws)
+	return connect
 }

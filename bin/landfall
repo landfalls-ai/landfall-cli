@@ -1,0 +1,71 @@
+#!/bin/sh
+# bin/landfall — the Claude Code plugin's launch shim (spec FR-013's resolved
+# decision: the plugin stays self-contained, no PATH-reliant `landfall`
+# install required, matching today's zero-extra-install UX for
+# `node bin/landfall.mjs`).
+#
+# There is no single Go binary that runs on every platform, and a plugin
+# distributed as one checkout of this repo has no per-platform selection
+# mechanism in its manifest — so this script IS the cross-platform part:
+# it resolves which platform binary this machine needs, fetches it from
+# this repo's own GitHub Releases (built by .goreleaser.yml /
+# .github/workflows/release.yml) the first time it's needed, caches it
+# under the plugin's own directory, and execs it with every argument
+# unchanged. No Node dependency anywhere in this path — only sh, uname,
+# curl or wget, and tar, all of which macOS and Linux ship with by default.
+#
+# Windows is out of scope for this rewrite (spec FR-012); this script does
+# not attempt to run there.
+set -eu
+
+repo="landfalls-ai/landfall-cli"
+plugin_root="$(cd "$(dirname "$0")/.." && pwd)"
+cache_dir="${plugin_root}/bin/.cache"
+
+os="$(uname -s)"
+arch="$(uname -m)"
+
+case "$os" in
+  Darwin) goos="darwin" ;;
+  Linux) goos="linux" ;;
+  *)
+    echo "landfall: unsupported platform '$os' — this plugin ships prebuilt binaries for macOS and Linux only" >&2
+    exit 1
+    ;;
+esac
+
+case "$arch" in
+  arm64|aarch64) goarch="arm64" ;;
+  x86_64|amd64) goarch="amd64" ;;
+  *)
+    echo "landfall: unsupported architecture '$arch' — this plugin ships prebuilt binaries for amd64 and arm64 only" >&2
+    exit 1
+    ;;
+esac
+
+binary="${cache_dir}/landfall-${goos}-${goarch}"
+
+if [ ! -x "$binary" ]; then
+  mkdir -p "$cache_dir"
+  archive_name="landfall-cli_${goos}_${goarch}.tar.gz"
+  url="https://github.com/${repo}/releases/latest/download/${archive_name}"
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  echo "landfall: first run on this machine — fetching the ${goos}/${goarch} binary..." >&2
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$url" -o "${tmp_dir}/${archive_name}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$url" -O "${tmp_dir}/${archive_name}"
+  else
+    echo "landfall: neither curl nor wget is available — cannot fetch the landfall binary" >&2
+    exit 1
+  fi
+
+  tar -xzf "${tmp_dir}/${archive_name}" -C "$tmp_dir" landfall
+  mv "${tmp_dir}/landfall" "$binary"
+  chmod +x "$binary"
+fi
+
+exec "$binary" "$@"

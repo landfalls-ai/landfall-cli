@@ -74,7 +74,9 @@ func TestWorkerNeverCastsAVote(t *testing.T) {
 	w.Start(ctx, pub, client.Config{IncidentID: "inc-1"})
 	defer w.Stop()
 
-	waitFor(t, func() bool { return pub.count() == 1 }, "the claim to publish")
+	// A claim goes to the CLAIMS endpoint, not contributions — the server
+	// rejects kind="claim" outright.
+	waitFor(t, func() bool { return pub.stagedCount() == 1 }, "the claim to be staged")
 	// Give several more sweeps a chance to misbehave.
 	time.Sleep(100 * time.Millisecond)
 
@@ -177,12 +179,12 @@ func TestExplicitClaimsAreStagedForVetting(t *testing.T) {
 	w.Start(ctx, pub, client.Config{IncidentID: "inc-1"})
 	defer w.Stop()
 
-	waitFor(t, func() bool { return pub.count() == 1 }, "the claim to publish")
+	waitFor(t, func() bool { return pub.stagedCount() == 1 }, "the claim to be staged")
 
-	pub.mu.Lock()
-	defer pub.mu.Unlock()
-	if pub.published[0]["stageAsClaim"] != true {
-		t.Fatalf("an explicit claim was not staged for vetting: %v", pub.published[0])
+	// And it must NOT have gone out as a contribution — the server rejects
+	// kind="claim", so doing both would fail and retry forever.
+	if n := pub.count(); n != 0 {
+		t.Fatalf("a claim was also sent as a contribution (%d): the server would 400 it", n)
 	}
 }
 
@@ -202,9 +204,7 @@ func TestOrdinaryFindingsAreNotStaged(t *testing.T) {
 
 	waitFor(t, func() bool { return pub.count() == 1 }, "the finding to publish")
 
-	pub.mu.Lock()
-	defer pub.mu.Unlock()
-	if _, staged := pub.published[0]["stageAsClaim"]; staged {
+	if n := pub.stagedCount(); n != 0 {
 		t.Fatal("an ordinary finding was staged for vetting; the room would be asked to vote on an observation")
 	}
 }

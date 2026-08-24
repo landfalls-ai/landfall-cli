@@ -3,6 +3,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -25,16 +26,49 @@ type fakePub struct {
 	updateN    int
 	beats      []string
 	beatErr    error
+	staged     []map[string]any
 }
 
-func (f *fakePub) Contribute(_ context.Context, _ string, body map[string]any) error {
+// serverContributionKinds mirrors the real server's allow-list. The fake
+// REJECTS anything else, deliberately.
+//
+// An earlier version accepted any string, and that permissiveness is exactly
+// why a live run was the first thing to notice the worker sending kind="claim"
+// — which the server answers with HTTP 400. A fake looser than the thing it
+// stands in for does not test the contract, it tests itself.
+var serverContributionKinds = map[string]bool{
+	"finding": true, "note": true, "query": true,
+	"hypothesis": true, "action": true, "widget": true,
+}
+
+func (f *fakePub) Contribute(_ context.Context, kind string, body map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failWith != nil {
 		return f.failWith
 	}
+	if !serverContributionKinds[kind] {
+		return fmt.Errorf("/edge/contributions -> HTTP 400: unknown contribution kind %q", kind)
+	}
 	f.published = append(f.published, body)
 	return nil
+}
+
+// StageClaim is the claims endpoint — separate from contributions.
+func (f *fakePub) StageClaim(_ context.Context, body map[string]any) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.failWith != nil {
+		return f.failWith
+	}
+	f.staged = append(f.staged, body)
+	return nil
+}
+
+func (f *fakePub) stagedCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.staged)
 }
 
 func (f *fakePub) GetUpdates(_ context.Context, sinceSeq int64) ([]client.Event, error) {

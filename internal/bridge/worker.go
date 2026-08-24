@@ -68,6 +68,10 @@ type Publisher interface {
 	// classified delta: the delta drops our own events, which is precisely
 	// what reconciliation must find.
 	GetUpdates(ctx context.Context, sinceSeq int64) ([]client.Event, error)
+	// StageClaim offers a claim for the room to vet. A SEPARATE endpoint, not a
+	// contribution kind — the server rejects kind="claim" outright, which a
+	// live run found after unit tests with a permissive fake had passed.
+	StageClaim(ctx context.Context, body map[string]any) error
 	// AgentInstanceID is this session's server-issued id, empty before join.
 	AgentInstanceID() string
 }
@@ -212,25 +216,33 @@ func (w *Worker) absorb(ctx context.Context, pub Publisher, incidentID string) {
 }
 
 // drain publishes queued hand-offs, oldest first.
+// drain publishes queued hand-offs, oldest first.
+//
+// Each pending entry gets ONE attempt per sweep, and a failure moves on to the
+// next rather than ending the pass. That matters: an entry the server will
+// never accept would otherwise sit at the head of the queue and starve
+// everything behind it forever, because Next() always returns the oldest.
+//
+// A live run found exactly that — a hand-off the server rejected with a 400
+// blocked the next hand-off indefinitely while its own attempt count climbed.
+// The earlier "stop on first failure" logic conflated two cases: a room that
+// is unreachable (where stopping is right, and falls out naturally here since
+// every entry fails once and the sweep ends) and a single bad entry (where
+// stopping starves the innocent ones behind it).
 func (w *Worker) drain(ctx context.Context, pub Publisher, incidentID string) {
-	for {
+	pending, err := w.spool.Pending(incidentID)
+	if err != nil {
+		w.log("bridge: spool unreadable (%v)", err)
+		return
+	}
+	for _, entry := range pending {
 		if ctx.Err() != nil {
 			return
 		}
-		entry, err := w.spool.Next(incidentID)
-		if err != nil {
-			w.log("bridge: spool unreadable (%v)", err)
-			return
+		if entry.State != spool.Queued {
+			continue
 		}
-		if entry == nil {
-			return
-		}
-		if !w.publish(ctx, pub, entry) {
-			// Stop the pass on the first failure rather than hammering a room
-			// that is refusing everything; the next sweep retries with the
-			// entry's raised attempt count.
-			return
-		}
+		w.publish(ctx, pub, entry)
 	}
 }
 
@@ -268,13 +280,14 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs
 	}
+	// A claim goes to its own endpoint. Staging is transcription of what the
+	// responder wrote, not evaluation of it — see vetting.go on why the worker
+	// never casts a vote.
+	publish := func() error { return pub.Contribute(ctx, string(kind), body) }
 	if stageableClaim(kind) {
-		// A claim the responder framed themselves. Staging is transcription of
-		// their words, not evaluation of them — see vetting.go on why the
-		// worker never casts a vote.
-		body["stageAsClaim"] = true
+		publish = func() error { return pub.StageClaim(ctx, body) }
 	}
-	if err := pub.Contribute(ctx, string(kind), body); err != nil {
+	if err := publish(); err != nil {
 		if ferr := w.spool.Fail(e.IncidentID, e.ID, err); ferr != nil {
 			w.log("bridge: could not record failure for %s (%v)", e.ID, ferr)
 		}

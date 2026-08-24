@@ -120,6 +120,10 @@ type liveSession struct {
 	doorbell *hooks.Doorbell
 	watcher  liveWatcher
 	interval time.Duration
+	// onEvent wakes the bridge worker when live push delivers something, so a
+	// busy room is absorbed as it arrives rather than at the next sweep. Nil
+	// when no worker is running (durable state unavailable).
+	onEvent func()
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -150,6 +154,13 @@ func (l *liveSession) start(ctx context.Context, sess *session.Session, cl sessi
 		// (the digest-catch-up format used elsewhere) — a live push and a
 		// digest replay are different moments and read differently in Node.
 		l.ui.Log("%s", narrate.DescribeEvent(evt))
+
+		// Wake the worker NOW rather than letting it wait out its sweep. Its
+		// Nudge doc claimed this already happened; nothing actually called it,
+		// so every pushed event sat until the next tick.
+		if l.onEvent != nil {
+			l.onEvent()
+		}
 	})
 
 	l.mu.Lock()
@@ -313,6 +324,9 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 	// is unavailable we log once and serve without it, rather than refusing to
 	// start — a responder mid-incident needs MCP more than they need the queue.
 	worker, accepter := startBridge(ui, opts.Workspace)
+	if worker != nil {
+		live.onEvent = worker.Nudge
+	}
 
 	// afterJoin is EVERYTHING that must happen when a room is joined, in one
 	// place, because there are TWO join paths — the agent calling

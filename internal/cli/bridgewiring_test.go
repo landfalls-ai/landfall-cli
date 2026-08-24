@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -179,4 +180,41 @@ func TestBridgeDegradesWhenStateIsUnwritable(t *testing.T) {
 	if !strings.Contains(errBuf.String(), "share_with_room is unavailable") {
 		t.Errorf("degradation was silent; the operator has no way to know the verb is missing. stderr: %q", errBuf.String())
 	}
+}
+
+// TestLivePushWakesTheWorker pins a wiring gap that existed while its own doc
+// comment denied it.
+//
+// Worker.Nudge said "Called when live push delivers an event" — and nothing
+// called it from the watcher. Every pushed event therefore sat in the queue
+// until the next sweep tick, which is exactly the latency the push feed exists
+// to remove. A comment describing behaviour that does not exist is worse than
+// no comment: it stops the next reader from checking.
+func TestLivePushWakesTheWorker(t *testing.T) {
+	var mu sync.Mutex
+	woken := 0
+
+	events := make(chan client.Event, 2)
+	live := &liveSession{
+		ui:       &UI{Out: &bytes.Buffer{}, Err: &lockedBuffer{}},
+		watcher:  &stubWatcher{events: events},
+		interval: time.Hour,
+		onEvent:  func() { mu.Lock(); woken++; mu.Unlock() },
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sess := session.New(session.Options{Client: &fakeEdge{}})
+	live.start(ctx, sess, &fakeEdge{}, client.Config{IncidentID: "inc-1"})
+	defer live.stop()
+
+	seq := int64(1)
+	events <- client.Event{Seq: &seq, Type: "edge.finding", Payload: map[string]any{"text": "x"}}
+
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return woken > 0
+	}, "the pushed event to wake the worker")
 }

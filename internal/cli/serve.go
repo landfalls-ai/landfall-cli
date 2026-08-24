@@ -309,20 +309,39 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	live := &liveSession{ui: ui, doorbell: doorbell, watcher: opts.Watcher, interval: opts.HeartbeatInterval}
 
+	// The background bridge worker (spec D8/D9). Best-effort: if durable state
+	// is unavailable we log once and serve without it, rather than refusing to
+	// start — a responder mid-incident needs MCP more than they need the queue.
+	worker, accepter := startBridge(ui, opts.Workspace)
+
+	// afterJoin is EVERYTHING that must happen when a room is joined, in one
+	// place, because there are TWO join paths — the agent calling
+	// join_war_room over MCP, and `serve --link` joining at startup.
+	//
+	// They used to duplicate this inline, and the duplication was a real bug:
+	// a worker wired only into OnJoined would never start under `serve --link`,
+	// which is the common case for a responder following a share link. The
+	// independent design review caught it before it shipped. One function so
+	// the two paths cannot drift apart again.
+	afterJoin := func(s *session.Session, cl session.EdgeClient, cfg client.Config, label string) {
+		live.start(stopCtx, s, cl, cfg)
+		if worker != nil {
+			worker.Start(stopCtx, cl, cfg)
+		}
+		ui.Log(`joined incident %s as "%s" (instance %s).`, cfg.IncidentID, label, cl.AgentInstanceID())
+	}
+
 	sess := session.New(session.Options{
 		AgentLabel:    agentLabel(),
 		Redeem:        opts.Redeem,
 		ClientFactory: opts.NewClient,
-		// A join the AGENT performs, mid-session, over MCP. The startup join
-		// below does the same three things inline, because there is no session
-		// to hand this callback yet at that point.
+		// A join the AGENT performs, mid-session, over MCP.
 		OnJoined: func(s *session.Session, cfg client.Config) error {
 			cl := s.Client()
 			if cl == nil {
 				return nil
 			}
-			live.start(stopCtx, s, cl, cfg)
-			ui.Log(`joined incident %s as "%s" (instance %s).`, cfg.IncidentID, s.AgentLabel(), cl.AgentInstanceID())
+			afterJoin(s, cl, cfg, s.AgentLabel())
 			return nil
 		},
 	})
@@ -337,10 +356,9 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 			return err
 		}
 		sess.SetClient(cl)
-		live.start(stopCtx, sess, cl, *cfg)
-		// Literal quotes rather than %q, which would escape a non-ASCII agent
-		// label this line is meant to read back verbatim.
-		ui.Log(`joined incident %s as "%s" (instance %s).`, cfg.IncidentID, cfg.AgentLabel, cl.AgentInstanceID())
+		// Same path as the MCP join — see afterJoin's comment for why this is
+		// not inlined here any more.
+		afterJoin(sess, cl, *cfg, cfg.AgentLabel)
 	} else {
 		ui.Log("not joined yet — the agent should call join_war_room with a Landfall share link.")
 	}
@@ -362,11 +380,14 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	ui.Log("MCP stdio server ready — connect your agent. Every tool call narrates to the war room.")
 	serveErr := serveStdio(stopCtx, opts.In, opts.Out, mcp.Options{
-		Tools:        tools.Build(sess),
+		Tools:        tools.BuildWithAccepter(sess, accepter),
 		ServerInfo:   &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
 		Instructions: tools.EdgeAgentInstructions,
 	})
 
+	if worker != nil {
+		worker.Stop()
+	}
 	shutdown(ctx, live, sock, sess)
 
 	// A cancelled context IS the shutdown path, not a failure: Node's handler

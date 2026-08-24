@@ -42,7 +42,18 @@ type fakeEdge struct {
 	joined    int
 	left      int
 	heartbeat int
+	updates   int
 	joinErr   error
+}
+
+// updateCount is how many times the bridge worker's sweep has polled. It is
+// the only externally visible proof that the worker is actually RUNNING —
+// asserting on the "joined incident" log line does not distinguish a started
+// worker from a join that merely logged.
+func (f *fakeEdge) updateCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.updates
 }
 
 func (f *fakeEdge) Join(context.Context) (*client.JoinResult, error) {
@@ -83,7 +94,12 @@ func (f *fakeEdge) FlagContext(context.Context, int64, string, string) error   {
 func (f *fakeEdge) PositionClaim(context.Context, int64, string, string) error { return nil }
 func (f *fakeEdge) StageClaim(context.Context, map[string]any) error           { return nil }
 func (f *fakeEdge) GetBrief(context.Context) ([]client.Event, error)           { return nil, nil }
-func (f *fakeEdge) GetUpdates(context.Context, int64) ([]client.Event, error)  { return nil, nil }
+func (f *fakeEdge) GetUpdates(context.Context, int64) ([]client.Event, error) {
+	f.mu.Lock()
+	f.updates++
+	f.mu.Unlock()
+	return nil, nil
+}
 func (f *fakeEdge) GetContextFrame(context.Context) (*client.ContextFrame, error) {
 	return nil, errors.New("no frame")
 }
@@ -340,8 +356,11 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("no tools array in %v", list)
 	}
-	if len(raw) != 15 {
-		t.Errorf("tools/list returned %d tools, want 15", len(raw))
+	// 16 = the original 15 plus share_with_room, which serve registers once the
+	// bridge's durable queue opens (spec FR-001). If this drops back to 15 in a
+	// real environment, the queue failed to open and the verb is silently gone.
+	if len(raw) != 16 {
+		t.Errorf("tools/list returned %d tools, want 16", len(raw))
 	}
 	names := map[string]bool{}
 	for _, entry := range raw {
@@ -430,8 +449,8 @@ func TestServeRunsUnjoinedWhenNoConfigResolves(t *testing.T) {
 
 	// The MCP surface is fully live regardless — that is the entire point.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if tools, _ := list["tools"].([]any); len(tools) != 15 {
-		t.Errorf("un-joined serve exposed %d tools, want 15", len(tools))
+	if tools, _ := list["tools"].([]any); len(tools) != 16 {
+		t.Errorf("un-joined serve exposed %d tools, want 16", len(tools))
 	}
 
 	// And a room-write fails closed with the join instruction rather than

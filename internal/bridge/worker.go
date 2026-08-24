@@ -238,13 +238,18 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	kind := Classify(e.Text)
 	body := map[string]any{
 		"text": e.Text,
-		// FR-004: provenance marks this as bridge-published rather than a
-		// direct action by the responder. It is a property of the ITEM, under
-		// the responder's single room identity — spec D1. Minting a second
-		// identity would let one human corroborate their own claim, silently
-		// inflating vetting quorum, which is why this is a field and not an
-		// actor.
-		"provenance": "bridge",
+		// FR-004: marks this as bridge-published rather than a direct action by
+		// the responder. A property of the ITEM, under the responder's single
+		// room identity (D1) — minting a second identity would let one human
+		// corroborate their own claim and silently inflate vetting quorum,
+		// which is why this is a field and not an actor.
+		//
+		// NOT named `provenance`: that key is already taken by the vetting
+		// domain's ProvenanceRef[] (evidence references — sourceType/sourceSeq/
+		// quote). A string there would be a type collision, inert today only
+		// because a reader guards with Array.isArray. Shipping a second meaning
+		// for one key is a bug waiting to be found by someone else.
+		"publishedVia": "bridge",
 	}
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs

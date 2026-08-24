@@ -64,12 +64,12 @@ func TestPublishedItemsCarryBridgeProvenance(t *testing.T) {
 
 	pub.mu.Lock()
 	defer pub.mu.Unlock()
-	got, ok := pub.published[0]["provenance"]
+	got, ok := pub.published[0]["publishedVia"]
 	if !ok {
-		t.Fatal("published item carries no provenance: the room cannot distinguish bridge from direct")
+		t.Fatal("published item carries no publishedVia: the room cannot distinguish bridge from direct")
 	}
 	if got != "bridge" {
-		t.Fatalf("provenance = %v, want \"bridge\"", got)
+		t.Fatalf("publishedVia = %v, want \"bridge\"", got)
 	}
 }
 

@@ -15,14 +15,18 @@ brew tap landfalls-ai/landfall
 brew install landfall
 ```
 
-Or without Homebrew, install directly from a tagged release. Replace `<tag>` with the
-newest tag from the [releases page](https://github.com/landfalls-ai/landfall-cli/releases)
-(this line intentionally does not pin one itself — `brew upgrade landfall` tracks new
-releases automatically; a hardcoded version here would go stale on every release with
-nothing to catch it, which is exactly what happened to the `v0.1.0` this used to say):
+Or without Homebrew, download a prebuilt binary from the
+[releases page](https://github.com/landfalls-ai/landfall-cli/releases) — no toolchain
+required, not even Go. Pick the archive matching your platform (`darwin`/`linux` ×
+`amd64`/`arm64`; Windows is not supported yet), extract it, and put `landfall` on your
+`PATH` (this intentionally does not pin a version — a hardcoded one goes stale on every
+release with nothing to catch it, which is exactly what happened to the `v0.1.0` this
+used to say):
 
 ```
-npm install -g "github:landfalls-ai/landfall-cli#<tag>"
+curl -LO https://github.com/landfalls-ai/landfall-cli/releases/latest/download/landfall-cli_<os>_<arch>.tar.gz
+tar xzf landfall-cli_<os>_<arch>.tar.gz
+sudo mv landfall /usr/local/bin/
 ```
 
 ## `landfall install`: auto-register every coding agent on your machine
@@ -389,8 +393,17 @@ See [RELEASING.md](./RELEASING.md).
 ## Development
 
 ```
-npm install
-npm test
+go build ./...
+go test ./...
 ```
 
-No build step — plain ESM, Node ≥22.
+Go 1.24+, [Cobra](https://github.com/spf13/cobra) for the command tree and
+[Viper](https://github.com/spf13/viper) for the persisted instance config. The binary
+builds from `./cmd/landfall`; everything else lives under `internal/`. Releases are
+cross-compiled by [goreleaser](https://goreleaser.com) — see
+[RELEASING.md](./RELEASING.md).
+
+`landfall` was a Node.js/ESM CLI through `v0.5.0` and was rewritten in Go for `v0.6.0`
+(1:1 behavioral parity — same commands, same flags, same exit codes, same stdout/stderr
+split). It ships as a single static binary now, so it no longer needs Node installed at
+all.

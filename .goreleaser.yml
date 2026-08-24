@@ -65,9 +65,11 @@ homebrew_casks:
   # replacement for distributing a plain compiled binary, and `brew install
   # landfall` works identically for the end user (goreleaser.com/deprecations
   # confirms this). Writes to Casks/landfall.rb in the tap, not
-  # Formula/landfall.rb -- the old Formula/landfall.rb this replaces should
-  # be deleted from the tap once this pipeline has shipped a real release
-  # (kept for now so `brew install landfall` doesn't break mid-transition).
+  # Formula/landfall.rb. The old Formula/landfall.rb was deleted from the tap
+  # on 2026-08-23 once v0.6.0 shipped -- it had to go: Homebrew resolves a
+  # bare `landfall` to the Formula first, so `brew upgrade landfall` sat
+  # reporting "already installed" at the old Node v0.5.0 and never saw the
+  # Cask at all.
   - name: landfall
     ids:
       - landfall
@@ -87,3 +89,25 @@ homebrew_casks:
       name: Jhonny
       email: jhonny@landfalls.ai
     commit_msg_template: "chore: bump landfall to {{ .Tag }}"
+    # Strip the macOS quarantine xattr that Homebrew propagates from the
+    # downloaded tarball onto the staged binary. Without this, v0.6.0
+    # installed "successfully" but left a BROKEN SYMLINK: Homebrew staged
+    # LICENSE/README into the Caskroom while the unsigned, un-notarized
+    # `landfall` executable never landed there, so /opt/homebrew/bin/landfall
+    # pointed at a nonexistent file. Reproduced on 4 consecutive clean
+    # installs (macOS 26.4, Homebrew 6.0.18); the release archive itself was
+    # always correct (verified: tar lists LICENSE, README.md, landfall) and
+    # the binary ran fine once placed by hand, which is what isolated this to
+    # quarantine handling rather than a bad build or a bad archive.
+    # This is goreleaser's own documented workaround for distributing an
+    # unsigned binary via a cask (goreleaser.com/customization/homebrew_casks).
+    # It trades away a macOS verification layer, and Apple can disable it at
+    # any time -- the durable fix is real code signing + notarization, which
+    # needs a paid Apple Developer account. Tracked as a follow-up rather than
+    # silently accepted as permanent.
+    hooks:
+      post:
+        install: |
+          if OS.mac?
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/landfall"]
+          end

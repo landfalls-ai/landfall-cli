@@ -50,12 +50,26 @@ Homebrew-publish step specifically — GitHub Release publishing (which only nee
 built-in `GITHUB_TOKEN`) will have already succeeded, so a failed run here means "the
 binaries exist, the tap wasn't updated," not "nothing shipped."
 
-**Migration note (one-time, this release only):** the tap's existing `Formula/landfall.rb`
-(the old Node source-tarball formula) is left in place by this change — it is not deleted or
-migrated automatically. Once the first Go release has shipped and been verified via step 4
-above, delete `Formula/landfall.rb` from the tap by hand (a Cask and a Formula with the same
-`name` can't coexist safely) — see goreleaser's own guidance on cask migrations for whether a
-`tap_migrations.json` entry is worth adding so existing Formula users upgrade cleanly.
+**Migration note — DONE as of v0.6.0 (2026-08-23), kept here as the record.** The tap's old
+`Formula/landfall.rb` (the Node source-tarball formula) had to be deleted by hand after the
+first Go release shipped, and was: Homebrew resolves a bare `landfall` to the Formula before
+the Cask, so while both existed `brew upgrade landfall` just reported `already installed` at
+the old Node `v0.5.0` and never saw the Cask at all. Confirmed live on a machine with
+`v0.5.0` installed, then removed in `homebrew-landfall@59c3e2a`. No `tap_migrations.json`
+entry was added; existing users pick up the Cask on a fresh `brew install landfall` (an
+in-place `brew upgrade` across the Formula→Cask boundary does not carry over, because the
+Cellar install receipt still records the old Formula).
+
+**macOS quarantine — why the cask carries a `postflight` hook.** `v0.6.0` shipped without one
+and every macOS `brew install landfall` produced a **broken symlink**: Homebrew staged
+`LICENSE`/`README.md` into the Caskroom but the unsigned, un-notarized `landfall` executable
+never landed, leaving `/opt/homebrew/bin/landfall` pointing at nothing. `.goreleaser.yml`'s
+`homebrew_casks[].hooks.post.install` now strips `com.apple.quarantine` from the staged
+binary, which was verified to fix it against a genuinely quarantined download before shipping.
+This is goreleaser's documented workaround for unsigned binaries and Apple can disable it at
+any time — **the durable fix is real code signing + notarization** (needs a paid Apple
+Developer account). Treat that as open follow-up work, not a settled question. If a future
+release ever reports success but leaves a broken `landfall` on PATH, check this first.
 
 If any step above needed something not written down here, add it before closing out the
 release — this file is the whole process, not a summary of it.

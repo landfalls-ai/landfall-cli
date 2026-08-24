@@ -604,7 +604,8 @@ func TestServeDoorbellRingsOnLiveEventEdge(t *testing.T) {
 	}
 }
 
-// stubWatcher stands in for internal/realtime until T057 lands.
+// stubWatcher stands in for realtimeWatcher so serve's enqueue/doorbell
+// policy is testable without a socket.
 type stubWatcher struct {
 	events chan client.Event
 
@@ -613,7 +614,7 @@ type stubWatcher struct {
 	unwatched bool
 }
 
-func (w *stubWatcher) Watch(ctx context.Context, _ client.Config, onEvent func(client.Event)) func() {
+func (w *stubWatcher) Watch(ctx context.Context, _ client.Config, _ func() string, onEvent func(client.Event)) func() {
 	w.mu.Lock()
 	w.begun = true
 	w.mu.Unlock()
@@ -705,7 +706,52 @@ func TestSetVersionIgnoresEmpty(t *testing.T) {
 	if buildVersion != "9.9.9" {
 		t.Errorf("SetVersion did not take: %q", buildVersion)
 	}
-	if got := (serveOptions{}).withDefaults().Version; got != "9.9.9" {
+	if got := (serveOptions{}).withDefaults(nil).Version; got != "9.9.9" {
 		t.Errorf("serveOptions defaulted the version to %q, want the build version", got)
+	}
+}
+
+// TestServeDefaultsToRealRealtimeWatch is a regression guard, not a unit test
+// of the transport.
+//
+// v0.6.0 and v0.6.1 both SHIPPED with live push dead: serve defaulted to
+// noopWatcher, so internal/realtime — a complete, tested Socket.IO client —
+// was imported by nothing and never ran. tasks.md had T058 ("integrate the
+// realtime watch into serve") marked complete, and the whole 350+ test suite
+// stayed green, because every serve test injects its own stub watcher and so
+// never observes the default. Nothing failed; the feature was just absent.
+//
+// Asserting on the default itself is the only thing that would have caught it.
+func TestServeDefaultsToRealRealtimeWatch(t *testing.T) {
+	got := (serveOptions{}).withDefaults(nil).Watcher
+	if _, isNoop := got.(noopWatcher); isNoop {
+		t.Fatal("serve defaulted to noopWatcher: live push is dead in this build. " +
+			"internal/realtime is wired in through realtimeWatcher; if this is " +
+			"deliberate, it needs to be a documented decision, not a default.")
+	}
+	if _, ok := got.(realtimeWatcher); !ok {
+		t.Fatalf("serve's default watcher is %T, want realtimeWatcher", got)
+	}
+}
+
+// TestRealtimeWatcherDegradesSilently pins the contract that a socket which
+// cannot come up changes nothing else: no panic, no error surfaced to a tool
+// caller, and a stop func that is still safe to call
+// (test/edge-bridge.test.mjs:679).
+func TestRealtimeWatcherDegradesSilently(t *testing.T) {
+	var logged bytes.Buffer
+	w := realtimeWatcher{ui: &UI{Out: io.Discard, Err: &logged}}
+
+	// No BaseURL => realtime.Connect refuses before it ever dials.
+	stop := w.Watch(context.Background(), client.Config{}, func() string { return "" }, func(client.Event) {
+		t.Error("no event should arrive from a watch that never connected")
+	})
+	if stop == nil {
+		t.Fatal("Watch returned a nil stop func")
+	}
+	stop() // must not panic
+
+	if logged.Len() == 0 {
+		t.Error("a failed realtime connect should leave a stderr breadcrumb")
 	}
 }

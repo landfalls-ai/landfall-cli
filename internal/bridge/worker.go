@@ -235,11 +235,21 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 		return false
 	}
 
-	body := map[string]any{"text": e.Text}
+	kind := Classify(e.Text)
+	body := map[string]any{
+		"text": e.Text,
+		// FR-004: provenance marks this as bridge-published rather than a
+		// direct action by the responder. It is a property of the ITEM, under
+		// the responder's single room identity — spec D1. Minting a second
+		// identity would let one human corroborate their own claim, silently
+		// inflating vetting quorum, which is why this is a field and not an
+		// actor.
+		"provenance": "bridge",
+	}
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs
 	}
-	if err := pub.Contribute(ctx, "finding", body); err != nil {
+	if err := pub.Contribute(ctx, string(kind), body); err != nil {
 		if ferr := w.spool.Fail(e.IncidentID, e.ID, err); ferr != nil {
 			w.log("bridge: could not record failure for %s (%v)", e.ID, ferr)
 		}

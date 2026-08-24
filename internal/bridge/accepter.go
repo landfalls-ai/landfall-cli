@@ -32,16 +32,16 @@ func NewAccepter(sp *spool.Spool, notify func()) *Accepter {
 
 // Accept records a hand-off durably and returns its id. No network I/O — it is
 // on share_with_room's calling path (FR-001).
-func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []string) (string, error) {
+func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []string) (string, bool, error) {
 	e, err := a.spool.Accept(incidentID, agentInstanceID, text, refs)
 	if err != nil {
 		if errors.Is(err, spool.ErrFull) {
-			return "", tools.ErrQueueFull
+			return "", false, tools.ErrQueueFull
 		}
-		return "", err
+		return "", false, err
 	}
 	if a.notify != nil {
 		a.notify()
 	}
-	return e.ID, nil
+	return e.ID, e.Redacted, nil
 }

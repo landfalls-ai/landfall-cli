@@ -12,9 +12,12 @@ import (
 // interface so internal/tools does not import internal/spool — the layering
 // rule is that tools depends on session/client/mcp/narrate and nothing heavier.
 type Accepter interface {
-	// Accept durably records a hand-off and returns its id. It must not
-	// perform network I/O.
-	Accept(incidentID, agentInstanceID, text string, refs []string) (id string, err error)
+	// Accept durably records a hand-off. It must not perform network I/O.
+	//
+	// redacted reports that the text was altered on the way in (FR-010). The
+	// caller is expected to SAY so: quietly rewriting what someone wrote means
+	// they find out later, from the timeline, which is worse.
+	Accept(incidentID, agentInstanceID, text string, refs []string) (id string, redacted bool, err error)
 }
 
 // ErrQueueFull is what an Accepter reports when the outbound queue is at its
@@ -51,7 +54,7 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 
 		cfg := cl.Config()
-		id, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args))
+		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args))
 		switch {
 		case errors.Is(err, ErrQueueFull):
 			// FR-012: never silent. A responder must not believe a finding
@@ -63,6 +66,10 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 
 		_ = id
+		if redacted {
+			return "shared — but something in it looked like a credential and was replaced with [redacted] " +
+				"before it left this machine. Re-share without the secret if the room needs that detail.", nil
+		}
 		return "shared — the room will have this shortly. Carry on; nothing to follow up.", nil
 	}
 }

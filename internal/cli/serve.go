@@ -76,29 +76,32 @@ const leaveTimeout = 10 * time.Second
 
 // --- the realtime seam ------------------------------------------------------
 
-// liveWatcher subscribes to a joined room's live event stream. It is the
-// STUBBED half of keepLive (bin/landfall.mjs:164's `watchIncident`): the real
-// Socket.IO client is internal/realtime, which lands with tasks.md T057-T058.
+// liveWatcher subscribes to a joined room's live event stream — keepLive's
+// `watchIncident` half (bin/landfall.mjs:164). The production implementation is
+// realtimeWatcher (realtime_watcher.go), over internal/realtime.
 //
-// The seam is here rather than in serve's body so T058 is a one-line swap of
-// the default in serveOptions.withDefaults, with no change to the enqueue /
-// doorbell / logging policy below — that policy is `serve`'s, not the
-// transport's, and it is already correct.
+// The seam stays here, rather than serve calling internal/realtime directly, so
+// the enqueue / doorbell / logging policy below is testable against a stub
+// without a socket. That policy is `serve`'s, not the transport's.
 //
 // Watch returns a stop function; it must be safe to call exactly once, and a
 // watcher that cannot connect returns a no-op rather than an error, matching
 // today's degrade-silently behavior (edge-bridge.test.mjs:679).
+// ownInstanceID is read per-event rather than passed by value because the
+// server issues the id at POST /edge/join, which can land after the socket is
+// already up — echo suppression has to stay correct across that window.
 type liveWatcher interface {
-	Watch(ctx context.Context, cfg client.Config, onEvent func(client.Event)) (stop func())
+	Watch(ctx context.Context, cfg client.Config, ownInstanceID func() string, onEvent func(client.Event)) (stop func())
 }
 
-// noopWatcher is the default until T057 lands: no live push, so a joined
-// session finds out what happened at its next `get_updates`. Everything else
-// about serve — the tools, the socket, the doorbell plumbing — works exactly
-// the same with or without it.
+// noopWatcher disables live push entirely: a joined session then finds out what
+// happened at its next `get_updates`. It is no longer the default —
+// realtimeWatcher is (see serveOptions.Watcher) — but it stays as the explicit
+// way to run serve pull-only, and it documents the exact behaviour serve
+// degrades to when a socket cannot come up.
 type noopWatcher struct{}
 
-func (noopWatcher) Watch(context.Context, client.Config, func(client.Event)) func() {
+func (noopWatcher) Watch(context.Context, client.Config, func() string, func(client.Event)) func() {
 	return func() {}
 }
 
@@ -130,7 +133,7 @@ func (l *liveSession) start(ctx context.Context, sess *session.Session, cl sessi
 	liveCtx, cancel := context.WithCancel(ctx)
 	go beat(liveCtx, cl, l.interval)
 
-	unwatch := l.watcher.Watch(liveCtx, cfg, func(evt client.Event) {
+	unwatch := l.watcher.Watch(liveCtx, cfg, cl.AgentInstanceID, func(evt client.Event) {
 		// #227: ring the doorbell on the 0 → non-empty EDGE only. A session that
 		// already owes context will be shown this event too when the bell it has
 		// yet to answer is answered; re-ringing on every event would wake an idle
@@ -216,7 +219,8 @@ type serveOptions struct {
 	// value is this process's cwd and environment, which is what production
 	// wants; one field redirects both in a test.
 	Workspace hooks.Workspace
-	// Watcher is the realtime seam. Nil means noopWatcher until T058.
+	// Watcher is the realtime seam. Nil means the real realtimeWatcher —
+	// live push is on by default. Set noopWatcher{} explicitly for pull-only.
 	Watcher liveWatcher
 	// Version is the MCP serverInfo version. Empty means the linker-stamped
 	// buildVersion.
@@ -225,7 +229,7 @@ type serveOptions struct {
 	HeartbeatInterval time.Duration
 }
 
-func (o serveOptions) withDefaults() serveOptions {
+func (o serveOptions) withDefaults(ui *UI) serveOptions {
 	if o.In == nil {
 		o.In = os.Stdin
 	}
@@ -254,7 +258,7 @@ func (o serveOptions) withDefaults() serveOptions {
 		}
 	}
 	if o.Watcher == nil {
-		o.Watcher = noopWatcher{}
+		o.Watcher = realtimeWatcher{ui: ui}
 	}
 	if o.Version == "" {
 		o.Version = buildVersion
@@ -282,7 +286,7 @@ func newServeCommand(ui *UI, link string) *cobra.Command {
 // arrives, then shuts down in bin/landfall.mjs:477-481's order — live watch,
 // hook socket, leave — and returns nil, which main turns into exit 0.
 func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error {
-	opts = opts.withDefaults()
+	opts = opts.withDefaults(ui)
 
 	// From here on stdout belongs to the MCP wire. Make a stray ui.Outf inert
 	// rather than let it corrupt a JSON-RPC stream the agent is parsing.

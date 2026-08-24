@@ -82,7 +82,13 @@ unless the user explicitly chooses to share them.`
 // Build returns the 15-tool bridge surface for `sess`. `join_war_room` is
 // deliberately NOT wrapped in the narration wrapper: it is session control,
 // not a room-write, and it must work before a client exists at all.
-func Build(sess *session.Session) []mcp.Tool {
+func Build(sess *session.Session) []mcp.Tool { return BuildWithAccepter(sess, nil) }
+
+// BuildWithAccepter is Build plus the bridge's outbound queue. A nil acc omits
+// share_with_room entirely rather than registering a tool that would accept a
+// hand-off and drop it — an agent told "shared" about something that went
+// nowhere is worse than an agent that never had the verb.
+func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 	b := &bridge{sess: sess}
 
 	obj := func(props map[string]any, required ...string) map[string]any {
@@ -107,7 +113,7 @@ func Build(sess *session.Session) []mcp.Tool {
 		return p
 	}
 
-	return []mcp.Tool{
+	list := []mcp.Tool{
 		{
 			Name: "join_war_room",
 			Description: "Join a Landfall war room from an agent share link (magic link). " +
@@ -275,6 +281,28 @@ func Build(sess *session.Session) []mcp.Tool {
 			}),
 		},
 	}
+
+	if acc != nil {
+		// Appended rather than woven in, so the existing surface's ordering is
+		// untouched and a nil Accepter leaves the tool list byte-identical to
+		// what shipped before this feature.
+		list = append(list, mcp.Tool{
+			Name: "share_with_room",
+			Description: "Share something you found with the war room. Returns immediately — " +
+				"the room is updated in the background. You do not need to classify it, wait for it, or follow up.",
+			InputSchema: obj(map[string]any{
+				"text": strProp("What you found, in your own words."),
+				"refs": map[string]any{
+					"type":        "array",
+					"items":       map[string]any{"type": "string"},
+					"description": "Optional local references: file paths, commit SHAs, timeline sequence numbers.",
+				},
+			}, "text"),
+			Handler: b.shareWithRoom(acc),
+		})
+	}
+
+	return list
 }
 
 // constant is a handler whose whole answer is a fixed confirmation string —

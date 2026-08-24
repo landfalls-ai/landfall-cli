@@ -33,17 +33,6 @@ func (k *kindRecorder) kindAt(i int) string {
 	return k.kinds[i]
 }
 
-func runWorker(t *testing.T, pub Publisher, incidentID string) func() {
-	t.Helper()
-	sp, mi, _ := rig(t)
-	_ = sp
-	w := New(sp, mi, nil)
-	w.Interval = 10 * time.Millisecond
-	ctx, cancel := context.WithCancel(context.Background())
-	w.Start(ctx, pub, client.Config{IncidentID: incidentID})
-	return func() { w.Stop(); cancel() }
-}
-
 // TestPublishedItemsCarryBridgeProvenance — FR-004 / SC-003. Without this the
 // room cannot tell a responder's direct action from their bridge's publish.
 func TestPublishedItemsCarryBridgeProvenance(t *testing.T) {

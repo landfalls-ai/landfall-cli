@@ -85,4 +85,10 @@ type Entry struct {
 	// LastError is kept for the operator and surfaced on stderr only — serve's
 	// stdout is the MCP wire (FR-011).
 	LastError string `json:"last_error,omitempty"`
+
+	// Redacted records that Accept altered the text. The responder is TOLD
+	// this rather than having their words quietly rewritten: something they
+	// believed they shared is not what the room will see, and finding that out
+	// later, from the timeline, would be worse.
+	Redacted bool `json:"redacted,omitempty"`
 }

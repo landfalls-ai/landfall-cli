@@ -23,6 +23,8 @@ type fakePub struct {
 	events     []client.Event
 	updateErr  error
 	updateN    int
+	beats      []string
+	beatErr    error
 }
 
 func (f *fakePub) Contribute(_ context.Context, _ string, body map[string]any) error {
@@ -49,6 +51,20 @@ func (f *fakePub) GetUpdates(_ context.Context, sinceSeq int64) ([]client.Event,
 		}
 	}
 	return out, nil
+}
+
+func (f *fakePub) Heartbeat(_ context.Context, doing string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.beats = append(f.beats, doing)
+	return f.beatErr
+}
+
+// beatsSaid returns every activity line narrated so far.
+func (f *fakePub) beatsSaid() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.beats...)
 }
 
 func (f *fakePub) AgentInstanceID() string { return f.instanceID }

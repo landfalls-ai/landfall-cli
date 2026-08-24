@@ -272,20 +272,53 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			}, "claimClass", "statement"),
 			Handler: b.narrated("stage_claim", b.stageClaim),
 		},
-		{
+	}
+
+	// record_activity moved to the bridge worker (spec FR-001), but ONLY when
+	// there is a worker to move it to. With no queue the worker does not run,
+	// so removing it unconditionally would leave the room with a participant
+	// that acts and never speaks — presence stays alive via serve's 15s
+	// heartbeat, but the descriptive per-action line disappears entirely.
+	//
+	// The ordering here is deliberate and was flagged in review: the
+	// replacement lane (internal/bridge's narrateHandOff) had to exist before
+	// this could go.
+	if acc == nil {
+		list = append(list, mcp.Tool{
 			Name:        "record_activity",
 			Description: "Tell the war room what you are currently doing (narration only).",
 			InputSchema: obj(map[string]any{"doing": strProp("")}, "doing"),
 			Handler: b.narrated("record_activity", func(_ context.Context, args map[string]any, _ string, _ session.EdgeClient) (string, error) {
 				return "Recorded: " + str(args, "doing"), nil
 			}),
-		},
+		})
 	}
 
 	if acc != nil {
+		// FR-001: the agent's publish surface reduces to ONE fire-and-forget
+		// verb. These seven move to the background worker, which classifies and
+		// publishes on the responder's behalf (post_finding / note /
+		// post_widget) and handles the mechanical half of vetting (stage_claim;
+		// see D10 on why it never VOTES with the other three).
+		//
+		// Filtered here rather than by restructuring the literal above, so the
+		// surface stays defined in one readable place and a nil Accepter still
+		// yields byte-identical output to what shipped before this feature.
+		movedToWorker := map[string]bool{
+			"post_finding": true, "note": true, "post_widget": true,
+			"stage_claim": true, "corroborate_claim": true,
+			"contest_claim": true, "flag_context": true,
+		}
+		kept := list[:0]
+		for _, tl := range list {
+			if !movedToWorker[tl.Name] {
+				kept = append(kept, tl)
+			}
+		}
+		list = kept
+
 		// Appended rather than woven in, so the existing surface's ordering is
-		// untouched and a nil Accepter leaves the tool list byte-identical to
-		// what shipped before this feature.
+		// untouched.
 		list = append(list, mcp.Tool{
 			Name: "share_with_room",
 			Description: "Share something you found with the war room. Returns immediately — " +

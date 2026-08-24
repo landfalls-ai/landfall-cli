@@ -106,15 +106,24 @@ func (s *Spool) Accept(incidentID, agentInstanceID, text string, refs []string) 
 		return nil, ErrFull
 	}
 
+	// FR-010: redact BEFORE the entry touches disk. An entry can sit through a
+	// crash, a restart and a reboot before it publishes; redacting on the way
+	// out would mean the raw credential was durably stored the whole time.
 	e := &Entry{
 		ID:              newID(),
 		IncidentID:      incidentID,
 		AgentInstanceID: agentInstanceID,
-		Text:            text,
-		Refs:            refs,
+		Text:            Redact(text),
+		Refs:            RedactAll(refs),
 		State:           Queued,
 		CreatedAt:       time.Now().UTC(),
 	}
+	// Both halves of the input, not just the text. A credential can arrive in a
+	// ref alone — a URL with inline creds, say — and reporting "nothing was
+	// altered" in that case is exactly the silent rewrite FR-010 and the
+	// Accepter interface's own comment say must not happen.
+	e.Redacted = looksRedacted(text, e.Text) || anyRedacted(refs, e.Refs)
+
 	if err := s.appendSync(incidentID, e); err != nil {
 		return nil, err
 	}

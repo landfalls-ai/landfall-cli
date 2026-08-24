@@ -60,6 +60,10 @@ const DrainInterval = 5 * time.Second
 type Publisher interface {
 	// Contribute publishes one classified item to the room.
 	Contribute(ctx context.Context, kind string, body map[string]any) error
+	// Heartbeat narrates what the worker is doing. Best-effort by contract:
+	// the room seeing "sharing a finding" is a courtesy, and a failed
+	// heartbeat must never stop the publish it precedes.
+	Heartbeat(ctx context.Context, doing string) error
 	// GetUpdates returns raw timeline events since a cursor. Raw, not the
 	// classified delta: the delta drops our own events, which is precisely
 	// what reconciliation must find.
@@ -88,6 +92,11 @@ type Worker struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	nudge  chan struct{}
+	// lastSurfaced suppresses re-logging the same pending vetting work on every
+	// sweep. At the production interval an unanswered vote would otherwise
+	// produce a line every 5 seconds for as long as it stays unanswered, which
+	// buries everything else in the terminal.
+	lastSurfaced string
 }
 
 func (w *Worker) interval() time.Duration {
@@ -173,6 +182,7 @@ func (w *Worker) run(ctx context.Context, pub Publisher, cfg client.Config) {
 func (w *Worker) sweep(ctx context.Context, pub Publisher, incidentID string) {
 	w.absorb(ctx, pub, incidentID)
 	w.drain(ctx, pub, incidentID)
+	w.surfaceAttention(ctx, pub)
 }
 
 // absorb pulls raw timeline events into the mirror (D8 + D9).
@@ -236,6 +246,10 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	}
 
 	kind := Classify(e.Text)
+
+	// Narrate BEFORE publishing, so the room sees the activity while it is
+	// happening rather than as a postscript. Best-effort — see narrate.
+	w.narrate(ctx, pub, narrateHandOff(kind, e.Text))
 	body := map[string]any{
 		"text": e.Text,
 		// FR-004: marks this as bridge-published rather than a direct action by
@@ -253,6 +267,12 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	}
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs
+	}
+	if stageableClaim(kind) {
+		// A claim the responder framed themselves. Staging is transcription of
+		// their words, not evaluation of them — see vetting.go on why the
+		// worker never casts a vote.
+		body["stageAsClaim"] = true
 	}
 	if err := pub.Contribute(ctx, string(kind), body); err != nil {
 		if ferr := w.spool.Fail(e.IncidentID, e.ID, err); ferr != nil {

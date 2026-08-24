@@ -15,16 +15,45 @@ type fakeAccepter struct {
 	text       string
 	refs       []string
 	err        error
+	redacted   bool
 	calls      int
 }
 
-func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string) (string, error) {
+func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string) (string, bool, error) {
 	f.calls++
 	f.incidentID, f.agentID, f.text, f.refs = incidentID, agentInstanceID, text, refs
 	if f.err != nil {
-		return "", f.err
+		return "", false, f.err
 	}
-	return "entry-1", nil
+	return "entry-1", f.redacted, nil
+}
+
+// TestShareTellsTheResponderWhenTextWasRedacted — FR-010's human half. Removing
+// the secret is necessary; the responder not knowing their words changed is a
+// separate failure, and they would find out from the timeline.
+func TestShareTellsTheResponderWhenTextWasRedacted(t *testing.T) {
+	acc := &fakeAccepter{redacted: true}
+	tool := shareTool(t, newSession(&fakeClient{}), acc)
+
+	out, err := tool.Handler(context.Background(), map[string]any{"text": "password=hunter2correct"})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if !strings.Contains(out, "redacted") {
+		t.Fatalf("redaction was silent: %q", out)
+	}
+
+	// And the ordinary path must NOT cry wolf — a false alarm every time trains
+	// people to ignore the real one.
+	acc2 := &fakeAccepter{}
+	tool2 := shareTool(t, newSession(&fakeClient{}), acc2)
+	out2, err := tool2.Handler(context.Background(), map[string]any{"text": "origin returned 502"})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if strings.Contains(out2, "redacted") {
+		t.Errorf("clean text reported as redacted: %q", out2)
+	}
 }
 
 func shareTool(t *testing.T, sess *session.Session, acc Accepter) mcp.Tool {

@@ -9,8 +9,9 @@
 //     duplicates the finding in the room; acking blind loses it. The mirror
 //     lets the worker ASK — "is there already an event of mine matching this?"
 //     — which is what makes SC-004 achievable without the server accepting a
-//     client idempotency key (it does not: apps/core-api/src/edge/
-//     edge.controller.ts:52-56).
+//     client idempotency key — which, verified against the live server, it
+//     does not: the edge write endpoints accept no client-supplied key, and
+//     the key the server generates is scoped to its own internal retries.
 //
 //  2. LOCAL READS for the harness. Room state is materialized here so the
 //     coding agent reads locally instead of pulling remote.
@@ -18,14 +19,13 @@
 // THE FEED DISTINCTION, which is easy to get wrong and silently fatal to (1):
 //
 //	GetContextDelta  server-CLASSIFIED, per-viewer. Drops the viewer's OWN
-//	                 events unconditionally (libs/context-frame/src/delta.ts:77
-//	                 classifies isOwnEvent as `routine`, and buildDelta:108-111
-//	                 discards routine entirely). Perfect for deciding what
+//	                 events unconditionally (the server classifies a viewer's
+//	                 own events as routine, and drops routine entirely). Perfect for deciding what
 //	                 deserves the agent's attention; USELESS for reconciliation,
 //	                 because our own publishes are exactly what it removes.
 //
 //	GetUpdates       raw events with payloads, including the `agentInstanceId`
-//	                 stamped by base() (libs/edge-consolidation/src/events.ts:19-30).
+//	                 the server stamps on every event.
 //	                 This is the feed reconciliation must use.
 //
 // A mirror built only on the delta would pass every test that does not kill

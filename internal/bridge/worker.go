@@ -16,7 +16,7 @@
 //
 // So the worker is deliberately EAGER. Per-item disposition, using the
 // classification the server already computes
-// (libs/context-frame/src/delta.ts:76-83):
+// (three classes, computed server-side per viewer):
 //
 //	routine      already dropped server-side. Nothing to do.
 //	substantive  THE WORKER'S. Absorb it so it never waits for flushPending to

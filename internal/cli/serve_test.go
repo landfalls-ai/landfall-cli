@@ -386,7 +386,10 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	}
 	// And the verbs the worker took over must be GONE, not merely unused —
 	// leaving them registered is how FR-001 silently fails.
-	for _, gone := range []string{"post_finding", "post_widget", "note", "stage_claim", "record_activity"} {
+	for _, gone := range []string{
+		"post_finding", "post_widget", "note", "record_activity",
+		"stage_claim", "corroborate_claim", "contest_claim", "flag_context",
+	} {
 		if names[gone] {
 			t.Errorf("tools/list still offers %q; the worker owns it now", gone)
 		}

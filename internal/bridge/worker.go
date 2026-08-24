@@ -92,6 +92,11 @@ type Worker struct {
 	mu     sync.Mutex
 	cancel context.CancelFunc
 	nudge  chan struct{}
+	// lastSurfaced suppresses re-logging the same pending vetting work on every
+	// sweep. At the production interval an unanswered vote would otherwise
+	// produce a line every 5 seconds for as long as it stays unanswered, which
+	// buries everything else in the terminal.
+	lastSurfaced string
 }
 
 func (w *Worker) interval() time.Duration {

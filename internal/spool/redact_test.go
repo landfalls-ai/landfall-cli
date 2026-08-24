@@ -126,6 +126,8 @@ func TestResponderIsToldTheirTextChanged(t *testing.T) {
 
 func TestRefsAreRedactedToo(t *testing.T) {
 	s := open(t)
+	// Note the TEXT here is clean — the secret is only in a ref. That is the
+	// case the flag used to miss.
 	e, err := s.Accept("inc-1", "agent-1", "see the config", []string{
 		"src/app.go:42",
 		"https://user:s3cr3tpw@internal.example/config",
@@ -138,5 +140,32 @@ func TestRefsAreRedactedToo(t *testing.T) {
 	}
 	if e.Refs[0] != "src/app.go:42" {
 		t.Errorf("an ordinary ref was altered: %q", e.Refs[0])
+	}
+
+	// THE assertion this test was missing. It set up exactly the right
+	// scenario and then only checked that the secret was gone — so the
+	// transparency half went unverified, and a real bug shipped past it:
+	// Accept compared only the text before/after, so with clean text and a
+	// dirty ref it reported "nothing was altered" to a responder whose
+	// password had just been rewritten. Caught in review, not here.
+	if !e.Redacted {
+		t.Fatal("a credential in refs was rewritten but Redacted is false: " +
+			"share_with_room would tell the responder nothing changed")
+	}
+}
+
+// TestRedactedFlagIsNotSetForCleanRefs — the flag must not cry wolf on the refs
+// path either. A false alarm every time trains people to ignore the real one.
+func TestRedactedFlagIsNotSetForCleanRefs(t *testing.T) {
+	s := open(t)
+	e, err := s.Accept("inc-1", "agent-1", "origin returned 502 at 14:22Z", []string{
+		"src/app.go:42",
+		"abc123def",
+	})
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if e.Redacted {
+		t.Errorf("clean text and clean refs flagged as redacted: %v", e.Refs)
 	}
 }

@@ -79,3 +79,21 @@ func RedactAll(in []string) []string {
 func looksRedacted(before, after string) bool {
 	return before != after && strings.Contains(after, "[redacted]")
 }
+
+// anyRedacted is looksRedacted across a slice.
+//
+// Exists because refs are the easy half to forget: a hand-off's TEXT can be
+// perfectly clean while a ref carries a URL with inline credentials, and
+// checking only the text reports "nothing was altered" to a responder whose
+// password was just rewritten.
+func anyRedacted(before, after []string) bool {
+	if len(before) != len(after) {
+		return true
+	}
+	for i := range before {
+		if looksRedacted(before[i], after[i]) {
+			return true
+		}
+	}
+	return false
+}

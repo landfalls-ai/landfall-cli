@@ -63,11 +63,23 @@ func (w *Worker) surfaceAttention(ctx context.Context, pub Publisher) {
 		return
 	}
 
+	// Say it once per distinct state, not once per sweep. An unanswered vote
+	// stays unanswered for minutes; at a 5s interval that is a line every 5
+	// seconds saying nothing new, which buries the messages that do.
+	state := fmt.Sprintf("%d/%d", len(att.VotesAwaited), len(att.FlaggedOwnContext))
+	w.mu.Lock()
+	repeat := state == w.lastSurfaced
+	w.lastSurfaced = state
+	w.mu.Unlock()
+	if repeat {
+		return
+	}
+
 	if n := len(att.VotesAwaited); n > 0 {
 		w.log("bridge: %s awaiting your position — answer in the room when you have evidence; the bridge will not vote for you", plural(n, "claim"))
 	}
 	if n := len(att.FlaggedOwnContext); n > 0 {
-		w.log("bridge: %s of yours %s been flagged as wrong — worth a look", plural(n, "item"), wereOrWas(n))
+		w.log("bridge: %s of yours %s been flagged as wrong — worth a look", plural(n, "item"), hasOrHave(n))
 	}
 }
 
@@ -98,7 +110,9 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss", n, noun)
 }
 
-func wereOrWas(n int) string {
+// hasOrHave agrees the verb with plural()'s count. (Named for what it returns
+// — an earlier name said "wereOrWas" and returned neither.)
+func hasOrHave(n int) string {
 	if n == 1 {
 		return "has"
 	}

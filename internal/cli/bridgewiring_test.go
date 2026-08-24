@@ -20,12 +20,14 @@ import (
 
 // TestBridgeSwapsRecordActivityForShareWithRoom pins the SWAP, not the count.
 //
-// Both surfaces happen to be 15 tools, so a count assertion proves nothing
-// here — it would pass whether the swap happened or not. What matters is the
-// composition, and specifically the ordering constraint the senior review
-// flagged: record_activity may only leave the main agent once the worker's
-// descriptive activity lane exists to replace it. Otherwise the room gets a
-// participant that acts and never speaks.
+// A count assertion is the wrong tool here — what matters is WHICH tools are
+// present, and specifically the ordering constraint the senior review flagged:
+// record_activity may only leave the main agent once the worker's descriptive
+// activity lane exists to replace it. Otherwise the room gets a participant
+// that acts and never speaks.
+//
+// (The surfaces are 15 without the bridge and 8 with it, since FR-001 moves the
+// seven publish/vetting verbs to the worker.)
 func TestBridgeSwapsRecordActivityForShareWithRoom(t *testing.T) {
 	names := func(list []mcp.Tool) map[string]bool {
 		out := map[string]bool{}

@@ -9,10 +9,56 @@ import (
 	"testing"
 	"time"
 
+	"github.com/landfalls-ai/landfall-cli/internal/bridge"
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/mcp"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
+	"github.com/landfalls-ai/landfall-cli/internal/spool"
+	"github.com/landfalls-ai/landfall-cli/internal/tools"
 )
+
+// TestBridgeSwapsRecordActivityForShareWithRoom pins the SWAP, not the count.
+//
+// Both surfaces happen to be 15 tools, so a count assertion proves nothing
+// here — it would pass whether the swap happened or not. What matters is the
+// composition, and specifically the ordering constraint the senior review
+// flagged: record_activity may only leave the main agent once the worker's
+// descriptive activity lane exists to replace it. Otherwise the room gets a
+// participant that acts and never speaks.
+func TestBridgeSwapsRecordActivityForShareWithRoom(t *testing.T) {
+	names := func(list []mcp.Tool) map[string]bool {
+		out := map[string]bool{}
+		for _, tl := range list {
+			out[tl.Name] = true
+		}
+		return out
+	}
+
+	sess := session.New(session.Options{})
+
+	// No queue => no worker => record_activity MUST stay, or nothing narrates.
+	without := names(tools.Build(sess))
+	if !without["record_activity"] {
+		t.Error("record_activity removed with no worker to take over: the room would see a mute participant")
+	}
+	if without["share_with_room"] {
+		t.Error("share_with_room offered with no queue behind it")
+	}
+
+	// With a queue, the worker owns the lane and the swap is correct.
+	sp, err := spool.Open(bridgeWS(t).Getenv, "wskey")
+	if err != nil {
+		t.Fatalf("spool.Open: %v", err)
+	}
+	with := names(tools.BuildWithAccepter(sess, bridge.NewAccepter(sp, nil)))
+	if !with["share_with_room"] {
+		t.Error("share_with_room missing with a live queue")
+	}
+	if with["record_activity"] {
+		t.Error("record_activity still on the main agent; the worker already owns the activity lane")
+	}
+}
 
 // bridgeWS builds a workspace whose runtime AND durable state both live in
 // temp dirs, so a test's spool never touches the developer's real

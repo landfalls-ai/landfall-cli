@@ -60,6 +60,10 @@ const DrainInterval = 5 * time.Second
 type Publisher interface {
 	// Contribute publishes one classified item to the room.
 	Contribute(ctx context.Context, kind string, body map[string]any) error
+	// Heartbeat narrates what the worker is doing. Best-effort by contract:
+	// the room seeing "sharing a finding" is a courtesy, and a failed
+	// heartbeat must never stop the publish it precedes.
+	Heartbeat(ctx context.Context, doing string) error
 	// GetUpdates returns raw timeline events since a cursor. Raw, not the
 	// classified delta: the delta drops our own events, which is precisely
 	// what reconciliation must find.
@@ -236,6 +240,10 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	}
 
 	kind := Classify(e.Text)
+
+	// Narrate BEFORE publishing, so the room sees the activity while it is
+	// happening rather than as a postscript. Best-effort — see narrate.
+	w.narrate(ctx, pub, narrateHandOff(kind, e.Text))
 	body := map[string]any{
 		"text": e.Text,
 		// FR-004: marks this as bridge-published rather than a direct action by

@@ -272,14 +272,26 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			}, "claimClass", "statement"),
 			Handler: b.narrated("stage_claim", b.stageClaim),
 		},
-		{
+	}
+
+	// record_activity moved to the bridge worker (spec FR-001), but ONLY when
+	// there is a worker to move it to. With no queue the worker does not run,
+	// so removing it unconditionally would leave the room with a participant
+	// that acts and never speaks — presence stays alive via serve's 15s
+	// heartbeat, but the descriptive per-action line disappears entirely.
+	//
+	// The ordering here is deliberate and was flagged in review: the
+	// replacement lane (internal/bridge's narrateHandOff) had to exist before
+	// this could go.
+	if acc == nil {
+		list = append(list, mcp.Tool{
 			Name:        "record_activity",
 			Description: "Tell the war room what you are currently doing (narration only).",
 			InputSchema: obj(map[string]any{"doing": strProp("")}, "doing"),
 			Handler: b.narrated("record_activity", func(_ context.Context, args map[string]any, _ string, _ session.EdgeClient) (string, error) {
 				return "Recorded: " + str(args, "doing"), nil
 			}),
-		},
+		})
 	}
 
 	if acc != nil {

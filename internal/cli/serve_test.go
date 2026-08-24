@@ -356,11 +356,12 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("no tools array in %v", list)
 	}
-	// 16 = the original 15 plus share_with_room, which serve registers once the
-	// bridge's durable queue opens (spec FR-001). If this drops back to 15 in a
-	// real environment, the queue failed to open and the verb is silently gone.
-	if len(raw) != 16 {
-		t.Errorf("tools/list returned %d tools, want 16", len(raw))
+	// Still 15, but a DIFFERENT 15: with the bridge running, share_with_room
+	// replaces record_activity (the worker owns the activity lane now). The
+	// count is a weak assertion precisely because it did not change — the
+	// composition check below is the real one.
+	if len(raw) != 15 {
+		t.Errorf("tools/list returned %d tools, want 15", len(raw))
 	}
 	names := map[string]bool{}
 	for _, entry := range raw {
@@ -449,8 +450,8 @@ func TestServeRunsUnjoinedWhenNoConfigResolves(t *testing.T) {
 
 	// The MCP surface is fully live regardless — that is the entire point.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if tools, _ := list["tools"].([]any); len(tools) != 16 {
-		t.Errorf("un-joined serve exposed %d tools, want 16", len(tools))
+	if tools, _ := list["tools"].([]any); len(tools) != 15 {
+		t.Errorf("un-joined serve exposed %d tools, want 15", len(tools))
 	}
 
 	// And a room-write fails closed with the join instruction rather than

@@ -1,7 +1,7 @@
 {
   "name": "landfall-edge-bridge",
   "displayName": "Landfall Edge Bridge",
-  "version": "0.5.0",
+  "version": "0.6.1",
   "description": "Join a Landfall war room as a live investigator and expose its incident MCP tools (join_war_room, get_brief, get_updates, read_timeline, search_context, post_finding, post_widget, propose_action, record_activity, note) over stdio. Ships the landfall-investigation-dashboard agent, which recognizes a war-room join prompt on sight and specializes in maintaining the investigation's dashboard widgets.",
   "author": { "name": "Landfall" },
   "homepage": "https://github.com/landfalls-ai/landfall-cli",

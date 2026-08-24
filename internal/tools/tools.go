@@ -295,9 +295,30 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 	}
 
 	if acc != nil {
+		// FR-001: the agent's publish surface reduces to ONE fire-and-forget
+		// verb. These seven move to the background worker, which classifies and
+		// publishes on the responder's behalf (post_finding / note /
+		// post_widget) and handles the mechanical half of vetting (stage_claim;
+		// see D10 on why it never VOTES with the other three).
+		//
+		// Filtered here rather than by restructuring the literal above, so the
+		// surface stays defined in one readable place and a nil Accepter still
+		// yields byte-identical output to what shipped before this feature.
+		movedToWorker := map[string]bool{
+			"post_finding": true, "note": true, "post_widget": true,
+			"stage_claim": true, "corroborate_claim": true,
+			"contest_claim": true, "flag_context": true,
+		}
+		kept := list[:0]
+		for _, tl := range list {
+			if !movedToWorker[tl.Name] {
+				kept = append(kept, tl)
+			}
+		}
+		list = kept
+
 		// Appended rather than woven in, so the existing surface's ordering is
-		// untouched and a nil Accepter leaves the tool list byte-identical to
-		// what shipped before this feature.
+		// untouched.
 		list = append(list, mcp.Tool{
 			Name: "share_with_room",
 			Description: "Share something you found with the war room. Returns immediately — " +

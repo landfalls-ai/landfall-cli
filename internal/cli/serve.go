@@ -380,9 +380,11 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	ui.Log("MCP stdio server ready — connect your agent. Every tool call narrates to the war room.")
 	serveErr := serveStdio(stopCtx, opts.In, opts.Out, mcp.Options{
-		Tools:        tools.BuildWithAccepter(sess, accepter),
-		ServerInfo:   &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
-		Instructions: tools.EdgeAgentInstructions,
+		Tools:      tools.BuildWithAccepter(sess, accepter),
+		ServerInfo: &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
+		// Must match the surface actually registered — instructions naming
+		// tools that do not exist send the agent hunting for them mid-incident.
+		Instructions: tools.InstructionsFor(accepter != nil),
 	})
 
 	if worker != nil {

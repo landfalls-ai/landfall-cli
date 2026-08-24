@@ -356,12 +356,13 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("no tools array in %v", list)
 	}
-	// Still 15, but a DIFFERENT 15: with the bridge running, share_with_room
-	// replaces record_activity (the worker owns the activity lane now). The
-	// count is a weak assertion precisely because it did not change — the
-	// composition check below is the real one.
-	if len(raw) != 15 {
-		t.Errorf("tools/list returned %d tools, want 15", len(raw))
+	// 8 with the bridge running: FR-001 reduces the agent's publish surface to
+	// ONE fire-and-forget verb, so the seven publish/vetting tools and
+	// record_activity move to the worker. See contracts/mcp-tools.md's 8/8
+	// split. Without the bridge it is the original 15 — TestBridgeSwaps... in
+	// bridgewiring_test.go pins both compositions.
+	if len(raw) != 8 {
+		t.Errorf("tools/list returned %d tools, want 8", len(raw))
 	}
 	names := map[string]bool{}
 	for _, entry := range raw {
@@ -378,18 +379,25 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 		}
 		names[name] = true
 	}
-	for _, want := range []string{"join_war_room", "get_brief", "get_updates", "post_finding", "post_widget"} {
+	for _, want := range []string{"join_war_room", "get_brief", "get_updates", "share_with_room"} {
 		if !names[want] {
 			t.Errorf("tools/list is missing %q", want)
+		}
+	}
+	// And the verbs the worker took over must be GONE, not merely unused —
+	// leaving them registered is how FR-001 silently fails.
+	for _, gone := range []string{"post_finding", "post_widget", "note", "stage_claim", "record_activity"} {
+		if names[gone] {
+			t.Errorf("tools/list still offers %q; the worker owns it now", gone)
 		}
 	}
 
 	// 3. A tool call reaches the session's client — proof the tools were built
 	//    over THE session serve joined, not a fresh empty one (which would
 	//    answer "not connected" instead).
-	call := result(t, h.rpc(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"note","arguments":{"text":"hello"}}}`))
+	call := result(t, h.rpc(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"share_with_room","arguments":{"text":"hello"}}}`))
 	if call["isError"] == true {
-		t.Errorf("note reported an error against a joined session: %v", call)
+		t.Errorf("share_with_room reported an error against a joined session: %v", call)
 	}
 
 	// 4. stdout is the wire and nothing else: serve must have redirected ui.Out
@@ -450,8 +458,8 @@ func TestServeRunsUnjoinedWhenNoConfigResolves(t *testing.T) {
 
 	// The MCP surface is fully live regardless — that is the entire point.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if tools, _ := list["tools"].([]any); len(tools) != 15 {
-		t.Errorf("un-joined serve exposed %d tools, want 15", len(tools))
+	if tools, _ := list["tools"].([]any); len(tools) != 8 {
+		t.Errorf("un-joined serve exposed %d tools, want 8", len(tools))
 	}
 
 	// And a room-write fails closed with the join instruction rather than

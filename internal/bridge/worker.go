@@ -177,6 +177,7 @@ func (w *Worker) run(ctx context.Context, pub Publisher, cfg client.Config) {
 func (w *Worker) sweep(ctx context.Context, pub Publisher, incidentID string) {
 	w.absorb(ctx, pub, incidentID)
 	w.drain(ctx, pub, incidentID)
+	w.surfaceAttention(ctx, pub)
 }
 
 // absorb pulls raw timeline events into the mirror (D8 + D9).
@@ -261,6 +262,12 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	}
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs
+	}
+	if stageableClaim(kind) {
+		// A claim the responder framed themselves. Staging is transcription of
+		// their words, not evaluation of them — see vetting.go on why the
+		// worker never casts a vote.
+		body["stageAsClaim"] = true
 	}
 	if err := pub.Contribute(ctx, string(kind), body); err != nil {
 		if ferr := w.spool.Fail(e.IncidentID, e.ID, err); ferr != nil {

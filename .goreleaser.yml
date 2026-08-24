@@ -24,8 +24,8 @@ builds:
       - arm64
     ldflags:
       # main.version is the ONLY place a release version is recorded --
-      # cmd/landfall/main.go's own doc comment explains why (replaces
-      # bin/landfall.mjs:487's hardcoded, already-stale '0.2.0' literal).
+      # cmd/landfall/main.go's own doc comment explains why (replaces the
+      # old Node CLI's hardcoded, already-stale '0.2.0' literal).
       - -s -w -X main.version={{.Version}}
 
 archives:

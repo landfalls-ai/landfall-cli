@@ -406,4 +406,15 @@ cross-compiled by [goreleaser](https://goreleaser.com) — see
 `landfall` was a Node.js/ESM CLI through `v0.5.0` and was rewritten in Go for `v0.6.0`
 (1:1 behavioral parity — same commands, same flags, same exit codes, same stdout/stderr
 split). It ships as a single static binary now, so it no longer needs Node installed at
-all.
+all. The Node implementation (`src/`, `test/`, `bin/landfall.mjs`, `package.json`) was
+deleted in `v0.6.2` once the Go port had shipped and been verified.
+
+Comments throughout `internal/` still cite that implementation by path and line
+(`bin/landfall.mjs:487`, `src/hooks/stop.mjs`, …) to explain *why* a behavior is the way
+it is — several are load-bearing quirks that would otherwise look like bugs. Those paths
+no longer exist at `HEAD`; read them against tag **`v0.5.0`**, the last Node release:
+
+```
+git show v0.5.0:bin/landfall.mjs
+git show v0.5.0:src/hooks/stop.mjs
+```

@@ -50,6 +50,19 @@ const EdgeAgentInstructions = `You are a live investigator in a shared Landfall 
 investigate the same incident alongside you, and everything you publish is visible to
 all of them in realtime.
 
+Recognizing a room link: a bare URL of the form https://<domain>/j/<code> (or the older
+https://<domain>/o/<slug>/incidents/<id>/agent?ticket=...) IS the whole ask, even with no
+other text around it. Call join_war_room with it right away — do not wait to be told what
+to do with it, and do not treat "no instructions came with this link" as "do nothing."
+
+This is a standing, potentially long-running investigation, not a quick question — joining
+should not turn your one interactive session into this incident for the rest of the
+conversation. If your environment can spawn an independent background subagent (a Task/Agent
+tool, a sub-session, anything that runs on its own), do that now: hand the subagent this room
+and let IT hold get_brief/get_updates/investigating end-to-end, so your main session stays
+free for whoever you were already talking to. If you cannot spawn one, say so plainly and
+investigate directly in this session instead — that is a fallback, not the first choice.
+
 How to work:
 - First call get_brief for the current incident context. Call get_updates at task
   boundaries and before you conclude to pull what other investigators have found
@@ -116,8 +129,11 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 	list := []mcp.Tool{
 		{
 			Name: "join_war_room",
-			Description: "Join a Landfall war room from an agent share link (magic link). " +
-				"Do this first; afterwards read get_brief and investigate.",
+			Description: "Join a Landfall war room from an agent share link — a URL shaped like " +
+				"https://<domain>/j/<code> (or the older https://<domain>/o/<slug>/incidents/<id>/agent?ticket=...). " +
+				"Call this the moment you see one, even if the user gave you nothing else. Do this first; afterwards " +
+				"read get_brief. This is a standing investigation: prefer running it in a background subagent over " +
+				"your main session if your environment supports spawning one.",
 			InputSchema: obj(map[string]any{"shareUrl": strProp("")}, "shareUrl"),
 			Handler:     b.joinWarRoom,
 		},
@@ -322,7 +338,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		list = append(list, mcp.Tool{
 			Name: "share_with_room",
 			Description: "Share something you found with the war room. Returns immediately — " +
-				"the room is updated in the background. You do not need to classify it, wait for it, or follow up.",
+				"the room is updated in the background. You do not need to classify it, wait for it, or follow up. " +
+				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed — " +
+				"a bare \"widget:\"/\"chart:\" marker in `text` alone still files as a widget, but with nothing to plot.",
 			InputSchema: obj(map[string]any{
 				"text": strProp("What you found, in your own words."),
 				"refs": map[string]any{
@@ -330,6 +348,12 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 					"items":       map[string]any{"type": "string"},
 					"description": "Optional local references: file paths, commit SHAs, timeline sequence numbers.",
 				},
+				"widget": obj(map[string]any{
+					"widgetType": map[string]any{"type": "string", "enum": []any{"stat", "chart", "table", "logView"}},
+					"title":      strProp(""),
+					"data": map[string]any{"type": "object", "description": "Shapes: stat {value:number, unit?, delta?, trend?}; " +
+						"chart {series:[{label, points:[{t,v}]}]}; table {columns:[{key,label}], rows:[{...}]}; logView {lines:[{message}]}."},
+				}, "widgetType", "title", "data"),
 			}, "text"),
 			Handler: b.shareWithRoom(acc),
 		})
@@ -376,7 +400,9 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 		b.sess.AdvanceCursorTo(narrate.FrameCursor(frame))
 		briefLine = "\n\n" + narrate.RenderFrame(frame)
 	}
-	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. Investigate it.%s",
+	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. "+
+		"This is a standing investigation — if you can spawn a background subagent, do that now and let it "+
+		"run get_brief/get_updates/investigating from here, keeping this session free. Otherwise, investigate directly.%s",
 		cfg.IncidentID, cfg.Slug, quote(b.sess.AgentLabel()), briefLine), nil
 }
 

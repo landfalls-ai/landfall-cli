@@ -78,6 +78,13 @@ type Entry struct {
 	Text string   `json:"text"`
 	Refs []string `json:"refs,omitempty"`
 
+	// Widget carries the structured values for a widget hand-off, when the
+	// caller supplied them explicitly (widgetType/title/data), rather than
+	// leaving the worker to infer one from free text. Nil for every other
+	// kind, and nil for a widget hand-off with no structured payload — see
+	// classify.go on why that case still produces a widget, just an empty one.
+	Widget *WidgetPayload `json:"widget,omitempty"`
+
 	State    State `json:"state"`
 	Attempts int   `json:"attempts"`
 
@@ -91,4 +98,14 @@ type Entry struct {
 	// believed they shared is not what the room will see, and finding that out
 	// later, from the timeline, would be worse.
 	Redacted bool `json:"redacted,omitempty"`
+}
+
+// WidgetPayload is the structured content of a widget hand-off — the values
+// an edge agent computed itself, passed straight through to the room rather
+// than reconstructed from a free-text marker (see classify.go's widgetMarkers
+// for why a marker alone cannot carry this).
+type WidgetPayload struct {
+	WidgetType string         `json:"widgetType"`
+	Title      string         `json:"title"`
+	Data       map[string]any `json:"data,omitempty"`
 }

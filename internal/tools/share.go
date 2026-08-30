@@ -14,10 +14,44 @@ import (
 type Accepter interface {
 	// Accept durably records a hand-off. It must not perform network I/O.
 	//
+	// widget carries the structured widgetType/title/data an edge agent
+	// computed itself, when it supplied one — nil for every hand-off that
+	// isn't a widget, or that is one described only by a free-text marker
+	// (see the CLI's classify.go on why a marker alone yields an empty tile).
+	//
 	// redacted reports that the text was altered on the way in (FR-010). The
 	// caller is expected to SAY so: quietly rewriting what someone wrote means
 	// they find out later, from the timeline, which is worse.
-	Accept(incidentID, agentInstanceID, text string, refs []string) (id string, redacted bool, err error)
+	Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload) (id string, redacted bool, err error)
+}
+
+// WidgetPayload is the structured content of a widget hand-off, as
+// share_with_room's optional `widget` argument carries it. Mirrored (not
+// shared) in internal/spool.WidgetPayload — the layering rule above means
+// this package cannot import that one, so internal/bridge's Accepter
+// translates between the two at the boundary, the same way it already
+// translates spool.ErrFull into ErrQueueFull.
+type WidgetPayload struct {
+	WidgetType string
+	Title      string
+	Data       map[string]any
+}
+
+// widgetOf reads share_with_room's optional structured `widget` argument.
+// Absent or malformed returns nil — the hand-off still queues as plain text
+// and Classify falls back to its marker heuristic, so a bad `widget` value
+// degrades rather than fails the whole call.
+func widgetOf(args map[string]any) *WidgetPayload {
+	raw, ok := args["widget"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	data, _ := raw["data"].(map[string]any)
+	return &WidgetPayload{
+		WidgetType: str(raw, "widgetType"),
+		Title:      str(raw, "title"),
+		Data:       data,
+	}
 }
 
 // ErrQueueFull is what an Accepter reports when the outbound queue is at its
@@ -54,7 +88,7 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 
 		cfg := cl.Config()
-		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args))
+		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widgetOf(args))
 		switch {
 		case errors.Is(err, ErrQueueFull):
 			// FR-012: never silent. A responder must not believe a finding

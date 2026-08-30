@@ -14,14 +14,15 @@ type fakeAccepter struct {
 	agentID    string
 	text       string
 	refs       []string
+	widget     *WidgetPayload
 	err        error
 	redacted   bool
 	calls      int
 }
 
-func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string) (string, bool, error) {
+func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload) (string, bool, error) {
 	f.calls++
-	f.incidentID, f.agentID, f.text, f.refs = incidentID, agentInstanceID, text, refs
+	f.incidentID, f.agentID, f.text, f.refs, f.widget = incidentID, agentInstanceID, text, refs, widget
 	if f.err != nil {
 		return "", false, f.err
 	}
@@ -166,6 +167,54 @@ func TestShareQueuesAndReturnsWithoutRoomContent(t *testing.T) {
 	}
 	if len(out) > 120 {
 		t.Errorf("result is %d chars; it should be one short ack", len(out))
+	}
+}
+
+// TestShareWithStructuredWidgetPassesItThrough — the fix for the empty-tile
+// problem: a widget-shaped hand-off with no widgetType/title/data forwarded
+// server-side (only free text) renders as an untitled, dataless stat tile
+// (contribution mapping defaults every missing field). Passing the optional
+// `widget` argument must reach the Accepter untouched, so the worker has real
+// values to publish instead of relying on a text marker alone.
+func TestShareWithStructuredWidgetPassesItThrough(t *testing.T) {
+	acc := &fakeAccepter{}
+	sess := session.New(session.Options{Client: &fakeClient{}})
+	tool := shareTool(t, sess, acc)
+
+	_, err := tool.Handler(context.Background(), map[string]any{
+		"text": "cache hit rate dropped",
+		"widget": map[string]any{
+			"widgetType": "stat",
+			"title":      "Cache hit rate",
+			"data":       map[string]any{"value": 42, "unit": "%"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if acc.widget == nil {
+		t.Fatal("widget argument was dropped, not passed to the Accepter")
+	}
+	if acc.widget.WidgetType != "stat" || acc.widget.Title != "Cache hit rate" {
+		t.Fatalf("widget = %+v", acc.widget)
+	}
+	if v, _ := acc.widget.Data["value"].(int); v != 42 {
+		t.Fatalf("widget data not passed through: %v", acc.widget.Data)
+	}
+}
+
+// TestShareWithoutWidgetArgumentPassesNil pins the "no widget" case stays nil
+// end to end, so a plain finding is never mistaken for an empty widget.
+func TestShareWithoutWidgetArgumentPassesNil(t *testing.T) {
+	acc := &fakeAccepter{}
+	sess := session.New(session.Options{Client: &fakeClient{}})
+	tool := shareTool(t, sess, acc)
+
+	if _, err := tool.Handler(context.Background(), map[string]any{"text": "origin returned 502"}); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if acc.widget != nil {
+		t.Fatalf("widget = %+v, want nil for a plain hand-off", acc.widget)
 	}
 }
 

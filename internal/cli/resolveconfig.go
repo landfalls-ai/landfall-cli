@@ -93,7 +93,13 @@ func resolveConfig(ctx context.Context, ui *UI, link string) (*client.Config, er
 	label := agentLabel()
 	baseURL := os.Getenv("LANDFALL_BASE_URL")
 
-	if link != "" && ticketQuery.MatchString(link) {
+	// A share link is either the long form (a `?ticket=` query) or the short
+	// form (https://<domain>/j/<code>, which deliberately carries no ticket in
+	// the URL text — the code is an opaque server-side lookup key instead).
+	// RedeemShareLink itself tells the two apart; this just decides whether to
+	// call it at all.
+	_, isShortLink := client.ParseShortLink(link)
+	if link != "" && (ticketQuery.MatchString(link) || isShortLink) {
 		cfg, err := client.RedeemShareLink(ctx, link, client.RedeemOptions{BaseURL: baseURL})
 		if err != nil {
 			return nil, err

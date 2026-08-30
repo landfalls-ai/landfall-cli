@@ -258,6 +258,12 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	}
 
 	kind := Classify(e.Text)
+	// An explicit structured payload is a stronger, unambiguous signal than any
+	// text marker — share_with_room's caller said in the schema itself that
+	// this is a widget, so it always wins over Classify's guess from `text`.
+	if e.Widget != nil {
+		kind = KindWidget
+	}
 
 	// Narrate BEFORE publishing, so the room sees the activity while it is
 	// happening rather than as a postscript. Best-effort — see narrate.
@@ -279,6 +285,17 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	}
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs
+	}
+	// The fix for the empty-tile problem: without this, a KindWidget hand-off
+	// only ever carried {text, publishedVia} — the server-side mapping
+	// (edge-consolidation's contributionEvent) defaults widgetType to "stat",
+	// title to "Untitled widget", and data to {} for everything it isn't told,
+	// so the published widget rendered with nothing in it. Forwarding the
+	// caller's own values here is the whole fix.
+	if e.Widget != nil {
+		body["widgetType"] = e.Widget.WidgetType
+		body["title"] = e.Widget.Title
+		body["data"] = e.Widget.Data
 	}
 	// A claim goes to its own endpoint. Staging is transcription of what the
 	// responder wrote, not evaluation of it — see vetting.go on why the worker

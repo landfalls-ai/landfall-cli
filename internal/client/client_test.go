@@ -403,6 +403,53 @@ func TestAnExpiredLinkSaysSo(t *testing.T) {
 	}
 }
 
+// --- the short link ----------------------------------------------------------
+
+func TestParseShortLinkExtractsTheCodeAndRejectsNonLinks(t *testing.T) {
+	s, ok := ParseShortLink("http://api.test/j/aB3xK9pQ")
+	if !ok || s.BaseURL != "http://api.test" || s.Code != "aB3xK9pQ" {
+		t.Errorf("parsed = %+v, ok = %v", s, ok)
+	}
+	for _, notShort := range []string{
+		"http://api.test/o/acme/incidents/inc-1/agent?ticket=tkt-123", // the long form
+		"http://api.test/j/",
+		"not a url at all",
+	} {
+		if _, ok := ParseShortLink(notShort); ok {
+			t.Errorf("ParseShortLink(%q) = ok, want rejected", notShort)
+		}
+	}
+}
+
+// TestRedeemShortLinkPostsToTheCodeEndpointAndReadsSlugAndIncidentBack —
+// unlike the long link, the short link carries no slug/incident id of its own
+// in the URL text (that is the whole point — an opaque code, resolved
+// server-side), so this is the one form where the redeem RESPONSE, not the
+// URL, is where Config.Slug/IncidentID come from.
+func TestRedeemShortLinkPostsToTheCodeEndpointAndReadsSlugAndIncidentBack(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/j/aB3xK9pQ/redeem": {status: 201, body: `{"token":"edge-tok","humanActorId":"u-1","slug":"acme","incidentId":"inc-1"}`},
+	})
+	got, err := RedeemShareLink(context.Background(), "http://api.test/j/aB3xK9pQ", RedeemOptions{Doer: d})
+	if err != nil {
+		t.Fatalf("redeem: %v", err)
+	}
+	want := Config{BaseURL: "http://api.test", Slug: "acme", IncidentID: "inc-1", Token: "edge-tok", HumanActorID: "u-1"}
+	if got != want {
+		t.Errorf("cfg = %+v, want %+v", got, want)
+	}
+}
+
+func TestAnExpiredShortLinkSaysSo(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/j/aB3xK9pQ/redeem": {status: 410, body: `{}`},
+	})
+	_, err := RedeemShareLink(context.Background(), "http://api.test/j/aB3xK9pQ", RedeemOptions{Doer: d})
+	if err == nil || !strings.Contains(err.Error(), "expired or was already used") {
+		t.Errorf("err = %v", err)
+	}
+}
+
 func contains(list []string, want string) bool {
 	for _, s := range list {
 		if s == want {

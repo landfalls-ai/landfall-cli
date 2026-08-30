@@ -89,6 +89,15 @@ func (s *Spool) path(incidentID string) string {
 // guarantee: the process can die between the write and the flush, and the
 // responder is told their finding was accepted when it is gone.
 func (s *Spool) Accept(incidentID, agentInstanceID, text string, refs []string) (*Entry, error) {
+	return s.AcceptWidget(incidentID, agentInstanceID, text, refs, nil)
+}
+
+// AcceptWidget is Accept plus an optional structured widget payload — the
+// values an edge agent computed itself, carried straight through to the room
+// instead of being reconstructed later from a free-text marker (classify.go).
+// widget is nil for every non-widget hand-off, and Accept above is exactly
+// this call with widget always nil, so every existing caller is unaffected.
+func (s *Spool) AcceptWidget(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload) (*Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -115,6 +124,7 @@ func (s *Spool) Accept(incidentID, agentInstanceID, text string, refs []string) 
 		AgentInstanceID: agentInstanceID,
 		Text:            Redact(text),
 		Refs:            RedactAll(refs),
+		Widget:          widget,
 		State:           Queued,
 		CreatedAt:       time.Now().UTC(),
 	}

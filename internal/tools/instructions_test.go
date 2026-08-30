@@ -112,6 +112,6 @@ func TestBridgeInstructionsDoNotOversellRedaction(t *testing.T) {
 
 type nopAccepter struct{}
 
-func (nopAccepter) Accept(string, string, string, []string) (string, bool, error) {
+func (nopAccepter) Accept(string, string, string, []string, *WidgetPayload) (string, bool, error) {
 	return "id", false, nil
 }

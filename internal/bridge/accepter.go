@@ -32,8 +32,8 @@ func NewAccepter(sp *spool.Spool, notify func()) *Accepter {
 
 // Accept records a hand-off durably and returns its id. No network I/O — it is
 // on share_with_room's calling path (FR-001).
-func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []string) (string, bool, error) {
-	e, err := a.spool.Accept(incidentID, agentInstanceID, text, refs)
+func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *tools.WidgetPayload) (string, bool, error) {
+	e, err := a.spool.AcceptWidget(incidentID, agentInstanceID, text, refs, toSpoolWidget(widget))
 	if err != nil {
 		if errors.Is(err, spool.ErrFull) {
 			return "", false, tools.ErrQueueFull
@@ -44,4 +44,16 @@ func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []strin
 		a.notify()
 	}
 	return e.ID, e.Redacted, nil
+}
+
+// toSpoolWidget translates tools.WidgetPayload into spool.WidgetPayload — the
+// two exist separately because internal/tools cannot import internal/spool
+// (see WidgetPayload's own doc comment). A nil input yields nil, not a
+// zero-value struct: "no widget" and "an empty widget" must stay distinguishable
+// all the way through to the worker.
+func toSpoolWidget(w *tools.WidgetPayload) *spool.WidgetPayload {
+	if w == nil {
+		return nil
+	}
+	return &spool.WidgetPayload{WidgetType: w.WidgetType, Title: w.Title, Data: w.Data}
 }

@@ -16,6 +16,12 @@ package tools
 // Instructions naming tools that do not exist send the agent looking for them
 // mid-incident, which is worse than saying nothing.
 //
+// The short-link recognition and subagent-delegation guidance is duplicated
+// into BOTH variants deliberately, not factored into a shared prefix: the
+// first release of this guidance landed only in EdgeAgentInstructions, and
+// `serve` wires the bridge unconditionally by default, so real installs never
+// saw it. TestBothVariantsKeepTheLoadBearingParagraphs now checks both.
+//
 // What deliberately survives, unchanged:
 //   - the "never mid-turn, unprompted" delivery paragraph, which becomes
 //     strictly MORE true under this feature, not less
@@ -24,6 +30,19 @@ package tools
 //     inference, initiates an approval-gated act)
 const BridgeAgentInstructions = `You are a live investigator in a shared Landfall war room. Other humans and AI agents
 investigate the same incident alongside you.
+
+Recognizing a room link: a bare URL of the form https://<domain>/j/<code> (or the older
+https://<domain>/o/<slug>/incidents/<id>/agent?ticket=...) IS the whole ask, even with no
+other text around it. Call join_war_room with it right away — do not wait to be told what
+to do with it, and do not treat "no instructions came with this link" as "do nothing."
+
+This is a standing, potentially long-running investigation, not a quick question — joining
+should not turn your one interactive session into this incident for the rest of the
+conversation. If your environment can spawn an independent background subagent (a Task/Agent
+tool, a sub-session, anything that runs on its own), do that now: hand the subagent this room
+and let IT hold get_brief/get_updates/investigating end-to-end, so your main session stays
+free for whoever you were already talking to. If you cannot spawn one, say so plainly and
+investigate directly in this session instead — that is a fallback, not the first choice.
 
 How to work:
 - First call get_brief for the current incident context. Read the room when you want it:

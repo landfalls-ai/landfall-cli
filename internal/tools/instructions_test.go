@@ -97,6 +97,18 @@ func TestBothVariantsKeepTheLoadBearingParagraphs(t *testing.T) {
 		if !strings.Contains(v.text, "secrets") {
 			t.Errorf("%s: lost the keep-secrets-local guidance", v.name)
 		}
+		// Regression guard: the first release of this guidance landed only in
+		// EdgeAgentInstructions, not BridgeAgentInstructions — the variant
+		// `serve` actually uses by default (bridge wired unconditionally) — so
+		// a real live test of the no-bridge binary passed while the shipped
+		// default silently lacked both paragraphs. Checking both variants
+		// here, not just InstructionsFor(true), is what would have caught it.
+		if !strings.Contains(v.text, "/j/<code>") {
+			t.Errorf("%s: does not tell the agent to recognize a bare room link", v.name)
+		}
+		if !strings.Contains(v.text, "background subagent") {
+			t.Errorf("%s: does not tell the agent to prefer a background subagent", v.name)
+		}
 	}
 }
 

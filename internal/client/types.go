@@ -101,14 +101,27 @@ type Participant struct {
 	Active         *bool  `json:"active"`
 }
 
+// WidgetCatalogEntry is one canvas widget type, as the server describes it
+// (monorepo feature 20260904-130050: the one widget catalog every surface
+// derives from). Carried on the ContextFrame so `describe_widget_types` and
+// `share_with_room`'s widget argument never need a separate round trip.
+type WidgetCatalogEntry struct {
+	Type      string   `json:"type"`
+	Label     string   `json:"label"`
+	Purpose   string   `json:"purpose"`
+	BestFor   []string `json:"bestFor"`
+	DataShape string   `json:"dataShape"`
+}
+
 // ContextFrame is GET /edge/context/frame.
 type ContextFrame struct {
-	AsOfSeq      *int64        `json:"asOfSeq"`
-	Version      int64         `json:"version"`
-	FreshnessMs  *float64      `json:"freshnessMs"`
-	Incident     Incident      `json:"incident"`
-	Brief        Brief         `json:"brief"`
-	Participants []Participant `json:"participants"`
+	AsOfSeq       *int64               `json:"asOfSeq"`
+	Version       int64                `json:"version"`
+	FreshnessMs   *float64             `json:"freshnessMs"`
+	Incident      Incident             `json:"incident"`
+	Brief         Brief                `json:"brief"`
+	Participants  []Participant        `json:"participants"`
+	WidgetCatalog []WidgetCatalogEntry `json:"widgetCatalog,omitempty"`
 }
 
 // DeltaItem is one classified change in a FrameDelta.

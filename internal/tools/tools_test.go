@@ -179,12 +179,13 @@ func callTool(t *testing.T, list []mcp.Tool, name string, args map[string]any) s
 
 // --- the surface ------------------------------------------------------------
 
-func TestTheFifteenToolsAreExposed(t *testing.T) {
+func TestTheSixteenToolsAreExposed(t *testing.T) {
 	list := Build(newSession(&fakeClient{}))
 	want := []string{
 		"join_war_room", "get_updates", "get_brief", "read_timeline", "search_context",
 		"post_finding", "note", "post_widget", "upload_artifact", "propose_action",
 		"flag_context", "corroborate_claim", "contest_claim", "stage_claim", "record_activity",
+		"describe_widget_types",
 	}
 	if len(list) != len(want) {
 		t.Fatalf("tool count = %d, want %d", len(list), len(want))

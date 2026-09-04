@@ -86,6 +86,8 @@ func (c Contribution) Fields() map[string]any {
 // narrate.mjs's narrateDoing switch.
 func NarrateDoing(toolName string, args Args) string {
 	switch toolName {
+	case "describe_widget_types":
+		return "checking which widget types the canvas renders"
 	case "get_brief":
 		return "reviewing the incident brief"
 	case "get_updates":

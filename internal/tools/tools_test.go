@@ -179,12 +179,13 @@ func callTool(t *testing.T, list []mcp.Tool, name string, args map[string]any) s
 
 // --- the surface ------------------------------------------------------------
 
-func TestTheFifteenToolsAreExposed(t *testing.T) {
+func TestTheSixteenToolsAreExposed(t *testing.T) {
 	list := Build(newSession(&fakeClient{}))
 	want := []string{
 		"join_war_room", "get_updates", "get_brief", "read_timeline", "search_context",
 		"post_finding", "note", "post_widget", "upload_artifact", "propose_action",
 		"flag_context", "corroborate_claim", "contest_claim", "stage_claim", "record_activity",
+		"describe_widget_types",
 	}
 	if len(list) != len(want) {
 		t.Fatalf("tool count = %d, want %d", len(list), len(want))
@@ -743,5 +744,27 @@ func TestSeqOfDistinguishesAbsentFromZero(t *testing.T) {
 		if ok != c.ok || (ok && got != c.want) {
 			t.Errorf("seqOf(%#v) = (%d, %v), want (%d, %v)", c.in, got, ok, c.want, c.ok)
 		}
+	}
+}
+
+// --- describe_widget_types (monorepo feature 20260904-130050) --------------
+
+func TestDescribeWidgetTypesReturnsTheServersCatalog(t *testing.T) {
+	fc := &fakeClient{frame: &client.ContextFrame{WidgetCatalog: []client.WidgetCatalogEntry{
+		{Type: "geo", Label: "World map", Purpose: "where the incident is", BestFor: []string{"error rate by region"}, DataShape: "{ points: [...] }"},
+	}}}
+	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
+	for _, want := range []string{`"types"`, `"geo"`, `"World map"`, `"error rate by region"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("describe_widget_types output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestDescribeWidgetTypesFallsBackToTheEnumOnAnOlderServer(t *testing.T) {
+	fc := &fakeClient{frame: &client.ContextFrame{}}
+	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
+	if !strings.Contains(out, "sent no widget catalog") || !strings.Contains(out, "geo") || !strings.Contains(out, "Shapes:") {
+		t.Errorf("fallback text missing the enum and shapes: %s", out)
 	}
 }

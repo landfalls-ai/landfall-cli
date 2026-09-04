@@ -42,6 +42,20 @@ var artifactExtTypes = map[string]string{
 	".markdown": "text/markdown", ".json": "application/json",
 }
 
+// widgetTypes is every canvas widget type the server's catalog renders
+// (monorepo feature 20260904-130050). The server validates a shared widget's
+// data against the type's closed contract and refuses a mismatch with the
+// shape error; `describe_widget_types` returns the catalog with what each is
+// for and the shape it expects. Kept in the same order as the server's list.
+var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "codeFinding"}
+
+const widgetShapes = "Shapes: stat {value:number, unit?, delta?, deltaLabel?, trend?:\"up\"|\"down\"|\"flat\", tone?, baseline?, spark?:number[]}; " +
+	"chart {series:[{label, unit?, points:[{t:ISO-8601, v:number}]}], thresholds?:[{value,label?,tone?}], markers?:[{t,label,kind?}]}; " +
+	"table {columns:[{key,label,type:\"string\"|\"number\"|\"time\"|\"status\"|\"share\"}], rows:[{...}]}; " +
+	"logView {lines:[{t?,level?,message}]}; timeline {events:[{t,label,kind?,correlated?}]}; " +
+	"geo {points:[{place:\"eu-west-1\"|\"DUB\"|\"Frankfurt\"|…, value?, unit?, tone?:\"good\"|\"warning\"|\"serious\"|\"critical\", pulse?, label?}], unit?} " +
+	"(coordinates are filled in from the place name). Call describe_widget_types for the full catalog."
+
 // EdgeAgentInstructions is the standing operating guidance for an edge
 // investigator, surfaced through the MCP `initialize` `instructions` field, so
 // the client injects it into the model's context the moment the agent
@@ -68,8 +82,10 @@ How to work:
   boundaries and before you conclude to pull what other investigators have found
   (durable cursor — only what is new since you last looked).
 - Publish concise results as you go: post_finding for findings, propose_action for
-  remediations, post_widget to add a stat/chart/table/logView to your own
-  sub-investigation dashboard. Every tool call also narrates your presence to the room.
+  remediations, post_widget to add a widget (stat, chart, table, logView, timeline, a geo
+  world map keyed by region, or a code finding) to your own sub-investigation dashboard;
+  describe_widget_types lists what each type is for. Every tool call also narrates your
+  presence to the room.
 - Remediations are propose-only: propose_action records a proposal for a human to
   approve and execute. You never execute changes yourself.
 - Use upload_artifact to share a file you produced (report, chart, PDF, CSV) — it is
@@ -181,10 +197,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		{
 			Name: "post_widget",
 			Description: "Add a data widget to YOUR sub-investigation dashboard in the war room (visible to everyone who clicks your tile). " +
-				"Data-only — pass the values you computed. Shapes: stat {value:number, unit?, delta?, trend?:\"up\"|\"down\"|\"flat\"}; " +
-				"chart {series:[{label, points:[{t,v:number}]}]}; table {columns:[{key,label}], rows:[{...}]}; logView {lines:[{message}]}.",
+				"Data-only — pass the values you computed. Use geo when values are keyed by a place (region, edge location, city). " + widgetShapes,
 			InputSchema: obj(map[string]any{
-				"widgetType": map[string]any{"type": "string", "enum": []any{"stat", "chart", "table", "logView"}},
+				"widgetType": map[string]any{"type": "string", "enum": widgetTypes},
 				"title":      strProp(""),
 				"data":       map[string]any{"type": "object"},
 			}, "widgetType", "title", "data"),
@@ -310,6 +325,19 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		})
 	}
 
+	// describe_widget_types (monorepo feature 20260904-130050): the widget
+	// catalog on demand. A read, present in both modes, appended after the
+	// conditional record_activity so the base surface's ordering is untouched
+	// and it is last in both compositions.
+	list = append(list, mcp.Tool{
+		Name: "describe_widget_types",
+		Description: "Describe the canvas widget types you can share (stat, chart, table, logView, timeline, geo world map, " +
+			"code finding): what each is for, what it is best for, and the data shape the room renders. Read this before " +
+			"choosing a widgetType. Static reference data from the server's catalog.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Handler:     b.narrated("describe_widget_types", b.describeWidgetTypes),
+	})
+
 	if acc != nil {
 		// FR-001: the agent's publish surface reduces to ONE fire-and-forget
 		// verb. These seven move to the background worker, which classifies and
@@ -349,10 +377,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 					"description": "Optional local references: file paths, commit SHAs, timeline sequence numbers.",
 				},
 				"widget": obj(map[string]any{
-					"widgetType": map[string]any{"type": "string", "enum": []any{"stat", "chart", "table", "logView"}},
+					"widgetType": map[string]any{"type": "string", "enum": widgetTypes},
 					"title":      strProp(""),
-					"data": map[string]any{"type": "object", "description": "Shapes: stat {value:number, unit?, delta?, trend?}; " +
-						"chart {series:[{label, points:[{t,v}]}]}; table {columns:[{key,label}], rows:[{...}]}; logView {lines:[{message}]}."},
+					"data":       map[string]any{"type": "object", "description": widgetShapes},
 				}, "widgetType", "title", "data"),
 			}, "text"),
 			Handler: b.shareWithRoom(acc),
@@ -675,4 +702,30 @@ func seqOf(v any) (int64, bool) {
 		return 0, false
 	}
 	return int64(n), true
+}
+
+// describeWidgetTypes returns the server's widget catalog as carried on the
+// context frame (monorepo feature 20260904-130050). An older server sends no
+// catalog; the enum the tool schema advertises is then the whole answer.
+func (b *bridge) describeWidgetTypes(ctx context.Context, _ map[string]any, _ string, cl session.EdgeClient) (string, error) {
+	frame, err := cl.GetContextFrame(ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(frame.WidgetCatalog) == 0 {
+		return "This server sent no widget catalog; the widget types it accepts are: " + joinAny(widgetTypes) + ". " + widgetShapes, nil
+	}
+	out, err := json.MarshalIndent(map[string]any{"types": frame.WidgetCatalog}, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func joinAny(vals []any) string {
+	parts := make([]string, 0, len(vals))
+	for _, v := range vals {
+		parts = append(parts, fmt.Sprint(v))
+	}
+	return strings.Join(parts, ", ")
 }

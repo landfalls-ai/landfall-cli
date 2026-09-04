@@ -356,13 +356,14 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	if !ok {
 		t.Fatalf("no tools array in %v", list)
 	}
-	// 8 with the bridge running: FR-001 reduces the agent's publish surface to
+	// 9 with the bridge running (8 + describe_widget_types, monorepo feature
+	// 20260904-130050): FR-001 reduces the agent's publish surface to
 	// ONE fire-and-forget verb, so the seven publish/vetting tools and
 	// record_activity move to the worker. See contracts/mcp-tools.md's 8/8
 	// split. Without the bridge it is the original 15 — TestBridgeSwaps... in
 	// bridgewiring_test.go pins both compositions.
-	if len(raw) != 8 {
-		t.Errorf("tools/list returned %d tools, want 8", len(raw))
+	if len(raw) != 9 {
+		t.Errorf("tools/list returned %d tools, want 9", len(raw))
 	}
 	names := map[string]bool{}
 	for _, entry := range raw {
@@ -461,8 +462,8 @@ func TestServeRunsUnjoinedWhenNoConfigResolves(t *testing.T) {
 
 	// The MCP surface is fully live regardless — that is the entire point.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if tools, _ := list["tools"].([]any); len(tools) != 8 {
-		t.Errorf("un-joined serve exposed %d tools, want 8", len(tools))
+	if tools, _ := list["tools"].([]any); len(tools) != 9 {
+		t.Errorf("un-joined serve exposed %d tools, want 9", len(tools))
 	}
 
 	// And a room-write fails closed with the join instruction rather than

@@ -746,3 +746,25 @@ func TestSeqOfDistinguishesAbsentFromZero(t *testing.T) {
 		}
 	}
 }
+
+// --- describe_widget_types (monorepo feature 20260904-130050) --------------
+
+func TestDescribeWidgetTypesReturnsTheServersCatalog(t *testing.T) {
+	fc := &fakeClient{frame: &client.ContextFrame{WidgetCatalog: []client.WidgetCatalogEntry{
+		{Type: "geo", Label: "World map", Purpose: "where the incident is", BestFor: []string{"error rate by region"}, DataShape: "{ points: [...] }"},
+	}}}
+	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
+	for _, want := range []string{`"types"`, `"geo"`, `"World map"`, `"error rate by region"`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("describe_widget_types output missing %q: %s", want, out)
+		}
+	}
+}
+
+func TestDescribeWidgetTypesFallsBackToTheEnumOnAnOlderServer(t *testing.T) {
+	fc := &fakeClient{frame: &client.ContextFrame{}}
+	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
+	if !strings.Contains(out, "sent no widget catalog") || !strings.Contains(out, "geo") || !strings.Contains(out, "Shapes:") {
+		t.Errorf("fallback text missing the enum and shapes: %s", out)
+	}
+}

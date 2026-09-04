@@ -305,18 +305,6 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		},
 	}
 
-	// describe_widget_types (monorepo feature 20260904-130050): the widget
-	// catalog on demand. A read, present in both modes, appended so the base
-	// surface's ordering above is untouched.
-	list = append(list, mcp.Tool{
-		Name: "describe_widget_types",
-		Description: "Describe the canvas widget types you can share (stat, chart, table, logView, timeline, geo world map, " +
-			"code finding): what each is for, what it is best for, and the data shape the room renders. Read this before " +
-			"choosing a widgetType. Static reference data from the server's catalog.",
-		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
-		Handler:     b.narrated("describe_widget_types", b.describeWidgetTypes),
-	})
-
 	// record_activity moved to the bridge worker (spec FR-001), but ONLY when
 	// there is a worker to move it to. With no queue the worker does not run,
 	// so removing it unconditionally would leave the room with a participant
@@ -336,6 +324,19 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			}),
 		})
 	}
+
+	// describe_widget_types (monorepo feature 20260904-130050): the widget
+	// catalog on demand. A read, present in both modes, appended after the
+	// conditional record_activity so the base surface's ordering is untouched
+	// and it is last in both compositions.
+	list = append(list, mcp.Tool{
+		Name: "describe_widget_types",
+		Description: "Describe the canvas widget types you can share (stat, chart, table, logView, timeline, geo world map, " +
+			"code finding): what each is for, what it is best for, and the data shape the room renders. Read this before " +
+			"choosing a widgetType. Static reference data from the server's catalog.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
+		Handler:     b.narrated("describe_widget_types", b.describeWidgetTypes),
+	})
 
 	if acc != nil {
 		// FR-001: the agent's publish surface reduces to ONE fire-and-forget

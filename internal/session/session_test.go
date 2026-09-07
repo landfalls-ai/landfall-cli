@@ -118,6 +118,14 @@ func (c *stubClient) GetDivergence(ctx context.Context) (*client.Divergence, err
 	}
 	return &client.Divergence{}, nil
 }
+func (c *stubClient) GetSignalCatalog(context.Context) ([]client.SignalCatalogEntry, error) {
+	c.count("signal_catalog")
+	return nil, nil
+}
+func (c *stubClient) QuerySignals(context.Context, string, string, map[string]any, string, string) (client.SignalsQueryResult, error) {
+	c.count("query_signals")
+	return nil, nil
+}
 func (c *stubClient) AgentInstanceID() string { return c.id }
 func (c *stubClient) Config() client.Config   { return client.Config{Slug: "acme", IncidentID: "inc-1"} }
 

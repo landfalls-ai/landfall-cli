@@ -99,6 +99,17 @@ func NarrateDoing(toolName string, args Args) string {
 			return fmt.Sprintf(`searching context for "%s"`, v)
 		}
 		return "searching context"
+	case "get_signal_catalog":
+		return "checking connected telemetry sources"
+	case "query_signals":
+		source, hasSource := truthyStr(args, "source")
+		if !hasSource {
+			return "querying a telemetry source"
+		}
+		if operation, ok := truthyStr(args, "operation"); ok {
+			return fmt.Sprintf("querying %s %s", source, operation)
+		}
+		return fmt.Sprintf("querying %s", source)
 	case "post_finding":
 		if v, ok := truthyStr(args, "text"); ok {
 			return fmt.Sprintf("posting a finding: %s", truncate(v))
@@ -196,7 +207,7 @@ func ContributionFor(toolName string, args Args) *Contribution {
 	case "flag_context", "corroborate_claim", "contest_claim", "stage_claim":
 		return nil
 	default:
-		return nil // get_brief / read_timeline / record_activity → presence only
+		return nil // get_brief / read_timeline / record_activity / get_signal_catalog / query_signals → presence only
 	}
 }
 

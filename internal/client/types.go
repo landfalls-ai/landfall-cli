@@ -210,3 +210,19 @@ type Divergence struct {
 	EstablishedSubject string `json:"establishedSubject"`
 	ObservedSubject    string `json:"observedSubject"`
 }
+
+// --- 20260906-204144-data-source-sdk / landfall-cli#12: signal catalog + query ---
+//
+// Both types are kept as raw/opaque JSON rather than typed fields. A catalog
+// entry's shape (kinds served, advertised operations) and a query result's
+// shape (the provider's own response envelope) are server- and plugin-owned,
+// not this client's — constitution v2.2.0's "raw stays on the wire, shaping
+// is optional and plugin-owned" amendment applies here exactly as it does to
+// the Edge control-plane client this mirrors.
+
+// SignalCatalogEntry is one connected source's catalog entry, verbatim.
+type SignalCatalogEntry = json.RawMessage
+
+// SignalsQueryResult is the provider's raw response envelope from
+// POST .../plugins/:source/invoke, verbatim.
+type SignalsQueryResult = map[string]any

@@ -111,8 +111,14 @@ func (f *fakeEdge) SearchContext(context.Context, string) (*client.SearchResult,
 }
 func (f *fakeEdge) GetAttention(context.Context) (*client.Attention, error)   { return nil, nil }
 func (f *fakeEdge) GetDivergence(context.Context) (*client.Divergence, error) { return nil, nil }
-func (f *fakeEdge) AgentInstanceID() string                                   { return "inst-1" }
-func (f *fakeEdge) Config() client.Config                                     { return f.cfg }
+func (f *fakeEdge) GetSignalCatalog(context.Context) ([]client.SignalCatalogEntry, error) {
+	return nil, nil
+}
+func (f *fakeEdge) QuerySignals(context.Context, string, string, map[string]any, string, string) (client.SignalsQueryResult, error) {
+	return nil, nil
+}
+func (f *fakeEdge) AgentInstanceID() string { return "inst-1" }
+func (f *fakeEdge) Config() client.Config   { return f.cfg }
 
 var _ session.EdgeClient = (*fakeEdge)(nil)
 
@@ -349,21 +355,21 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 		t.Errorf("instructions missing or wrong: %q", instructions)
 	}
 
-	// 2. tools/list — the full 15-tool bridge surface, built over the session
-	//    this command created.
+	// 2. tools/list — the full bridge surface, built over the session this
+	//    command created.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":2,"method":"tools/list"}`))
 	raw, ok := list["tools"].([]any)
 	if !ok {
 		t.Fatalf("no tools array in %v", list)
 	}
-	// 9 with the bridge running (8 + describe_widget_types, monorepo feature
-	// 20260904-130050): FR-001 reduces the agent's publish surface to
-	// ONE fire-and-forget verb, so the seven publish/vetting tools and
-	// record_activity move to the worker. See contracts/mcp-tools.md's 8/8
-	// split. Without the bridge it is the original 15 — TestBridgeSwaps... in
+	// 11 with the bridge running: FR-001 reduces the agent's publish surface
+	// to ONE fire-and-forget verb, so the seven publish/vetting tools and
+	// record_activity move to the worker, leaving the reads (including
+	// get_signal_catalog/query_signals, landfall-cli#12) plus share_with_room.
+	// Without the bridge it is the full 18 — TestBridgeSwaps... in
 	// bridgewiring_test.go pins both compositions.
-	if len(raw) != 9 {
-		t.Errorf("tools/list returned %d tools, want 9", len(raw))
+	if len(raw) != 11 {
+		t.Errorf("tools/list returned %d tools, want 11", len(raw))
 	}
 	names := map[string]bool{}
 	for _, entry := range raw {
@@ -462,8 +468,8 @@ func TestServeRunsUnjoinedWhenNoConfigResolves(t *testing.T) {
 
 	// The MCP surface is fully live regardless — that is the entire point.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if tools, _ := list["tools"].([]any); len(tools) != 9 {
-		t.Errorf("un-joined serve exposed %d tools, want 9", len(tools))
+	if tools, _ := list["tools"].([]any); len(tools) != 11 {
+		t.Errorf("un-joined serve exposed %d tools, want 11", len(tools))
 	}
 
 	// And a room-write fails closed with the join instruction rather than

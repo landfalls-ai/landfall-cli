@@ -398,6 +398,72 @@ func (c *Client) GetDivergence(ctx context.Context) (*Divergence, error) {
 	return &d, nil
 }
 
+// GetSignalCatalog lists the telemetry sources connected for this incident's
+// organization (20260906-204144-data-source-sdk / landfall-cli#12): each
+// source, the kinds of signal it serves, and the read operations it
+// advertises. Mirrors the Edge control-plane client's `getSignalCatalog`
+// exactly, including its tolerance: the route may answer with a bare array
+// or with `{plugins: [...]}}`, and either is accepted — an unrecognized
+// shape (neither) degrades to an empty catalog rather than an error, same as
+// the JS original's `Array.isArray(...) ? ... : []`.
+func (c *Client) GetSignalCatalog(ctx context.Context) ([]SignalCatalogEntry, error) {
+	path := "/plugins"
+	if id := c.AgentInstanceID(); id != "" {
+		path += "?agentInstanceId=" + encodeURIComponent(id)
+	}
+	var raw json.RawMessage
+	if err := c.get(ctx, path, &raw); err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return []SignalCatalogEntry{}, nil
+	}
+	var asArray []SignalCatalogEntry
+	if err := json.Unmarshal(raw, &asArray); err == nil {
+		return asArray, nil
+	}
+	var wrapped struct {
+		Plugins []SignalCatalogEntry `json:"plugins"`
+	}
+	if err := json.Unmarshal(raw, &wrapped); err != nil || wrapped.Plugins == nil {
+		return []SignalCatalogEntry{}, nil
+	}
+	return wrapped.Plugins, nil
+}
+
+// QuerySignals reads one operation from one connected source through
+// Landfall's credential proxy — the provider's raw response envelope,
+// verbatim (constitution v2.2.0: raw stays on the wire). `connectionID`/
+// `accountID` are included in the request body only when non-empty, and
+// `agentInstanceId` only once Join has issued one — all three omitted rather
+// than sent empty/null, matching the Edge control-plane client's
+// `querySignals` body exactly (unlike this package's `identity()` helper,
+// which the JS original does NOT use for this route).
+func (c *Client) QuerySignals(ctx context.Context, source, operation string, params map[string]any, connectionID, accountID string) (SignalsQueryResult, error) {
+	if params == nil {
+		params = map[string]any{}
+	}
+	body := map[string]any{
+		"operation": operation,
+		"params":    params,
+	}
+	if connectionID != "" {
+		body["connectionId"] = connectionID
+	}
+	if accountID != "" {
+		body["accountId"] = accountID
+	}
+	if id := c.AgentInstanceID(); id != "" {
+		body["agentInstanceId"] = id
+	}
+	var result SignalsQueryResult
+	path := "/plugins/" + encodeURIComponent(source) + "/invoke"
+	if err := c.post(ctx, path, body, &result); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
 // encodeURIComponent mirrors JS's encodeURIComponent for the characters that
 // matter here: Go's url.QueryEscape renders a space as `+`, which the JS
 // original never does.

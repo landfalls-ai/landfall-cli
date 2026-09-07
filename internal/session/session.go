@@ -55,6 +55,8 @@ type EdgeClient interface {
 	SearchContext(ctx context.Context, query string) (*client.SearchResult, error)
 	GetAttention(ctx context.Context) (*client.Attention, error)
 	GetDivergence(ctx context.Context) (*client.Divergence, error)
+	GetSignalCatalog(ctx context.Context) ([]client.SignalCatalogEntry, error)
+	QuerySignals(ctx context.Context, source, operation string, params map[string]any, connectionID, accountID string) (client.SignalsQueryResult, error)
 	AgentInstanceID() string
 	Config() client.Config
 }

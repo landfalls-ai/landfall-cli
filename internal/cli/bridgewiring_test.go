@@ -27,8 +27,8 @@ import (
 // activity lane exists to replace it. Otherwise the room gets a participant
 // that acts and never speaks.
 //
-// (The surfaces are 15 without the bridge and 8 with it, since FR-001 moves the
-// seven publish/vetting verbs to the worker.)
+// (The surfaces are 18 without the bridge and 11 with it (10 + share_with_room),
+// since FR-001 moves the seven publish/vetting verbs to the worker.)
 func TestBridgeSwapsRecordActivityForShareWithRoom(t *testing.T) {
 	names := func(list []mcp.Tool) map[string]bool {
 		out := map[string]bool{}

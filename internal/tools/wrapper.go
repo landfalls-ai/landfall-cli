@@ -20,7 +20,7 @@ import (
 // error.
 var errNotConnected = errors.New("not connected — call join_war_room with a Landfall agent share link first")
 
-// bridge holds the session the 16 tools are built over.
+// bridge holds the session the 18 tools are built over.
 type bridge struct {
 	sess *session.Session
 }

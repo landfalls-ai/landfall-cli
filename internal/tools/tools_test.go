@@ -36,10 +36,21 @@ type fakeClient struct {
 	search     *client.SearchResult
 	events     []client.Event
 
+	signalCatalog      []client.SignalCatalogEntry
+	querySignalsResult client.SignalsQueryResult
+	lastQuery          querySignalsCall
+
 	uploadErr error
 	flagErr   error
 	stageErr  error
 	posErr    error
+}
+
+// querySignalsCall captures a QuerySignals invocation's arguments for
+// assertion (20260906-204144-data-source-sdk / landfall-cli#12).
+type querySignalsCall struct {
+	source, operation, connectionID, accountID string
+	params                                     map[string]any
 }
 
 type callRecord struct {
@@ -146,6 +157,21 @@ func (c *fakeClient) GetDivergence(context.Context) (*client.Divergence, error) 
 	}
 	return &client.Divergence{}, nil
 }
+func (c *fakeClient) GetSignalCatalog(context.Context) ([]client.SignalCatalogEntry, error) {
+	c.record("signal_catalog")
+	if c.signalCatalog != nil {
+		return c.signalCatalog, nil
+	}
+	return []client.SignalCatalogEntry{}, nil
+}
+func (c *fakeClient) QuerySignals(_ context.Context, source, operation string, params map[string]any, connectionID, accountID string) (client.SignalsQueryResult, error) {
+	c.record("query_signals")
+	c.lastQuery = querySignalsCall{source: source, operation: operation, params: params, connectionID: connectionID, accountID: accountID}
+	if c.querySignalsResult != nil {
+		return c.querySignalsResult, nil
+	}
+	return client.SignalsQueryResult{}, nil
+}
 func (c *fakeClient) AgentInstanceID() string { return "a-1" }
 func (c *fakeClient) Config() client.Config {
 	return client.Config{Slug: "acme", IncidentID: "inc-1"}
@@ -179,11 +205,13 @@ func callTool(t *testing.T, list []mcp.Tool, name string, args map[string]any) s
 
 // --- the surface ------------------------------------------------------------
 
-func TestTheSixteenToolsAreExposed(t *testing.T) {
+func TestTheEighteenToolsAreExposed(t *testing.T) {
 	list := Build(newSession(&fakeClient{}))
 	want := []string{
 		"join_war_room", "get_updates", "get_brief", "read_timeline", "search_context",
-		"post_finding", "note", "post_widget", "upload_artifact", "propose_action",
+		"post_finding", "note", "post_widget", "upload_artifact",
+		"get_signal_catalog", "query_signals",
+		"propose_action",
 		"flag_context", "corroborate_claim", "contest_claim", "stage_claim", "record_activity",
 		"describe_widget_types",
 	}
@@ -569,6 +597,90 @@ func TestSearchContextRendersRealHitsAndContributesAQuery(t *testing.T) {
 	contrib := c.recorded("contribute")
 	if len(contrib) != 1 || contrib[0].args[0] != "query" {
 		t.Fatalf("search_context must contribute a query-kind contribution, got %v", contrib)
+	}
+}
+
+// --- get_signal_catalog / query_signals (20260906-204144-data-source-sdk / landfall-cli#12) ---
+
+func TestGetSignalCatalogRendersTheCatalogAndNeverContributes(t *testing.T) {
+	c := &fakeClient{signalCatalog: []client.SignalCatalogEntry{
+		client.SignalCatalogEntry(`{"source":"cloudwatch","kinds":["metrics"]}`),
+	}}
+	list := Build(newSession(c))
+	out := callTool(t, list, "get_signal_catalog", map[string]any{})
+
+	if !strings.Contains(out, `"source": "cloudwatch"`) {
+		t.Errorf("result = %q", out)
+	}
+	if len(c.recorded("contribute")) != 0 {
+		t.Errorf("get_signal_catalog must never post a contribution, got %v", c.recorded("contribute"))
+	}
+	if len(c.recorded("heartbeat")) != 1 {
+		t.Errorf("get_signal_catalog must still heartbeat presence, got %v", c.recorded("heartbeat"))
+	}
+}
+
+func TestGetSignalCatalogDegradesToEmptyRatherThanErroring(t *testing.T) {
+	c := &fakeClient{}
+	list := Build(newSession(c))
+	out := callTool(t, list, "get_signal_catalog", map[string]any{})
+	if strings.TrimSpace(out) != "[]" {
+		t.Errorf("result = %q, want an empty catalog", out)
+	}
+}
+
+func TestQuerySignalsPassesSourceOperationParamsConnectionAndAccountThrough(t *testing.T) {
+	c := &fakeClient{querySignalsResult: client.SignalsQueryResult{"ok": true}}
+	list := Build(newSession(c))
+	out := callTool(t, list, "query_signals", map[string]any{
+		"source":     "datadog",
+		"operation":  "metrics.range",
+		"params":     map[string]any{"query": "avg:system.cpu"},
+		"connection": "conn-1",
+		"account":    "acct-1",
+	})
+
+	if !strings.Contains(out, `"ok": true`) {
+		t.Errorf("result = %q", out)
+	}
+	got := c.lastQuery
+	if got.source != "datadog" || got.operation != "metrics.range" || got.connectionID != "conn-1" || got.accountID != "acct-1" {
+		t.Fatalf("QuerySignals called with %+v", got)
+	}
+	if got.params["query"] != "avg:system.cpu" {
+		t.Fatalf("params not passed through, got %v", got.params)
+	}
+	if len(c.recorded("contribute")) != 0 {
+		t.Errorf("query_signals must never post a contribution, got %v", c.recorded("contribute"))
+	}
+}
+
+func TestQuerySignalsRefusesLocallyWithoutASourceOrOperation(t *testing.T) {
+	c := &fakeClient{}
+	list := Build(newSession(c))
+	out := callTool(t, list, "query_signals", map[string]any{"source": "datadog"})
+	if !strings.Contains(out, "needs a source and an operation") {
+		t.Errorf("result = %q", out)
+	}
+	if len(c.recorded("query_signals")) != 0 {
+		t.Errorf("an incomplete call must never reach the client, got %v", c.recorded("query_signals"))
+	}
+}
+
+func TestQuerySignalsRendersAnEmptyEnvelopeWhenTheClientReturnsNone(t *testing.T) {
+	// No querySignalsResult set on the fake, so this exercises the success
+	// path with an empty envelope; the refusal-text path above covers the
+	// local-validation branch. A transport failure is exercised at the client
+	// package level (client_test.go), where the HTTP error text is produced.
+	list := Build(newSession(&fakeClient{}))
+	out, err := find(t, list, "query_signals").Handler(context.Background(), map[string]any{
+		"source": "datadog", "operation": "metrics.range",
+	})
+	if err != nil {
+		t.Fatalf("query_signals must never return a Go error for a normal call, got %v", err)
+	}
+	if strings.TrimSpace(out) != "{}" {
+		t.Errorf("result = %q", out)
 	}
 }
 

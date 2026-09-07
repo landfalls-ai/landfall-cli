@@ -265,6 +265,106 @@ func TestTheAgentInstanceParameterIsOmittedEntirelyBeforeOneHasBeenIssued(t *tes
 	}
 }
 
+// --- 20260906-204144-data-source-sdk / landfall-cli#12: signal catalog + query ---
+
+func TestGetSignalCatalogAcceptsABareArrayAndAppendsTheAgentInstanceQuery(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/o/acme/incidents/inc-1/plugins": {status: 200, body: `[{"source":"cloudwatch","kinds":["metrics"]}]`},
+	})
+	c := New(cfg, d)
+	c.SetAgentInstanceID("a-9")
+	catalog, err := c.GetSignalCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || !strings.Contains(string(catalog[0]), `"source":"cloudwatch"`) {
+		t.Errorf("catalog = %v", catalog)
+	}
+	if d.calls[0].Query != "agentInstanceId=a-9" {
+		t.Errorf("query = %q", d.calls[0].Query)
+	}
+}
+
+func TestGetSignalCatalogUnwrapsAPluginsEnvelope(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/o/acme/incidents/inc-1/plugins": {status: 200, body: `{"plugins":[{"source":"datadog"}]}`},
+	})
+	c := New(cfg, d)
+	catalog, err := c.GetSignalCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 1 || !strings.Contains(string(catalog[0]), `"source":"datadog"`) {
+		t.Errorf("catalog = %v", catalog)
+	}
+	// No Join happened in this test, so no agentInstanceId is set yet.
+	if d.calls[0].Query != "" {
+		t.Errorf("query = %q, want empty", d.calls[0].Query)
+	}
+}
+
+func TestGetSignalCatalogDegradesToEmptyOnAnUnrecognizedShape(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/o/acme/incidents/inc-1/plugins": {status: 200, body: `{"somethingElse":true}`},
+	})
+	c := New(cfg, d)
+	catalog, err := c.GetSignalCatalog(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 0 {
+		t.Errorf("catalog = %v, want empty", catalog)
+	}
+}
+
+func TestQuerySignalsPostsOperationParamsConnectionAccountAndAgentInstance(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/o/acme/incidents/inc-1/plugins/datadog/invoke": {status: 200, body: `{"partial":false,"points":[1,2,3]}`},
+	})
+	c := New(cfg, d)
+	c.SetAgentInstanceID("a-9")
+	result, err := c.QuerySignals(context.Background(), "datadog", "metrics.range",
+		map[string]any{"query": "avg:system.cpu"}, "conn-1", "acct-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["partial"] != false {
+		t.Errorf("result = %v", result)
+	}
+	body := d.calls[0].Body
+	if body["operation"] != "metrics.range" || body["connectionId"] != "conn-1" || body["accountId"] != "acct-1" || body["agentInstanceId"] != "a-9" {
+		t.Errorf("body = %v", body)
+	}
+	params, _ := body["params"].(map[string]any)
+	if params["query"] != "avg:system.cpu" {
+		t.Errorf("params = %v", body["params"])
+	}
+	// Never the identity()-style {edgeAgentLabel, agentInstanceId:null} pair
+	// this route's Edge control-plane counterpart deliberately does not use.
+	if _, has := body["edgeAgentLabel"]; has {
+		t.Errorf("body must not carry edgeAgentLabel, got %v", body)
+	}
+}
+
+func TestQuerySignalsOmitsConnectionAccountAndAgentInstanceWhenUnset(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/o/acme/incidents/inc-1/plugins/cloudwatch/invoke": {status: 200, body: `{}`},
+	})
+	c := New(cfg, d)
+	if _, err := c.QuerySignals(context.Background(), "cloudwatch", "metrics.list", nil, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	body := d.calls[0].Body
+	for _, k := range []string{"connectionId", "accountId", "agentInstanceId"} {
+		if _, has := body[k]; has {
+			t.Errorf("body must omit %s when unset, got %v", k, body)
+		}
+	}
+	if params, ok := body["params"].(map[string]any); !ok || len(params) != 0 {
+		t.Errorf("params = %v, want an empty object (never omitted)", body["params"])
+	}
+}
+
 func TestCursorAndSearchQueryStrings(t *testing.T) {
 	d := newDoer(map[string]fakeResponse{
 		"/o/acme/incidents/inc-1/events":              {status: 200, body: `[]`},

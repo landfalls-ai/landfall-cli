@@ -341,7 +341,9 @@ landfall join  "https://…/agent?ticket=…"          # presence-only keep-aliv
   trail). Data-only by design — you pass the values you computed; no code runs.
 
 Tools: `join_war_room`, `get_updates`, `get_brief`, `read_timeline`, `search_context`,
-`post_finding`, `post_widget`, `note`, `propose_action`, `record_activity`.
+`post_finding`, `post_widget`, `note`, `propose_action`, `record_activity`,
+`get_signal_catalog`, `query_signals` (the incident's connected telemetry sources and a
+read against one of them, through Landfall's credential proxy).
 
 ## Env-config setup
 

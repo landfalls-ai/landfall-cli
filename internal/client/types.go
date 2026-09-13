@@ -226,3 +226,24 @@ type SignalCatalogEntry = json.RawMessage
 // SignalsQueryResult is the provider's raw response envelope from
 // POST .../plugins/:source/invoke, verbatim.
 type SignalsQueryResult = map[string]any
+
+// ArtifactListItem is one row of GET /artifacts (monorepo
+// `artifacts.controller.ts` list) — what the room shows in its artifact list,
+// minus nothing an agent needs to pick one to read.
+type ArtifactListItem struct {
+	ArtifactID     string `json:"artifactId"`
+	Filename       string `json:"filename"`
+	ContentType    string `json:"contentType"`
+	Size           int64  `json:"size"`
+	SafeRenderMode string `json:"safeRenderMode"`
+	SharedAt       string `json:"sharedAt"`
+	Sharer         struct {
+		DisplayName string `json:"displayName"`
+		Kind        string `json:"kind"`
+	} `json:"sharer"`
+}
+
+// ArtifactList is the answer to GET /artifacts.
+type ArtifactList struct {
+	Artifacts []ArtifactListItem `json:"artifacts"`
+}

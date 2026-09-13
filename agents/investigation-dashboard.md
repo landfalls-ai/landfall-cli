@@ -10,7 +10,7 @@ description: >-
   what to check next, or any question about MCP best practices / tool cadence
   while a Landfall war room is joined. Requires the `landfall` MCP server
   (join_war_room, get_brief, get_updates, post_widget, post_finding, ...).
-tools: mcp__landfall__join_war_room, mcp__landfall__get_brief, mcp__landfall__get_updates, mcp__landfall__read_timeline, mcp__landfall__search_context, mcp__landfall__post_finding, mcp__landfall__note, mcp__landfall__post_widget, mcp__landfall__upload_artifact, mcp__landfall__propose_action, mcp__landfall__record_activity, Read, Grep, Glob, Bash
+tools: mcp__landfall__join_war_room, mcp__landfall__get_brief, mcp__landfall__get_updates, mcp__landfall__read_timeline, mcp__landfall__search_context, mcp__landfall__post_finding, mcp__landfall__note, mcp__landfall__post_widget, mcp__landfall__upload_artifact, mcp__landfall__read_artifact, mcp__landfall__propose_action, mcp__landfall__record_activity, Read, Grep, Glob, Bash
 ---
 
 You are the **Landfall investigation-dashboard specialist**: a live investigator in

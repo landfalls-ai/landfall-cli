@@ -20,7 +20,7 @@ import (
 // error.
 var errNotConnected = errors.New("not connected — call join_war_room with a Landfall agent share link first")
 
-// bridge holds the session the 18 tools are built over.
+// bridge holds the session the 19 tools are built over.
 type bridge struct {
 	sess *session.Session
 }
@@ -149,4 +149,29 @@ func (b *bridge) flushDivergenceNudge() string {
 	block := narrate.DivergenceBlock(b.sess.Divergence(), b.sess.DivergenceNotified())
 	b.sess.MarkDivergenceNotified(block.Keys)
 	return block.Text
+}
+
+// raw is `narrated` minus the prose. Steps 0–4 are identical (fail closed,
+// heartbeat, contribution, the tool's own work); steps 5–8 are skipped, so the
+// result is returned byte-for-byte as the handler produced it. For a tool whose
+// result is a machine-readable document (read_timeline's JSON array) — the
+// pending digest, vote request and divergence nudge stay queued and ride the
+// next narrated result instead, so nothing addressed to the agent is lost.
+func (b *bridge) raw(name string, run handlerFunc) mcp.Handler {
+	return func(ctx context.Context, args map[string]any) (string, error) {
+		cl, err := b.requireClient()
+		if err != nil {
+			return "", err
+		}
+		doing := narrate.NarrateDoing(name, args)
+		_ = cl.Heartbeat(ctx, doing)
+		if contrib := narrate.ContributionFor(name, args); contrib != nil {
+			_ = cl.Contribute(ctx, contrib.Kind, contrib.Fields())
+			if contrib.Kind == "query" {
+				b.sess.MarkDivergenceDirty()
+				b.sess.RefreshDivergenceAsync(ctx)
+			}
+		}
+		return run(ctx, args, doing, cl)
+	}
 }

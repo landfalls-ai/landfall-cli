@@ -368,8 +368,9 @@ func TestServeInitializeAndToolsList(t *testing.T) {
 	// get_signal_catalog/query_signals, landfall-cli#12) plus share_with_room.
 	// Without the bridge it is the full 18 — TestBridgeSwaps... in
 	// bridgewiring_test.go pins both compositions.
-	if len(raw) != 11 {
-		t.Errorf("tools/list returned %d tools, want 11", len(raw))
+	// 12 since read_artifact (2026-09-13), which is a read and stays in both surfaces.
+	if len(raw) != 12 {
+		t.Errorf("tools/list returned %d tools, want 12", len(raw))
 	}
 	names := map[string]bool{}
 	for _, entry := range raw {
@@ -468,8 +469,8 @@ func TestServeRunsUnjoinedWhenNoConfigResolves(t *testing.T) {
 
 	// The MCP surface is fully live regardless — that is the entire point.
 	list := result(t, h.rpc(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
-	if tools, _ := list["tools"].([]any); len(tools) != 11 {
-		t.Errorf("un-joined serve exposed %d tools, want 11", len(tools))
+	if tools, _ := list["tools"].([]any); len(tools) != 12 {
+		t.Errorf("un-joined serve exposed %d tools, want 12", len(tools))
 	}
 
 	// And a room-write fails closed with the join instruction rather than
@@ -793,3 +794,8 @@ func TestRealtimeWatcherDegradesSilently(t *testing.T) {
 		t.Error("a failed realtime connect should leave a stderr breadcrumb")
 	}
 }
+
+func (f *fakeEdge) ListArtifacts(context.Context) (*client.ArtifactList, error) {
+	return &client.ArtifactList{}, nil
+}
+func (f *fakeEdge) OpenArtifact(context.Context, string) ([]byte, string, error) { return nil, "", nil }

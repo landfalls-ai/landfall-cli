@@ -805,3 +805,12 @@ func waitUntil(t *testing.T, cond func() bool, what string) {
 	}
 	t.Fatalf("timed out waiting for %s", what)
 }
+
+func (c *stubClient) ListArtifacts(context.Context) (*client.ArtifactList, error) {
+	c.count("list_artifacts")
+	return &client.ArtifactList{}, nil
+}
+func (c *stubClient) OpenArtifact(context.Context, string) ([]byte, string, error) {
+	c.count("open_artifact")
+	return nil, "", nil
+}

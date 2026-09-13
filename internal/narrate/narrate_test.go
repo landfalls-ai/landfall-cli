@@ -160,6 +160,8 @@ func TestNarrateDoing(t *testing.T) {
 		{"get_brief", "get_brief", nil, "reviewing the incident brief"},
 		{"get_updates", "get_updates", nil, "checking for new shared context"},
 		{"read_timeline", "read_timeline", nil, "reading the incident timeline"},
+		{"read_artifact with filename", "read_artifact", Args{"filename": "bob-summary.md"}, `reading the shared artifact "bob-summary.md"`},
+		{"read_artifact without arguments", "read_artifact", nil, "checking which artifacts were shared"},
 		{"search_context with query", "search_context", Args{"query": "5xx"}, `searching context for "5xx"`},
 		{"search_context without query", "search_context", nil, "searching context"},
 		{"post_finding with text", "post_finding", Args{"text": "origin unhealthy"}, "posting a finding: origin unhealthy"},
@@ -253,7 +255,7 @@ func TestContributionFor(t *testing.T) {
 	}
 
 	// Read-only tools: presence only.
-	for _, tool := range []string{"get_brief", "read_timeline", "get_updates", "record_activity"} {
+	for _, tool := range []string{"get_brief", "read_timeline", "get_updates", "record_activity", "read_artifact"} {
 		if c := ContributionFor(tool, nil); c != nil {
 			t.Errorf("%s: want nil contribution, got %#v", tool, c)
 		}

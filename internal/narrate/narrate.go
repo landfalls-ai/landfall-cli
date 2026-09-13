@@ -94,6 +94,14 @@ func NarrateDoing(toolName string, args Args) string {
 		return "checking for new shared context"
 	case "read_timeline":
 		return "reading the incident timeline"
+	case "read_artifact":
+		if v, ok := truthyStr(args, "filename"); ok {
+			return fmt.Sprintf(`reading the shared artifact "%s"`, v)
+		}
+		if v, ok := truthyStr(args, "artifactId"); ok {
+			return fmt.Sprintf("reading shared artifact %s", v)
+		}
+		return "checking which artifacts were shared"
 	case "search_context":
 		if v, ok := truthyStr(args, "query"); ok {
 			return fmt.Sprintf(`searching context for "%s"`, v)

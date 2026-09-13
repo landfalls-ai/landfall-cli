@@ -45,6 +45,9 @@ type EdgeClient interface {
 	Heartbeat(ctx context.Context, doing string) error
 	Contribute(ctx context.Context, kind string, body map[string]any) error
 	UploadArtifact(ctx context.Context, filename, contentType, dataBase64 string) (*client.ArtifactResult, error)
+	// read_artifact (2026-09-13): the room's shared files, and one file's bytes.
+	ListArtifacts(ctx context.Context) (*client.ArtifactList, error)
+	OpenArtifact(ctx context.Context, artifactID string) ([]byte, string, error)
 	FlagContext(ctx context.Context, targetSeq int64, reason, targetKind string) error
 	PositionClaim(ctx context.Context, claimSeq int64, position, reason string) error
 	StageClaim(ctx context.Context, body map[string]any) error

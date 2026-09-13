@@ -368,6 +368,7 @@ func TestQuerySignalsOmitsConnectionAccountAndAgentInstanceWhenUnset(t *testing.
 func TestCursorAndSearchQueryStrings(t *testing.T) {
 	d := newDoer(map[string]fakeResponse{
 		"/o/acme/incidents/inc-1/events":              {status: 200, body: `[]`},
+		"/o/acme/incidents/inc-1/edge/context/frame":  {status: 200, body: `{}`},
 		"/o/acme/incidents/inc-1/edge/context/delta":  {status: 200, body: `{"toVersion":9}`},
 		"/o/acme/incidents/inc-1/edge/context/search": {status: 200, body: `{"hits":[]}`},
 	})
@@ -378,7 +379,9 @@ func TestCursorAndSearchQueryStrings(t *testing.T) {
 	if _, err := c.GetUpdates(ctx, 7); err != nil {
 		t.Fatal(err)
 	}
-	if d.calls[0].Query != "sinceSeq=7" {
+	// 2026-09-13: every read names the agent instance so the server records
+	// the pull (the roster said "never pulled" about agents reading on every turn).
+	if d.calls[0].Query != "sinceSeq=7&agentInstanceId=a-9" {
 		t.Errorf("query = %q", d.calls[0].Query)
 	}
 	if _, err := c.GetContextDelta(ctx, 4); err != nil {
@@ -393,6 +396,31 @@ func TestCursorAndSearchQueryStrings(t *testing.T) {
 	// encodeURIComponent renders a space as %20, never as `+`.
 	if d.calls[2].Query != "q=cloud%20front&agentInstanceId=a-9" {
 		t.Errorf("query = %q", d.calls[2].Query)
+	}
+	if _, err := c.GetBrief(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d.calls[3].Query != "agentInstanceId=a-9" {
+		t.Errorf("brief query = %q", d.calls[3].Query)
+	}
+	if _, err := c.GetContextFrame(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if d.calls[4].Query != "agentInstanceId=a-9" {
+		t.Errorf("frame query = %q", d.calls[4].Query)
+	}
+}
+
+func TestReadsCarryNoInstanceIDBeforeJoin(t *testing.T) {
+	d := newDoer(map[string]fakeResponse{
+		"/o/acme/incidents/inc-1/events": {status: 200, body: `[]`},
+	})
+	c := New(cfg, d)
+	if _, err := c.GetBrief(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if d.calls[0].Query != "" {
+		t.Errorf("an un-joined read must not claim an identity, got %q", d.calls[0].Query)
 	}
 }
 

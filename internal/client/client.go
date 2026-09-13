@@ -470,3 +470,47 @@ func (c *Client) QuerySignals(ctx context.Context, source, operation string, par
 func encodeURIComponent(s string) string {
 	return strings.ReplaceAll(url.QueryEscape(s), "+", "%20")
 }
+
+// getRaw is `get` for a route that streams bytes rather than JSON: the body
+// verbatim plus its declared content type. Same auth, same non-2xx contract.
+func (c *Client) getRaw(ctx context.Context, path string) ([]byte, string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base()+path, nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s → %w", path, err)
+	}
+	req.Header.Set("authorization", "Bearer "+c.cfg.Token)
+
+	res, err := c.http.Do(req)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s → %w", path, err)
+	}
+	defer func() { _ = res.Body.Close() }()
+
+	if res.StatusCode < 200 || res.StatusCode > 299 {
+		_, _ = io.Copy(io.Discard, res.Body)
+		return nil, "", fmt.Errorf("%s → HTTP %d", path, res.StatusCode)
+	}
+	raw, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, "", fmt.Errorf("%s → %w", path, err)
+	}
+	return raw, res.Header.Get("content-type"), nil
+}
+
+// ListArtifacts lists what the room has shared (GET /artifacts). The edge
+// session is a member of exactly this incident, which is all the route asks.
+func (c *Client) ListArtifacts(ctx context.Context) (*ArtifactList, error) {
+	var out ArtifactList
+	if err := c.get(ctx, "/artifacts", &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// OpenArtifact fetches one shared artifact's bytes (GET /artifacts/:id/open) —
+// the same hardened route the room's sandboxed viewer reads, so a teammate's
+// summary reaches this agent the way it reaches a browser: bytes, never an
+// execution. Returns the body and its content type.
+func (c *Client) OpenArtifact(ctx context.Context, artifactID string) ([]byte, string, error) {
+	return c.getRaw(ctx, "/artifacts/"+encodeURIComponent(artifactID)+"/open")
+}

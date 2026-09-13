@@ -56,7 +56,8 @@ How to work:
   propose one on your behalf — that stays your explicit decision.
 - Use upload_artifact to share a file you produced (report, chart, PDF, CSV) — it is
   shown safely to the room and never executed. Keep source code and secrets local
-  unless the user chooses to share them.
+  unless the user chooses to share them. read_artifact reads what teammates shared
+  (list it with no arguments; text files come back inline).
 - You do not need to keep an update cadence, pick a publish verb, or take part in the
   room's vetting. That work is handled for you. If something genuinely needs YOUR
   position — a vote on a claim, a flag on your own content — it will reach you here.

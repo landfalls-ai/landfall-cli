@@ -8,6 +8,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -41,9 +42,14 @@ type fakeClient struct {
 	lastQuery          querySignalsCall
 
 	uploadErr error
-	flagErr   error
-	stageErr  error
-	posErr    error
+	// read_artifact fixtures: what ListArtifacts returns, and one body.
+	artifacts    []client.ArtifactListItem
+	artifactBody []byte
+	artifactType string
+	artifactErr  error
+	flagErr      error
+	stageErr     error
+	posErr       error
 }
 
 // querySignalsCall captures a QuerySignals invocation's arguments for
@@ -205,12 +211,12 @@ func callTool(t *testing.T, list []mcp.Tool, name string, args map[string]any) s
 
 // --- the surface ------------------------------------------------------------
 
-func TestTheEighteenToolsAreExposed(t *testing.T) {
+func TestTheNineteenToolsAreExposed(t *testing.T) {
 	list := Build(newSession(&fakeClient{}))
 	want := []string{
 		"join_war_room", "get_updates", "get_brief", "read_timeline", "search_context",
 		"post_finding", "note", "post_widget", "upload_artifact",
-		"get_signal_catalog", "query_signals",
+		"get_signal_catalog", "query_signals", "read_artifact",
 		"propose_action",
 		"flag_context", "corroborate_claim", "contest_claim", "stage_claim", "record_activity",
 		"describe_widget_types",
@@ -878,5 +884,102 @@ func TestDescribeWidgetTypesFallsBackToTheEnumOnAnOlderServer(t *testing.T) {
 	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
 	if !strings.Contains(out, "sent no widget catalog") || !strings.Contains(out, "geo") || !strings.Contains(out, "Shapes:") {
 		t.Errorf("fallback text missing the enum and shapes: %s", out)
+	}
+}
+
+func (c *fakeClient) ListArtifacts(context.Context) (*client.ArtifactList, error) {
+	c.record("list_artifacts")
+	if c.artifactErr != nil {
+		return nil, c.artifactErr
+	}
+	return &client.ArtifactList{Artifacts: c.artifacts}, nil
+}
+
+func (c *fakeClient) OpenArtifact(_ context.Context, id string) ([]byte, string, error) {
+	c.record("open_artifact", id)
+	if c.artifactErr != nil {
+		return nil, "", c.artifactErr
+	}
+	return c.artifactBody, c.artifactType, nil
+}
+
+// --- read_artifact (2026-09-13) ------------------------------------------------
+
+func TestReadArtifactWithNoArgumentsListsWhatTheRoomShared(t *testing.T) {
+	item := client.ArtifactListItem{ArtifactID: "art-1", Filename: "bob-summary.md", ContentType: "text/markdown", Size: 492, SharedAt: "2026-09-13T17:35:06Z"}
+	item.Sharer.DisplayName = "collab-bob"
+	c := &fakeClient{artifacts: []client.ArtifactListItem{item}}
+	out := callTool(t, Build(newSession(c)), "read_artifact", map[string]any{})
+	for _, want := range []string{"bob-summary.md", "text/markdown", "492", "collab-bob", "art-1"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("listing should name %q:\n%s", want, out)
+		}
+	}
+	if len(c.recorded("open_artifact")) != 0 {
+		t.Errorf("a listing must not fetch any body")
+	}
+}
+
+func TestReadArtifactByFilenameReturnsTheTextInline(t *testing.T) {
+	item := client.ArtifactListItem{ArtifactID: "art-1", Filename: "bob-summary.md", ContentType: "text/markdown", Size: 40}
+	c := &fakeClient{artifacts: []client.ArtifactListItem{item}, artifactBody: []byte("# Summary\n\n- cache hit ratio collapsed\n"), artifactType: "text/markdown"}
+	out := callTool(t, Build(newSession(c)), "read_artifact", map[string]any{"filename": "bob-summary.md"})
+	if !strings.Contains(out, "cache hit ratio collapsed") {
+		t.Fatalf("the file's own words must be in the result:\n%s", out)
+	}
+	opened := c.recorded("open_artifact")
+	if len(opened) != 1 || opened[0].args[0] != "art-1" {
+		t.Fatalf("expected one open of art-1, got %v", opened)
+	}
+}
+
+func TestReadArtifactRefusesToInlineABinaryButSaysWhatItIs(t *testing.T) {
+	item := client.ArtifactListItem{ArtifactID: "art-2", Filename: "chart.png", ContentType: "image/png", Size: 5000}
+	c := &fakeClient{artifacts: []client.ArtifactListItem{item}, artifactBody: []byte{0x89, 'P', 'N', 'G'}, artifactType: "image/png"}
+	out := callTool(t, Build(newSession(c)), "read_artifact", map[string]any{"artifactId": "art-2"})
+	if strings.Contains(out, "\x89PNG") {
+		t.Fatalf("binary bytes must not be inlined:\n%q", out)
+	}
+	if !strings.Contains(out, "image/png") || !strings.Contains(out, "chart.png") {
+		t.Fatalf("the result must still say what the file is:\n%s", out)
+	}
+}
+
+func TestReadArtifactNamesAnUnknownFile(t *testing.T) {
+	c := &fakeClient{artifacts: nil}
+	out := callTool(t, Build(newSession(c)), "read_artifact", map[string]any{"filename": "nope.md"})
+	if !strings.Contains(out, "nope.md") || !strings.Contains(out, "No artifact") {
+		t.Fatalf("an unknown file should be named, not silently empty:\n%s", out)
+	}
+}
+
+// --- read_timeline stays pure JSON (2026-09-13) ------------------------------
+
+func TestReadTimelineIsPureJSONEvenWhenAVoteIsPending(t *testing.T) {
+	// Observed live 2026-09-13: with a claim awaiting the agent's position, the
+	// wrapper prepended "⚠ vote requested …" to read_timeline's JSON array, and
+	// any agent that parsed the result as JSON failed on the first byte.
+	var e client.Event
+	if err := e.UnmarshalJSON([]byte(`{"seq":4,"type":"edge.finding","payload":{"text":"x"}}`)); err != nil {
+		t.Fatal(err)
+	}
+	c := &fakeClient{
+		events:    []client.Event{e},
+		attention: &client.Attention{VotesAwaited: []client.VoteAwaited{{ClaimSeq: seq(48), Statement: "the origin rollback caused the 5xx spike", AuthoredBy: "Priya"}}},
+	}
+	s := newSession(c)
+	s.EnqueueEvent(context.Background(), client.Event{Seq: seq(9), Type: "edge.finding"})
+	out := callTool(t, Build(s), "read_timeline", map[string]any{})
+	var parsed []map[string]any
+	if err := json.Unmarshal([]byte(out), &parsed); err != nil {
+		t.Fatalf("read_timeline must be a bare JSON array, got %v:\n%s", err, out)
+	}
+	if strings.Contains(out, "⚠") {
+		t.Fatalf("no attention prose on the raw tool:\n%s", out)
+	}
+	// The vote request is not lost: the next narrated tool still carries it.
+	next := callTool(t, Build(s), "get_brief", map[string]any{})
+	if !strings.Contains(next, "⚠ vote requested: claim #48") {
+		t.Fatalf("the pending vote must reach the agent on the next narrated result:\n%s", next)
 	}
 }

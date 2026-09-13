@@ -308,11 +308,33 @@ func (c *Client) StageClaim(ctx context.Context, body map[string]any) error {
 	return c.post(ctx, "/claims", payload, nil)
 }
 
+// asAgent appends this agent's server-issued instance id to a read path, once
+// one exists. Before that the read goes out unadorned: an empty id would be a
+// claim about identity the server must then reject.
+//
+// WHY (2026-09-13): the server records a "pull" — the fact that an agent
+// actually read the main context — only for reads that name the agent
+// instance; a bare read is a human's read and records nothing. get_brief and
+// read_timeline (this path) and the context frame carried no id, so the room's
+// roster said "never pulled" about agents that had read the room on every
+// turn. The delta and search reads already did this; now every read does.
+func (c *Client) asAgent(path string) string {
+	id := c.AgentInstanceID()
+	if id == "" {
+		return path
+	}
+	sep := "?"
+	if strings.Contains(path, "?") {
+		sep = "&"
+	}
+	return path + sep + "agentInstanceId=" + encodeURIComponent(id)
+}
+
 // GetBrief returns the incident context for the local agent: the current
 // timeline (read-only).
 func (c *Client) GetBrief(ctx context.Context) ([]Event, error) {
 	var events []Event
-	if err := c.get(ctx, "/events", &events); err != nil {
+	if err := c.get(ctx, c.asAgent("/events"), &events); err != nil {
 		return nil, err
 	}
 	return events, nil
@@ -323,7 +345,7 @@ func (c *Client) GetBrief(ctx context.Context) ([]Event, error) {
 func (c *Client) GetUpdates(ctx context.Context, sinceSeq int64) ([]Event, error) {
 	var events []Event
 	path := "/events?sinceSeq=" + encodeURIComponent(strconv.FormatInt(sinceSeq, 10))
-	if err := c.get(ctx, path, &events); err != nil {
+	if err := c.get(ctx, c.asAgent(path), &events); err != nil {
 		return nil, err
 	}
 	return events, nil
@@ -332,7 +354,7 @@ func (c *Client) GetUpdates(ctx context.Context, sinceSeq int64) ([]Event, error
 // GetContextFrame returns the war-room context frame (feature 116).
 func (c *Client) GetContextFrame(ctx context.Context) (*ContextFrame, error) {
 	var frame ContextFrame
-	if err := c.get(ctx, "/edge/context/frame", &frame); err != nil {
+	if err := c.get(ctx, c.asAgent("/edge/context/frame"), &frame); err != nil {
 		return nil, err
 	}
 	return &frame, nil

@@ -16,12 +16,14 @@ type fakeAccepter struct {
 	refs              []string
 	widget            *WidgetPayload
 	sourceQueryFailed bool
+	lastKind          string
 	err               error
 	redacted          bool
 	calls             int
 }
 
-func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool) (string, bool, error) {
+func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool, kind string) (string, bool, error) {
+	f.lastKind = kind
 	f.calls++
 	f.incidentID, f.agentID, f.text, f.refs, f.widget, f.sourceQueryFailed = incidentID, agentInstanceID, text, refs, widget, sourceQueryFailed
 	if f.err != nil {
@@ -309,5 +311,28 @@ func TestBuildSurfaceIsUnchangedWithoutAccepter(t *testing.T) {
 		if plain[i].Name != withNil[i].Name {
 			t.Fatalf("tool %d differs: %q vs %q", i, plain[i].Name, withNil[i].Name)
 		}
+	}
+}
+
+func TestShareWithRoomPassesAnExplicitKindThroughAndRefusesAnUnknownOne(t *testing.T) {
+	for _, kind := range ShareKinds {
+		acc := &fakeAccepter{}
+		tool := shareTool(t, newSession(&fakeClient{}), acc)
+		if _, err := tool.Handler(context.Background(), map[string]any{"text": "the retry storm began at 14:22Z", "kind": kind}); err != nil {
+			t.Fatalf("kind %q: %v", kind, err)
+		}
+		if acc.lastKind != kind {
+			t.Fatalf("kind %q did not reach the accepter (got %q)", kind, acc.lastKind)
+		}
+	}
+	acc := &fakeAccepter{}
+	tool := shareTool(t, newSession(&fakeClient{}), acc)
+	if _, err := tool.Handler(context.Background(), map[string]any{"text": "x", "kind": "remediation"}); err == nil {
+		t.Fatal("an unknown kind must be refused, not guessed")
+	}
+	acc = &fakeAccepter{}
+	tool = shareTool(t, newSession(&fakeClient{}), acc)
+	if _, err := tool.Handler(context.Background(), map[string]any{"text": "no kind given"}); err != nil || acc.lastKind != "" {
+		t.Fatalf("omitting kind must leave classification to the worker (err=%v kind=%q)", err, acc.lastKind)
 	}
 }

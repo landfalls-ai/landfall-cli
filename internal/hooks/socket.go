@@ -419,6 +419,13 @@ type SocketSession interface {
 	Divergence() *client.Divergence
 }
 
+// humanQueue is the OPTIONAL queue-as-the-person-was-told-it. See
+// (*session.Session).PendingForHuman; a fake session without it is answered
+// from the model's queue.
+type humanQueue interface {
+	PendingForHuman() []client.Event
+}
+
 // AttentionSettler is the OPTIONAL half of the #252 fix — see
 // AnswerSocketRequest. Node tests `typeof session?.settleAttention ===
 // 'function'`; an optional interface assertion is the Go spelling of the same
@@ -471,6 +478,20 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 			worthTelling++
 		}
 	}
+	// The status line's "N new" is what the PERSON has not been told, which
+	// outlives a model consumer's read (a background subagent's get_updates
+	// must not make the person's count drop to zero). A session that keeps
+	// that queue separately answers with it; a plain session falls back to
+	// the model's queue, as before.
+	untold := worthTelling
+	if hq, ok := s.(humanQueue); ok {
+		untold = 0
+		for _, e := range hq.PendingForHuman() {
+			if !realtime.IsPlumbing(e.Type) {
+				untold++
+			}
+		}
+	}
 
 	switch req.verb() {
 	case "status":
@@ -483,7 +504,7 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 			Slug:         slug,
 			Connected:    connected,
 			Cursor:       sessionCursor(s),
-			Pending:      worthTelling,
+			Pending:      untold,
 			Dropped:      sessionDropped(s),
 			VotesAwaited: votesAwaited(s),
 			Divergence:   sessionDivergence(s),
@@ -504,13 +525,22 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 		// it is no longer a reason for the Stop hook to refuse a conclusion or
 		// for the prompt hook to announce "updates from other investigators".
 		// See internal/realtime/plumbing.go for the measurement behind this.
-		digest := make([]string, 0, len(pending))
+		// Addressed first, then the rest. A digest is read top-down under
+		// pressure; a message that names a person is what they would want to
+		// see before an admitted finding, and both before anything else.
+		var addressed, rest []string
 		for _, e := range pending {
 			if realtime.IsPlumbing(e.Type) {
 				continue
 			}
-			digest = append(digest, narrate.FormatEventLine(e))
+			line := narrate.FormatEventLine(e)
+			if e.Type == "chat.message" && strings.Contains(narrate.EventText(e.Payload), "@") {
+				addressed = append(addressed, line+"  ← addressed to a person")
+				continue
+			}
+			rest = append(rest, line)
 		}
+		digest := append(addressed, rest...)
 		return PeekResponse{
 			OK:         true,
 			V:          SocketProtocolVersion,

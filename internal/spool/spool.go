@@ -106,6 +106,13 @@ func (s *Spool) Accept(incidentID, agentInstanceID, text string, refs []string) 
 // as fact (Landfall feature 20260920-132909). false for every existing
 // caller, so nothing changes for a hand-off that never sets it.
 func (s *Spool) AcceptWidget(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool) (*Entry, error) {
+	return s.AcceptKind(incidentID, agentInstanceID, text, refs, widget, sourceQueryFailed, "")
+}
+
+// AcceptKind is AcceptWidget plus the caller's explicit publish kind ("" to let
+// the worker classify). Every existing caller goes through AcceptWidget with
+// "", so nothing changes for a hand-off that never names one.
+func (s *Spool) AcceptKind(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool, kind string) (*Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -134,6 +141,7 @@ func (s *Spool) AcceptWidget(incidentID, agentInstanceID, text string, refs []st
 		Refs:              RedactAll(refs),
 		Widget:            widget,
 		SourceQueryFailed: sourceQueryFailed,
+		Kind:              kind,
 		State:             Queued,
 		CreatedAt:         time.Now().UTC(),
 	}

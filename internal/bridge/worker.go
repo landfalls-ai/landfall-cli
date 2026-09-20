@@ -257,13 +257,7 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 		return false
 	}
 
-	kind := Classify(e.Text)
-	// An explicit structured payload is a stronger, unambiguous signal than any
-	// text marker — share_with_room's caller said in the schema itself that
-	// this is a widget, so it always wins over Classify's guess from `text`.
-	if e.Widget != nil {
-		kind = KindWidget
-	}
+	kind := kindFor(e)
 
 	// Narrate BEFORE publishing, so the room sees the activity while it is
 	// happening rather than as a postscript. Best-effort — see narrate.
@@ -386,4 +380,22 @@ func (w *Worker) Abandon(incidentID string) {
 	if n > 0 {
 		w.log("bridge: %d unsent hand-off(s) were dropped when you left incident %s", n, incidentID)
 	}
+}
+
+// kindFor decides how an entry publishes. The caller's own word
+// (share_with_room's `kind`) wins over the classifier's guess from the text:
+// the agent said what this is, in the schema itself. An unknown value falls
+// back to the guess rather than to an error a spooled entry could never
+// recover from. An explicit structured widget payload wins over both — the
+// values are there to plot.
+func kindFor(e *spool.Entry) Kind {
+	kind := Classify(e.Text)
+	switch Kind(e.Kind) {
+	case KindNote, KindFinding, KindClaim, KindWidget:
+		kind = Kind(e.Kind)
+	}
+	if e.Widget != nil {
+		kind = KindWidget
+	}
+	return kind
 }

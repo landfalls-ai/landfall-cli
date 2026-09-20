@@ -69,13 +69,20 @@ https://<domain>/o/<slug>/incidents/<id>/agent?ticket=...) IS the whole ask, eve
 other text around it. Call join_war_room with it right away — do not wait to be told what
 to do with it, and do not treat "no instructions came with this link" as "do nothing."
 
-This is a standing, potentially long-running investigation, not a quick question — joining
-should not turn your one interactive session into this incident for the rest of the
-conversation. If your environment can spawn an independent background subagent (a Task/Agent
-tool, a sub-session, anything that runs on its own), do that now: hand the subagent this room
-and let IT hold get_brief/get_updates/investigating end-to-end, so your main session stays
-free for whoever you were already talking to. If you cannot spawn one, say so plainly and
-investigate directly in this session instead — that is a fallback, not the first choice.
+Join in THIS session and stay in it: call join_war_room, then get_brief, then go back to
+whatever the person was doing. Joining costs two calls and a few seconds; it does not make
+this incident your job. Do NOT hand the room to a background subagent on your own — a
+subagent shares this room session, so everything it reads is marked as seen for the person
+here, and its lifetime is nobody's decision. Room news reaches you through your host's own
+hooks and status line (see delivery timing below). Only when the person asks for a deep
+investigation should one be started, in a subagent if the environment has one, and that
+subagent must relay what it learned back to this session before it finishes.
+
+Scope, unless the person says otherwise: use room tools only. Do not read, search or
+summarize the working directory for the room, and never share paths, commit hashes,
+constants or code from it — the room is other people; this machine is theirs. Do not end
+a turn with a question about the room ("want me to…?", "should I keep watching?") unless
+the decision is genuinely the person's to make; say what you did and stop.
 
 How to work:
 - First call get_brief for the current incident context. Call get_updates at task
@@ -149,8 +156,8 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			Description: "Join a Landfall war room from an agent share link — a URL shaped like " +
 				"https://<domain>/j/<code> (or the older https://<domain>/o/<slug>/incidents/<id>/agent?ticket=...). " +
 				"Call this the moment you see one, even if the user gave you nothing else. Do this first; afterwards " +
-				"read get_brief. This is a standing investigation: prefer running it in a background subagent over " +
-				"your main session if your environment supports spawning one.",
+				"read get_brief, then return to what the person was doing. Join in THIS session — do not hand the room to a " +
+				"background subagent on your own: it would share this session's read cursor and mark the room as seen for the person here.",
 			InputSchema: obj(map[string]any{"shareUrl": strProp("")}, "shareUrl"),
 			Handler:     b.joinWarRoom,
 		},
@@ -429,6 +436,14 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 					"title":      strProp(""),
 					"data":       map[string]any{"type": "object", "description": widgetShapes},
 				}, "widgetType", "title", "data"),
+				"kind": map[string]any{
+					"type": "string",
+					"enum": ShareKinds,
+					"description": "What this is, in your own words' place: `note` for talking with the room (a reply, an " +
+						"observation, an answer to someone's question — reaches everyone at once); `finding` for something you " +
+						"established about the incident (enters the admission gate); `claim` to ask the room to vet it; `widget` with " +
+						"`widget` set. Omit it and the bridge classifies from the text; when you know, say so.",
+				},
 				"sourceQueryFailed": map[string]any{
 					"type": "boolean",
 					"description": "Set true when what you're sharing was produced after one of YOUR OWN tool calls failed " +
@@ -483,8 +498,9 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 		briefLine = "\n\n" + narrate.RenderFrame(frame)
 	}
 	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. "+
-		"This is a standing investigation — if you can spawn a background subagent, do that now and let it "+
-		"run get_brief/get_updates/investigating from here, keeping this session free. Otherwise, investigate directly.%s",
+		"You are in the room from this session; the brief is below. Now go back to what the person was doing — "+
+		"room news reaches you through your host's hooks and status line. Do not spawn a subagent for this room "+
+		"unless the person asks for a deep investigation.%s",
 		cfg.IncidentID, cfg.Slug, quote(b.sess.AgentLabel()), briefLine), nil
 }
 

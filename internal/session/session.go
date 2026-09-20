@@ -91,9 +91,17 @@ type Options struct {
 
 // Session is one bridge session.
 type Session struct {
-	mu             sync.Mutex
-	client         EdgeClient
-	cursor         int64
+	mu     sync.Mutex
+	client EdgeClient
+	cursor int64
+	// told is the queue as the PERSON at the terminal has been told it — the
+	// status line's "N new". A model read (a tool-result flush, a pull the
+	// agent made itself) empties `pending` but not this; only a hook delivery
+	// (consume) does, because only then has something been put in front of
+	// the person rather than in front of whichever model consumer happened to
+	// call a tool. Measured 2026-09-21: a background subagent's reads made the
+	// status count drop to zero while the person had been shown nothing.
+	told           []client.Event
 	pending        []client.Event
 	pendingDropped int
 	agentLabel     string
@@ -237,6 +245,20 @@ func (s *Session) EnqueueEvent(ctx context.Context, evt client.Event) bool {
 		s.pending = s.pending[1:]
 		s.pendingDropped++
 	}
+	dup := false
+	for _, e := range s.told {
+		if e.Seq != nil && *e.Seq == seq {
+			dup = true
+			break
+		}
+	}
+	if !dup {
+		s.told = append(s.told, evt)
+		sort.SliceStable(s.told, func(i, j int) bool { return s.told[i].SeqOr(0) < s.told[j].SeqOr(0) })
+		for len(s.told) > PendingMax {
+			s.told = s.told[1:]
+		}
+	}
 	s.mu.Unlock()
 
 	// A claim/vetting event is the only thing that can change what awaits this
@@ -292,7 +314,26 @@ func (s *Session) ConsumeUpTo(upTo int64) int64 {
 	// queue it belonged to is gone. The cursor was never advanced for the
 	// dropped events themselves, so `get_updates` can still fetch them.
 	s.prunePendingLocked(true)
+	// A hook delivered these to the person's own session: they have been told.
+	kept := s.told[:0]
+	for _, e := range s.told {
+		if e.Seq != nil && *e.Seq > upTo {
+			kept = append(kept, e)
+		}
+	}
+	s.told = kept
 	return s.cursor
+}
+
+// PendingForHuman is the queue as the person has been told it: everything
+// pushed since the last hook delivery, whatever any model consumer has read
+// in between. The status line counts this. Copy, in seq order.
+func (s *Session) PendingForHuman() []client.Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]client.Event, len(s.told))
+	copy(out, s.told)
+	return out
 }
 
 // prunePendingLocked drops queued events at or below the cursor. With
@@ -527,6 +568,7 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 	s.client = next
 	s.cursor = -1
 	s.pending = nil
+	s.told = nil
 	s.pendingDropped = 0
 	s.attentionNotified = map[string]bool{}
 	s.divergenceNotified = map[string]bool{}

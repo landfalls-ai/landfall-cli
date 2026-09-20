@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
 )
@@ -27,7 +28,7 @@ type Accepter interface {
 	// this hand-off was produced after one of its own tool calls failed —
 	// never independently verified here, carried through so the room's
 	// admission gate can screen it (Landfall feature 20260920-132909).
-	Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool) (id string, redacted bool, err error)
+	Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool, kind string) (id string, redacted bool, err error)
 }
 
 // WidgetPayload is the structured content of a widget hand-off, as
@@ -93,7 +94,11 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 
 		cfg := cl.Config()
-		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widgetOf(args), sourceQueryFailedOf(args))
+		kind, err := kindOf(args)
+		if err != nil {
+			return "", err
+		}
+		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widgetOf(args), sourceQueryFailedOf(args), kind)
 		switch {
 		case errors.Is(err, ErrQueueFull):
 			// FR-012: never silent. A responder must not believe a finding
@@ -111,6 +116,26 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 		return "shared — the room will have this shortly. Carry on; nothing to follow up.", nil
 	}
+}
+
+// ShareKinds is what `kind` may name. Chat with the room is a note; a finding
+// and a claim enter the admission gate; a widget needs `widget`.
+var ShareKinds = []string{"note", "finding", "claim", "widget"}
+
+// kindOf reads the optional explicit publish kind. Absent is "" (the worker
+// classifies from the text); anything else must be one of ShareKinds.
+func kindOf(args map[string]any) (string, error) {
+	v, ok := args["kind"]
+	if !ok || v == nil {
+		return "", nil
+	}
+	k, _ := v.(string)
+	for _, allowed := range ShareKinds {
+		if k == allowed {
+			return k, nil
+		}
+	}
+	return "", fmt.Errorf("share_with_room: kind must be one of %s, got %q", strings.Join(ShareKinds, ", "), k)
 }
 
 // sourceQueryFailedOf reads the optional self-report that this hand-off

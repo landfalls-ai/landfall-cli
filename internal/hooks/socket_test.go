@@ -781,3 +781,46 @@ func TestCloseRemovesTheSocketNodeAndIsIdempotent(t *testing.T) {
 		t.Fatalf("a closed socket must leave nothing behind, got %v", got)
 	}
 }
+
+func TestPeekCountsAndDigestsOnlyWhatIsWorthAnInterruption(t *testing.T) {
+	// The 2026-09-20 terminal-harness finding: every Stop refusal in a run
+	// cited Beacon's own agent.query rows. Plumbing must not count, must not be
+	// spelled out, and must STILL be covered by maxSeq so a consume clears it.
+	s := &fakeSession{
+		cursor: 20,
+		pending: []client.Event{
+			{Seq: seq(21), Type: "agent.query"},
+			{Seq: seq(22), Type: "agent.widget.executed"},
+			{Seq: seq(23), Type: "chat.message", Payload: map[string]any{"text": "@alice can you confirm the TTL change?"}},
+			{Seq: seq(24), Type: "governance.pulled"},
+		},
+	}
+	res := HandleSocketRequest(PeekRequest(), s, HandleOptions{PID: 1}).(PeekResponse)
+	if res.Count != 1 {
+		t.Fatalf("count = %d, want 1 (only the chat message)", res.Count)
+	}
+	if len(res.Digest) != 1 || !strings.Contains(res.Digest[0], "chat.message") {
+		t.Fatalf("digest = %v, want exactly the chat line", res.Digest)
+	}
+	if res.MaxSeq != 24 {
+		t.Fatalf("maxSeq = %d, want 24 — the consume after a block must clear the plumbing too", res.MaxSeq)
+	}
+}
+
+func TestPeekWithOnlyPlumbingQueuedOwesNothing(t *testing.T) {
+	s := &fakeSession{
+		cursor: 5,
+		pending: []client.Event{
+			{Seq: seq(6), Type: "agent.query"},
+			{Seq: seq(7), Type: "agent.query"},
+		},
+	}
+	res := HandleSocketRequest(PeekRequest(), s, HandleOptions{PID: 1}).(PeekResponse)
+	if res.Count != 0 || len(res.Digest) != 0 {
+		t.Fatalf("plumbing-only queue answered count=%d digest=%v, want nothing owed", res.Count, res.Digest)
+	}
+	count := res.Count
+	if OwesUpdates(SocketAnswer{Response: SocketResponse{OK: true, Count: &count, Dropped: res.Dropped}}) {
+		t.Fatalf("a plumbing-only queue must not make the hooks speak")
+	}
+}

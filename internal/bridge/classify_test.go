@@ -132,3 +132,27 @@ func TestClassifyIsCaseInsensitive(t *testing.T) {
 		t.Error("uppercase finding not recognized")
 	}
 }
+
+func TestARepyAddressedToAPersonIsANoteWhateverWordsItUses(t *testing.T) {
+	// 2026-09-20: an agent's answer to a teammate's direct question contained
+	// "rollback" and "retry", was filed as a finding, and sat staged behind the
+	// admission gate while the teammate waited. A reply is conversation.
+	replies := []string{
+		"@collab-bob re: whether the 09:41 deploy touched checkout-service cache TTLs — no, the repo has one commit and no rollback risk",
+		"@carol the retry storm you saw started at 14:22Z, same as my 502s",
+		"re: bob's question — the timeout is 30s, the failure began after the deploy",
+		"Replying to alice: yes, p99 latency spiked at 14:05",
+	}
+	for _, input := range replies {
+		if got := Classify(input); got != KindNote {
+			t.Errorf("Classify(%q) = %q, want note — a reply filed as a finding is gated away from the person it answers", input, got)
+		}
+	}
+}
+
+func TestAMentionMidSentenceDoesNotDemoteAFinding(t *testing.T) {
+	input := "origin returned 502 for /api/v2/checkout starting at 14:22Z, as @carol also found"
+	if got := Classify(input); got != KindFinding {
+		t.Errorf("Classify(%q) = %q, want finding — only an OPENING address marks a reply", input, got)
+	}
+}

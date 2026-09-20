@@ -57,3 +57,13 @@ func toSpoolWidget(w *tools.WidgetPayload) *spool.WidgetPayload {
 	}
 	return &spool.WidgetPayload{WidgetType: w.WidgetType, Title: w.Title, Data: w.Data}
 }
+
+// Hold marks an accepted entry as held by the working-directory rule (spec
+// FR-008). The worker never publishes a held entry; `landfall allow-cwd`
+// releases it. Called by the daemon-mode front end after the daemon's `match`.
+func (a *Accepter) Hold(incidentID, id string, matched []string) error {
+	return a.spool.Hold(incidentID, id, matched)
+}
+
+// Spool exposes the queue for the person commands that list and release holds.
+func (a *Accepter) Spool() *spool.Spool { return a.spool }

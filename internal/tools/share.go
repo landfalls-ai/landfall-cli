@@ -109,13 +109,27 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 			return "", fmt.Errorf("could not record the hand-off: %w", err)
 		}
 
-		_ = id
+		if hr, ok := acc.(HeldReporter); ok {
+			if matched := hr.HeldReason(id); len(matched) > 0 {
+				return fmt.Sprintf("held — nothing left this machine. This names the person's working directory (%s), "+
+					"and they have not allowed working-directory content into this room. Tell them: `landfall held` lists it, "+
+					"`landfall allow-cwd` lets it through. Do not re-share it in other words.", strings.Join(matched, ", ")), nil
+			}
+		}
 		if redacted {
 			return "shared — but something in it looked like a credential and was replaced with [redacted] " +
 				"before it left this machine. Re-share without the secret if the room needs that detail.", nil
 		}
 		return "shared — the room will have this shortly. Carry on; nothing to follow up.", nil
 	}
+}
+
+// HeldReporter is an OPTIONAL capability of an Accepter: after Accept, it can
+// say whether that hand-off was held by the working-directory rule and what
+// matched. The daemon-mode front end implements it; a plain spool does not,
+// and the handler then reports "shared" exactly as before.
+type HeldReporter interface {
+	HeldReason(id string) []string
 }
 
 // ShareKinds is what `kind` may name. Chat with the room is a note; a finding

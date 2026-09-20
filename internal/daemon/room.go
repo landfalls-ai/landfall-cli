@@ -10,8 +10,11 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
+	"github.com/landfalls-ai/landfall-cli/internal/realtime"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
 )
+
+var isPlumbing = realtime.IsPlumbing
 
 // RingMax bounds the per-room event ring, the same bound the per-process queue
 // used (session.PendingMax). Older events fall off the front; a reader whose
@@ -80,6 +83,7 @@ type Room struct {
 	deps             Deps
 	cancel           context.CancelFunc
 	stopWatch        func()
+	subscribers      map[chan client.Event]struct{}
 }
 
 // OpenRoom joins the incident once for the whole machine and starts presence
@@ -179,9 +183,37 @@ func (r *Room) enqueue(evt client.Event) {
 		r.events = r.events[1:]
 	}
 	r.Connection = Live
+	subs := make([]chan client.Event, 0, len(r.subscribers))
+	if !isPlumbing(evt.Type) {
+		for ch := range r.subscribers {
+			subs = append(subs, ch)
+		}
+	}
 	r.mu.Unlock()
+	for _, ch := range subs {
+		select {
+		case ch <- evt:
+		default: // a slow subscriber drops the event; it can `delta` for the rest
+		}
+	}
 	if r.deps.OnEvent != nil {
 		r.deps.OnEvent(r, evt)
+	}
+}
+
+// Subscribe registers a live stream of the room's substantive events.
+func (r *Room) Subscribe() (<-chan client.Event, func()) {
+	ch := make(chan client.Event, 64)
+	r.mu.Lock()
+	if r.subscribers == nil {
+		r.subscribers = map[chan client.Event]struct{}{}
+	}
+	r.subscribers[ch] = struct{}{}
+	r.mu.Unlock()
+	return ch, func() {
+		r.mu.Lock()
+		delete(r.subscribers, ch)
+		r.mu.Unlock()
 	}
 }
 

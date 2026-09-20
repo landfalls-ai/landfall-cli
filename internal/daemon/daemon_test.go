@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"net"
 	"os"
 	"path/filepath"
 	"sync"
@@ -273,5 +276,117 @@ func TestIdleDaemonLeavesAndExits(t *testing.T) {
 	}
 	if edge.leaves != 1 {
 		t.Fatalf("the room must be left once on exit, leaves = %d", edge.leaves)
+	}
+}
+
+func TestMatchHoldsWorkingDirectoryContentUntilThePersonAllows(t *testing.T) {
+	edge := &fakeEdge{}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	ctx := context.Background()
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	a := d.handler.Handle(ctx, Request{Op: "attach", Room: &cfg,
+		Reader:       &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"},
+		Fingerprints: &Fingerprints{Paths: []string{"src/cache.js", "go.mod"}, Commits: []string{"82400b8", "82400b8f1e2d3c4b5a69788796a5b4c3d2e1f0a9"}, Names: []string{"checkout-service"}},
+	})
+	if !a.OK {
+		t.Fatal(a.Error)
+	}
+	m := d.handler.Handle(ctx, Request{Op: "match", RoomKey: a.RoomKey, ReaderName: "claude-code:ws:1", Text: "TTL_MS in src/cache.js is 60s, see commit 82400b8 in checkout-service"})
+	if !m.OK || !m.Held || len(m.Matched) != 3 {
+		t.Fatalf("match = %+v, want held with three matches (path, commit, name)", m)
+	}
+	clean := d.handler.Handle(ctx, Request{Op: "match", RoomKey: a.RoomKey, ReaderName: "claude-code:ws:1", Text: "p99 latency spiked at 14:05Z on the payments service"})
+	if !clean.OK || clean.Held || len(clean.Matched) != 0 {
+		t.Fatalf("a share that names nothing local must pass: %+v", clean)
+	}
+	short := d.handler.Handle(ctx, Request{Op: "match", RoomKey: a.RoomKey, ReaderName: "claude-code:ws:1", Text: "see go.mod"})
+	if short.Held {
+		t.Fatalf("a path of eight characters or fewer is too common to hold on: %+v", short)
+	}
+	if r := d.handler.Handle(ctx, Request{Op: "allow-cwd", RoomKey: a.RoomKey}); !r.OK {
+		t.Fatal(r.Error)
+	}
+	after := d.handler.Handle(ctx, Request{Op: "match", RoomKey: a.RoomKey, ReaderName: "claude-code:ws:1", Text: "TTL_MS in src/cache.js is 60s"})
+	if after.Held || !after.Allowed || len(after.Matched) != 1 {
+		t.Fatalf("after allow-cwd the same text matches but is not held: %+v", after)
+	}
+	st, _ := LoadState(d.statePath)
+	if !st.Rooms[a.RoomKey].CwdAllowed {
+		t.Fatal("the person's allowance must survive a restart")
+	}
+}
+
+func TestSubscribeStreamsSubstantiveEventsWithoutMovingAnyCursor(t *testing.T) {
+	edge := &fakeEdge{}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for !Reachable(d.opts.Workspace) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	sock := hooks.DaemonSocketPath(d.opts.Workspace)
+	att, err := Send(sock, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "panel", Kind: "panel", WorkspaceKey: "ws"}}, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	body, _ := json.Marshal(Request{Op: "subscribe", RoomKey: att.RoomKey, ReaderName: "panel"})
+	if _, err := conn.Write(append(body, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	r := bufio.NewReader(conn)
+	ackLine, _ := r.ReadBytes('\n')
+	var ack Response
+	if json.Unmarshal(ackLine, &ack) != nil || !ack.OK {
+		t.Fatalf("subscribe ack: %s", ackLine)
+	}
+	// give the subscription a moment to register before events flow
+	time.Sleep(50 * time.Millisecond)
+	wire.emit(client.Event{Seq: seq(1), Type: "agent.query"})
+	wire.emit(client.Event{Seq: seq(2), Type: "chat.message", Payload: map[string]any{"text": "hello"}})
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	line, err := r.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("no event streamed: %v", err)
+	}
+	var got struct {
+		Seq   int64        `json:"seq"`
+		Event client.Event `json:"event"`
+	}
+	if json.Unmarshal(line, &got) != nil || got.Seq != 2 || got.Event.Type != "chat.message" {
+		t.Fatalf("streamed %s, want the chat message (seq 2) and never the agent.query", line)
+	}
+	rooms, _ := Send(sock, Request{Op: "rooms"}, time.Second)
+	for _, rd := range rooms.Rooms[0].Readers {
+		if rd.Name == "panel" && rd.Cursor != -1 {
+			t.Fatalf("subscribing must not move the reader's cursor, got %d", rd.Cursor)
+		}
+	}
+}
+
+func TestTheDaemonRingsTheDoorbellForAWorkspaceOnTheFirstUntoldItem(t *testing.T) {
+	edge := &fakeEdge{}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	ctx := context.Background()
+	work := t.TempDir()
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	d.handler.Handle(ctx, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws", Workspace: work}})
+	wire.emit(client.Event{Seq: seq(1), Type: "agent.query"})
+	if _, err := os.Stat(hooks.DoorbellPath(work)); !os.IsNotExist(err) {
+		t.Fatal("machinery must not ring the doorbell")
+	}
+	wire.emit(client.Event{Seq: seq(2), Type: "edge.finding", Payload: map[string]any{"text": "p99 spiked"}})
+	if _, err := os.Stat(hooks.DoorbellPath(work)); err != nil {
+		t.Fatalf("the first untold substantive item must ring the workspace's doorbell: %v", err)
 	}
 }

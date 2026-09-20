@@ -218,6 +218,8 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newStatusCommand(ui),
 		newDaemonCommand(ui),
 		newRoomsCommand(ui),
+		newHeldCommand(ui),
+		newAllowCwdCommand(ui),
 		newConnectCommand(ui),
 		newRemediationCommand(ui),
 	)

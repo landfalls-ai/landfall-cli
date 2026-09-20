@@ -36,6 +36,7 @@ type Reader struct {
 	Kind         Kind      `json:"kind"`
 	Host         string    `json:"host"`
 	WorkspaceKey string    `json:"workspaceKey"`
+	Workspace    string    `json:"workspace,omitempty"`
 	Cursor       int64     `json:"cursor"`
 	AttachedAt   time.Time `json:"attachedAt"`
 	LastSeenAt   time.Time `json:"lastSeenAt"`

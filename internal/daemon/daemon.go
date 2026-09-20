@@ -26,8 +26,6 @@ const IdleGrace = 60 * time.Second
 type Options struct {
 	Workspace hooks.Workspace
 	Deps      Deps
-	// Hold is the working-directory hold, Phase US3. Nil means no holding.
-	Hold HoldStore
 	// IdleGrace overrides the default; tests shorten it.
 	IdleGrace time.Duration
 	Log       func(string)
@@ -41,6 +39,7 @@ type Daemon struct {
 	mu           sync.Mutex
 	roomsByKey   map[string]*Room
 	fingerprints map[string]*Fingerprints
+	doorbells    map[string]*hooks.Doorbell
 	state        *State
 	statePath    string
 	stopCh       chan struct{}
@@ -62,11 +61,48 @@ func New(opts Options) *Daemon {
 		opts:         opts,
 		roomsByKey:   map[string]*Room{},
 		fingerprints: map[string]*Fingerprints{},
+		doorbells:    map[string]*hooks.Doorbell{},
 		statePath:    StatePath(hooks.RuntimeDir(opts.Workspace)),
 		stopCh:       make(chan struct{}),
 	}
 	d.handler = &Handler{d: d}
+	// The doorbell (hooks.Doorbell) is rung by the daemon now: for every
+	// workspace whose person has a terminal reader, when a room goes from
+	// nothing untold to something untold. Chained ahead of the caller's own
+	// OnEvent (the OS notifier) so both fire.
+	userOnEvent := d.opts.Deps.OnEvent
+	d.opts.Deps.OnEvent = func(room *Room, evt client.Event) {
+		d.ring(room, evt)
+		if userOnEvent != nil {
+			userOnEvent(room, evt)
+		}
+	}
 	return d
+}
+
+// ring rings the doorbell for each terminal reader whose untold set just
+// became non-empty with this event (the 0 → non-empty edge, as hooks.RingOnEdge).
+func (d *Daemon) ring(room *Room, evt client.Event) {
+	if isPlumbing(evt.Type) {
+		return
+	}
+	for _, rd := range room.Readers() {
+		if rd.Kind != KindTerminal || rd.Workspace == "" {
+			continue
+		}
+		untold := room.UntoldFor(rd.Name)
+		if len(untold) != 1 {
+			continue
+		}
+		d.mu.Lock()
+		bell, ok := d.doorbells[rd.Workspace]
+		if !ok {
+			bell = hooks.NewDoorbell(hooks.DoorbellOptions{Cwd: rd.Workspace, Log: d.opts.Log})
+			d.doorbells[rd.Workspace] = bell
+		}
+		d.mu.Unlock()
+		bell.Ring(len(untold))
+	}
 }
 
 // Run is the whole daemon: lock, restore, listen, idle-exit. Returns when

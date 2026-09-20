@@ -36,6 +36,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/landfalls-ai/landfall-cli/internal/bridge"
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
@@ -396,8 +397,12 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		},
 	})
 
+	var toolAccepter tools.Accepter = accepter
 	if fe != nil {
 		sess.SetFlushOverride(fe.delta)
+		if ba, ok := accepter.(*bridge.Accepter); ok && ba != nil {
+			toolAccepter = newHoldingAccepter(ba, fe)
+		}
 	}
 
 	cfg, err := opts.Resolve(stopCtx, ui, link)
@@ -443,7 +448,7 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	ui.Log("MCP stdio server ready — connect your agent. Every tool call narrates to the war room.")
 	serveErr := serveStdio(stopCtx, opts.In, opts.Out, mcp.Options{
-		Tools:      tools.BuildWithAccepter(sess, accepter),
+		Tools:      tools.BuildWithAccepter(sess, toolAccepter),
 		ServerInfo: &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
 		OnInitialize: func(ci mcp.ClientInfo) {
 			if fe != nil {
@@ -452,7 +457,7 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		},
 		// Must match the surface actually registered — instructions naming
 		// tools that do not exist send the agent hunting for them mid-incident.
-		Instructions: tools.InstructionsFor(accepter != nil),
+		Instructions: tools.InstructionsFor(toolAccepter != nil),
 	})
 
 	if worker != nil {

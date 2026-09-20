@@ -126,15 +126,15 @@ func (d *Daemon) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			d.shutdown()
+			d.shutdown(true)
 			return nil
 		case <-d.stopCh:
-			d.shutdown()
+			d.shutdown(true)
 			return nil
 		case <-ticker.C:
 			if d.idle() {
 				d.opts.Log("no reader for " + d.opts.IdleGrace.String() + "; leaving rooms and exiting")
-				d.shutdown()
+				d.shutdown(false)
 				return nil
 			}
 		}
@@ -158,11 +158,22 @@ func (d *Daemon) idle() bool {
 	return true
 }
 
-func (d *Daemon) shutdown() {
+// shutdown leaves every room. keepRooms says whether they are written to
+// state for the next daemon to rejoin: true for a stop or a signal (readers
+// may still be there and will re-attach, spec FR-013), false for an idle exit
+// (nobody was reading; rejoining a room nobody reads would put a phantom
+// presence in it and stale rooms in every later status line).
+func (d *Daemon) shutdown(keepRooms bool) {
+	rooms := d.rooms()
+	if !keepRooms {
+		d.mu.Lock()
+		d.roomsByKey = map[string]*Room{}
+		d.mu.Unlock()
+	}
 	d.save()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	for _, r := range d.rooms() {
+	for _, r := range rooms {
 		r.Close(ctx)
 	}
 }

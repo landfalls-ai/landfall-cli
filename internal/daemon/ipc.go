@@ -251,15 +251,13 @@ func (d *Daemon) peek(req Request) Response {
 		if name == "" {
 			name = TerminalReaderName(req.WorkspaceKey)
 		}
+		// Only rooms this workspace actually reads. The terminal reader is
+		// created when an agent from that workspace attaches (Handle "attach"),
+		// never here: a hook or status line asking about a checkout must not
+		// enrol that checkout into every room the machine has open.
 		rd, okr := room.Reader(name)
 		if !okr {
-			// A workspace whose person has never been attached as a reader is
-			// attached now, at the room's current position: the hooks are how
-			// the person's terminal announces itself.
-			if req.WorkspaceKey == "" {
-				continue
-			}
-			rd = room.Attach(Reader{Name: name, Kind: KindTerminal, WorkspaceKey: req.WorkspaceKey})
+			continue
 		}
 		untold := room.UntoldFor(name)
 		digest := make([]string, 0, len(untold))

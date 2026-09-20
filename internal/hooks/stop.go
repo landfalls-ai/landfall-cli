@@ -103,8 +103,18 @@ func BuildStopDecision(peeks []SocketAnswer, maxChars int) StopDecision {
 	// Union across sessions (see QueryHookSockets): over-reporting a sibling
 	// window's context is recoverable, under-reporting is the bug this prevents.
 	var lines []string
+	seen := map[string]bool{}
 	for _, p := range owed {
-		lines = append(lines, p.Response.Digest...)
+		for _, l := range p.Response.Digest {
+			// Two sockets can speak for one reader (a serve front end and a
+			// helper in the same workspace both proxy the daemon's terminal
+			// reader); the same line twice is not two updates.
+			if seen[l] {
+				continue
+			}
+			seen[l] = true
+			lines = append(lines, l)
+		}
 	}
 	resumeSeq := int64(-1)
 	for i, p := range owed {

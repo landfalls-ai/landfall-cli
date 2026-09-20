@@ -38,6 +38,16 @@ func Classify(text string) Kind {
 		return KindNote
 	}
 
+	// A reply addressed to a person is conversation, whatever words it uses.
+	// "@bob re: the rollback — no, checkout-service wasn't touched" answers a
+	// question; filed as a finding it is STAGED behind the admission gate and
+	// the person it answers may never see it (observed 2026-09-20: an agent's
+	// answer to a teammate's direct question sat gated while Beacon answered
+	// instead). A note reaches everyone at once, which is what a reply is for.
+	if isAddressedReply(t) {
+		return KindNote
+	}
+
 	// A claim is something the responder is explicitly offering for the room to
 	// vet. Only an unambiguous framing counts — staging a claim invites other
 	// investigators to spend effort voting, so inferring one from a passing
@@ -64,6 +74,30 @@ func Classify(text string) Kind {
 		return KindFinding
 	}
 	return KindNote
+}
+
+// isAddressedReply: the text opens by naming who it is for — an @mention, or
+// a "re:" / "replying to" / "answering" lead-in. Only the OPENING counts: a
+// finding that happens to mention "@carol found" mid-sentence is still a finding.
+func isAddressedReply(lower string) bool {
+	if strings.HasPrefix(lower, "@") {
+		return true
+	}
+	for _, lead := range replyLeads {
+		if strings.HasPrefix(lower, lead) {
+			return true
+		}
+	}
+	return false
+}
+
+var replyLeads = []string{
+	"re: ",
+	"re ",
+	"replying to ",
+	"in reply to ",
+	"answering ",
+	"to answer ",
 }
 
 var claimMarkers = []string{

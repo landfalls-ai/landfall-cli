@@ -66,6 +66,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
+	"github.com/landfalls-ai/landfall-cli/internal/realtime"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
 )
 
@@ -481,12 +482,23 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 	case "peek":
 		incidentID, _, _ := room(s)
 		cursor := sessionCursor(s)
+		// maxSeq spans EVERY queued event, plumbing included, so a consume after
+		// this peek clears the whole queue and nothing is re-reported later.
 		maxSeq := cursor
 		if n := len(pending); n > 0 {
 			maxSeq = pending[n-1].SeqOr(cursor)
 		}
+		// Count and digest name only what a person would want to be stopped
+		// for. The room's machinery (Beacon's queries, widget builds, pull
+		// ledger rows) still reaches the agent in-band on its next tool call;
+		// it is no longer a reason for the Stop hook to refuse a conclusion or
+		// for the prompt hook to announce "updates from other investigators".
+		// See internal/realtime/plumbing.go for the measurement behind this.
 		digest := make([]string, 0, len(pending))
 		for _, e := range pending {
+			if realtime.IsPlumbing(e.Type) {
+				continue
+			}
 			digest = append(digest, narrate.FormatEventLine(e))
 		}
 		return PeekResponse{
@@ -494,7 +506,7 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 			V:          SocketProtocolVersion,
 			PID:        pid,
 			IncidentID: incidentID,
-			Count:      len(pending),
+			Count:      len(digest),
 			Dropped:    sessionDropped(s),
 			Cursor:     cursor,
 			MaxSeq:     maxSeq,

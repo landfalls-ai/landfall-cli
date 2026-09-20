@@ -153,8 +153,9 @@ func TestClaudeCode_MatcherGroupShapeEveryEventAndTheStatusLineSurface(t *testin
 			"PreToolUse": []any{matcherGroup("Bash", "landfall hooks pre-tool-use")},
 		},
 		// A separate config surface in the same file: one key holding one
-		// object, not a hooks.<Event> list. Claude Code only.
-		"statusLine": map[string]any{"type": "command", "command": "landfall status"},
+		// object, not a hooks.<Event> list. Claude Code only. refreshInterval
+		// is what makes it re-run while the session is idle.
+		"statusLine": map[string]any{"type": "command", "command": "landfall status", "refreshInterval": float64(5)},
 	}
 	got := readJSONFile(t, h.ConfigPath())
 	if !install.EqualJSON(got, want) {
@@ -795,5 +796,50 @@ func TestCodex_AConflictBlocksTheWriteAndTheFlagIsNotTouchedEither(t *testing.T)
 	}
 	if fileExists(CodexTOMLPath()) {
 		t.Fatal("a conflict must not enable the feature flag either")
+	}
+}
+
+func TestClaudeCode_ALegacyStatusLineWithoutRefreshIntervalIsUpgradedNotAConflict(t *testing.T) {
+	s := newSandbox(t)
+	s.mkdir(t, ".claude")
+	h := HostByID("claude-code")
+	// What every install before refreshInterval wrote.
+	legacy := map[string]any{"statusLine": map[string]any{"type": "command", "command": "landfall status"}}
+	if err := install.WriteJSONPretty(h.ConfigPath(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := h.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StatusLine.Action != install.ActionWrite {
+		t.Fatalf("legacy status line planned as %q, want write (an upgrade of our own entry)", plan.StatusLine.Action)
+	}
+	if _, err := h.Install(); err != nil {
+		t.Fatal(err)
+	}
+	data := readJSONFile(t, h.ConfigPath())
+	if !install.EqualJSON(data["statusLine"], StatusLineEntry()) {
+		t.Fatalf("statusLine after upgrade: %v", data["statusLine"])
+	}
+	if StatusLineEntry()["refreshInterval"] == nil {
+		t.Fatal("the entry must carry refreshInterval — without it Claude Code paints the line once and never again while idle")
+	}
+}
+
+func TestClaudeCode_AHandEditedStatusLineIsStillAConflict(t *testing.T) {
+	s := newSandbox(t)
+	s.mkdir(t, ".claude")
+	h := HostByID("claude-code")
+	theirs := map[string]any{"statusLine": map[string]any{"type": "command", "command": "my-own-statusline.sh"}}
+	if err := install.WriteJSONPretty(h.ConfigPath(), theirs); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := h.Plan()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.StatusLine.Action != install.ActionConflict {
+		t.Fatalf("someone else's status line planned as %q, want conflict", plan.StatusLine.Action)
 	}
 }

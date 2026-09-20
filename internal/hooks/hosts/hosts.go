@@ -152,8 +152,67 @@ const StatusLineKey = "statusLine"
 
 // StatusLineEntry is returned fresh per call rather than shared as a package
 // var, for the same reason install.LandfallEntry() is.
+//
+// `refreshInterval` is the whole point of the status line. Claude Code re-runs
+// the command only on conversation events (a new assistant message, a mode
+// change, a compaction) and goes quiet while the session is idle — which is
+// exactly when a person needs the room's news without being interrupted.
+// Measured 2026-09-21 (the monorepo's terminal harness, `idle` script): with no
+// interval the line was painted once, before the agent had even joined, and
+// showed "🔴 landfall" for three minutes while a teammate's question and a
+// corroborated finding sat in the room. Five seconds is Claude Code's own
+// suggested cadence for "background subagents change state while the main
+// session is idle"; `landfall status` is a socket round trip, cheap at that rate.
 func StatusLineEntry() map[string]any {
-	return map[string]any{"type": "command", "command": "landfall status"}
+	return map[string]any{"type": "command", "command": "landfall status", "refreshInterval": float64(statusLineRefreshSeconds)}
+}
+
+const statusLineRefreshSeconds = 5
+
+// isLegacyStatusLine recognises the entry this CLI wrote before
+// refreshInterval existed: landfall's own line, one field short. Upgrading it
+// in place is not the hand-edit conflict the single-key merge protects
+// against — it is our own earlier install.
+func isLegacyStatusLine(existing any) bool {
+	m, ok := existing.(map[string]any)
+	if !ok {
+		return false
+	}
+	if m["command"] != "landfall status" || m["type"] != "command" {
+		return false
+	}
+	_, hasInterval := m["refreshInterval"]
+	return !hasInterval
+}
+
+// planStatusLine is install.PlanInstall for the statusLine key, plus the one
+// upgrade case: a legacy landfall entry is a write, not a conflict.
+func planStatusLine(path string) (install.Plan, error) {
+	plan, err := install.PlanInstall(path, []string{StatusLineKey}, StatusLineEntry())
+	if err != nil {
+		return install.Plan{}, err
+	}
+	if plan.Action == install.ActionConflict && isLegacyStatusLine(plan.Existing) {
+		plan.Action = install.ActionWrite
+	}
+	return plan, nil
+}
+
+// applyStatusLine writes the current entry when planStatusLine says write;
+// passes already-installed and conflict through untouched.
+func applyStatusLine(path string) (install.Plan, error) {
+	plan, err := planStatusLine(path)
+	if err != nil {
+		return install.Plan{}, err
+	}
+	if plan.Action != install.ActionWrite {
+		return plan, nil
+	}
+	next := install.SetPath(plan.Data, []string{StatusLineKey}, StatusLineEntry())
+	if err := install.WriteJSONPretty(path, next); err != nil {
+		return install.Plan{}, err
+	}
+	return install.Plan{Action: install.ActionConfigured, Data: next}, nil
 }
 
 // Worst-case-wins precedence across two INDEPENDENT surfaces (hooks,
@@ -216,7 +275,7 @@ func (h *claudeCodeHost) Plan() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	statusLine, err := install.PlanInstall(h.ConfigPath(), []string{StatusLineKey}, StatusLineEntry())
+	statusLine, err := planStatusLine(h.ConfigPath())
 	if err != nil {
 		return Result{}, err
 	}
@@ -251,7 +310,7 @@ func (h *claudeCodeHost) Install() (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	statusLine, err := install.ApplyInstall(h.ConfigPath(), []string{StatusLineKey}, StatusLineEntry())
+	statusLine, err := applyStatusLine(h.ConfigPath())
 	if err != nil {
 		return Result{}, err
 	}

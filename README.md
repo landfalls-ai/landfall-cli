@@ -256,6 +256,47 @@ that isn't a shell command, do nothing at all.
 Your organization must also switch this on (it is off by default, admin-gated,
 server-side), so both ends have to agree before a single intent is accepted.
 
+## The room daemon: one room per machine, a cursor per reader
+
+Since v0.8.0 `landfall serve` is a thin front end. The first time an agent on your machine
+joins a room, `serve` starts `landfall daemon` (detached, one per user) and attaches to it as
+a named reader; a second agent, a second window, or a helper your agent spawns attaches to the
+same room instead of joining it again. The daemon holds the room's live connection, one presence
+identity for the machine, and a **separate reading position for every reader**, including one
+for you, the person at the terminal. What your agent's helper reads is the helper's business;
+your status line and your prompt digest count what *you* have not been shown.
+
+```
+landfall rooms              # which rooms this machine has open, and who is reading each
+landfall rooms --json
+landfall daemon             # run it in the foreground (serve normally spawns it detached)
+landfall daemon stop
+```
+
+The daemon exits by itself a minute after its last agent reader detaches. Its state (rooms with
+their tokens, readers and cursors) lives in `<runtime dir>/daemon/state.json`, mode 0600, where
+`<runtime dir>` is `$XDG_RUNTIME_DIR/landfall` or `~/.local/state/landfall/run`. A `stop` or a
+signal keeps that state so a restart rejoins; an idle exit forgets it. If the daemon cannot run
+(`LANDFALL_DAEMON=0`, or a runtime path too long to bind a socket), `serve` says so once and
+behaves exactly as before: one process, one cursor. Hooks and `landfall status` from an older
+binary keep working, because a front end still binds the per-process socket they look for.
+
+### The working-directory hold
+
+Your agent must not share your code into the room unless you say so. At attach, `serve` tells
+the daemon what your working directory looks like: tracked file paths, recent commit hashes,
+the directory and package names. A `share_with_room` whose text names any of them is **held**
+in this checkout's queue instead of published; the agent is told so in the tool result, and
+`landfall status` shows `· N held`. Only you release it:
+
+```
+landfall held                 # what is held for this checkout's room, and what each one names
+landfall allow-cwd            # let working-directory content into the room; releases everything held
+landfall held drop <id>       # discard one
+```
+
+The allowance is per room and survives a daemon restart. There is no MCP tool for any of this.
+
 ## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 
 Configure the MCP server ONCE, with no tokens or IDs:

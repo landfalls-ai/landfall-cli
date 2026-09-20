@@ -824,3 +824,20 @@ func TestPeekWithOnlyPlumbingQueuedOwesNothing(t *testing.T) {
 		t.Fatalf("a plumbing-only queue must not make the hooks speak")
 	}
 }
+
+func TestStatusPendingCountsOnlyWhatIsWorthTelling(t *testing.T) {
+	// The status line reads this as "N new". During Beacon's investigation the
+	// count climbed to 10 on agent.query rows alone (2026-09-21 idle run).
+	s := &fakeSession{
+		cursor: 1,
+		pending: []client.Event{
+			{Seq: seq(2), Type: "agent.query"},
+			{Seq: seq(3), Type: "agent.widget.executed"},
+			{Seq: seq(4), Type: "chat.message"},
+		},
+	}
+	res := HandleSocketRequest(StatusRequest(), s, HandleOptions{PID: 1}).(StatusResponse)
+	if res.Pending != 1 {
+		t.Fatalf("status pending = %d, want 1 (the chat message)", res.Pending)
+	}
+}

@@ -461,6 +461,16 @@ func (o HandleOptions) pid() int {
 func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions) any {
 	pid := opts.pid()
 	pending := sessionPending(s)
+	// What a person would want to be told about, as opposed to the room's
+	// machinery talking to itself — see internal/realtime/plumbing.go. Both
+	// the status line's "N new" and the hooks' count use this; maxSeq below
+	// still spans everything so a consume clears the plumbing too.
+	worthTelling := 0
+	for _, e := range pending {
+		if !realtime.IsPlumbing(e.Type) {
+			worthTelling++
+		}
+	}
 
 	switch req.verb() {
 	case "status":
@@ -473,7 +483,7 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 			Slug:         slug,
 			Connected:    connected,
 			Cursor:       sessionCursor(s),
-			Pending:      len(pending),
+			Pending:      worthTelling,
 			Dropped:      sessionDropped(s),
 			VotesAwaited: votesAwaited(s),
 			Divergence:   sessionDivergence(s),

@@ -143,7 +143,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 		_ = ln.Close()
 		_ = os.Remove(socketPath)
 	}()
-	d.opts.Log("room daemon listening at " + socketPath)
+	d.opts.Log(fmt.Sprintf("room daemon listening at %s (pid %d, %d room(s) restored)", socketPath, os.Getpid(), len(d.rooms())))
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -224,6 +224,7 @@ func (d *Daemon) restore(ctx context.Context, st *State) {
 			d.opts.Log("could not rejoin " + key + ": " + err.Error())
 			continue
 		}
+		d.opts.Log(fmt.Sprintf("restored %s with %d reader(s)", rs.Config.IncidentID, len(rs.Readers)))
 		d.mu.Lock()
 		d.roomsByKey[room.Key] = room
 		d.mu.Unlock()

@@ -50,7 +50,7 @@ func daemonOptions(ui *UI, ws hooks.Workspace) daemon.Options {
 	notify := newNotifier()
 	return daemon.Options{
 		Workspace: ws,
-		Log:       func(msg string) { ui.Log("%s", msg) },
+		Log:       func(msg string) { ui.Log("%s %s", time.Now().UTC().Format("15:04:05"), msg) },
 		Deps: daemon.Deps{
 			NewClient: func(cfg client.Config) session.EdgeClient { return client.New(cfg, nil) },
 			Watch: func(ctx context.Context, cfg client.Config, own func() string, onEvent func(client.Event)) func() {

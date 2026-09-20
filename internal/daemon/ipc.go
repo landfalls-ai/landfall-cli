@@ -148,6 +148,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if req.Fingerprints != nil {
 			d.setFingerprints(room.Key+"|"+req.Reader.WorkspaceKey, req.Fingerprints)
 		}
+		d.opts.Log(fmt.Sprintf("attached %s (%s) to %s at cursor %d; %d reader(s) connected", rd.Name, rd.Kind, room.Config.IncidentID, rd.Cursor, room.ConnectedReaders()))
 		d.save()
 		frame, _ := room.Frame(ctx)
 		res := ok()
@@ -160,6 +161,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			return fail("no such room")
 		}
 		room.Detach(req.ReaderName)
+		d.opts.Log(fmt.Sprintf("detached %s from %s; %d reader(s) connected", req.ReaderName, room.Config.IncidentID, room.ConnectedReaders()))
 		d.save()
 		return ok()
 
@@ -237,6 +239,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		return res
 
 	case "stop":
+		d.opts.Log("stop requested; rooms are kept for the next daemon")
 		d.requestStop()
 		return ok()
 

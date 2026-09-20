@@ -33,6 +33,9 @@ type frontEnd struct {
 	roomKey  string
 	reader   string
 	attached bool
+	cfg      client.Config
+	// lastEnsure rate-limits respawn attempts when the daemon has gone away.
+	lastEnsure time.Time
 }
 
 func newFrontEnd(ws hooks.Workspace, log func(string)) *frontEnd {
@@ -76,8 +79,38 @@ func (f *frontEnd) attach(cfg client.Config) (*daemon.Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	f.roomKey, f.reader, f.attached = res.RoomKey, f.readerName(), true
+	f.roomKey, f.reader, f.attached, f.cfg = res.RoomKey, f.readerName(), true, cfg
 	return res, nil
+}
+
+// ensure makes sure a daemon is answering before a read or a consume. A daemon
+// that was stopped (`landfall daemon stop`, a crash) is respawned and this
+// reader re-attaches under its own name, so it resumes at its own cursor from
+// the daemon's persisted state (spec FR-013). Without this, a front end that
+// lost its daemon had no room at all: no realtime watch of its own, and every
+// daemon call failing quietly (found by the harness's --kill-daemon-at run,
+// 2026-09-21). Rate-limited so a daemon that cannot start is not respawned on
+// every tool call.
+func (f *frontEnd) ensure() bool {
+	if daemon.Reachable(f.ws) {
+		return true
+	}
+	if time.Since(f.lastEnsure) < 5*time.Second {
+		return false
+	}
+	f.lastEnsure = time.Now()
+	if !daemon.EnsureRunning(f.ws, nil, f.log) {
+		return false
+	}
+	if f.cfg.IncidentID == "" {
+		return true
+	}
+	if _, err := f.attach(f.cfg); err != nil {
+		f.log("room daemon came back but re-attach failed: " + err.Error())
+		return false
+	}
+	f.log("room daemon restarted; re-attached as " + f.reader)
+	return true
 }
 
 func (f *frontEnd) detach() {
@@ -92,7 +125,7 @@ func (f *frontEnd) detach() {
 // FlushPending's result was. A daemon that cannot answer means nothing owed
 // this time, never an error on a tool result.
 func (f *frontEnd) delta(context.Context) *client.FrameDelta {
-	if !f.attached {
+	if !f.attached || !f.ensure() {
 		return nil
 	}
 	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "delta", RoomKey: f.roomKey, ReaderName: f.reader}, 3*time.Second)
@@ -143,6 +176,9 @@ type daemonSession struct {
 }
 
 func (d *daemonSession) peek() *daemon.RoomView {
+	if !d.fe.ensure() {
+		return nil
+	}
 	res, err := daemon.Send(d.fe.socketPath, daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir())}, time.Second)
 	if err != nil {
 		return nil
@@ -178,6 +214,9 @@ func (d *daemonSession) Divergence() *client.Divergence { return d.sess.Divergen
 
 // consume forwards a hook's delivery to the daemon for the terminal reader.
 func (d *daemonSession) consume(upTo int64) int64 {
+	if !d.fe.ensure() {
+		return -1
+	}
 	res, err := daemon.Send(d.fe.socketPath, daemon.Request{
 		Op: "consume", RoomKey: d.fe.roomKey, ReaderName: daemon.TerminalReaderName(hooks.WorkspaceKey(d.fe.ws.Dir())), UpTo: &upTo,
 	}, time.Second)
@@ -204,7 +243,7 @@ func newHoldingAccepter(inner *bridge.Accepter, fe *frontEnd) *holdingAccepter {
 
 func (h *holdingAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *tools.WidgetPayload, sourceQueryFailed bool, kind string) (string, bool, error) {
 	id, redacted, err := h.inner.Accept(incidentID, agentInstanceID, text, refs, widget, sourceQueryFailed, kind)
-	if err != nil || !h.fe.attached {
+	if err != nil || !h.fe.attached || !h.fe.ensure() {
 		return id, redacted, err
 	}
 	res, merr := daemon.Send(h.fe.socketPath, daemon.Request{Op: "match", RoomKey: h.fe.roomKey, ReaderName: h.fe.reader, Text: text}, 2*time.Second)

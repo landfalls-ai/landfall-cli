@@ -814,3 +814,30 @@ func (c *stubClient) OpenArtifact(context.Context, string) ([]byte, string, erro
 	c.count("open_artifact")
 	return nil, "", nil
 }
+
+func TestThePersonFacingQueueOutlivesAModelReadAndClearsOnAHookDelivery(t *testing.T) {
+	// 2026-09-21: a background subagent's get_updates emptied the queue and the
+	// status line's "N new" dropped to zero while the person had been shown
+	// nothing. The person-facing queue is cleared only by a hook delivery.
+	s := New(Options{})
+	s.SetCursor(10)
+	for i := int64(11); i <= 13; i++ {
+		s.EnqueueEvent(context.Background(), client.Event{Seq: seq(i), Type: "chat.message"})
+	}
+	if len(s.Pending()) != 3 || len(s.PendingForHuman()) != 3 {
+		t.Fatalf("both queues should hold 3: model %d, person %d", len(s.Pending()), len(s.PendingForHuman()))
+	}
+	// A model consumer read the room itself (a pull it made).
+	s.AdvanceCursor([]client.Event{{Seq: seq(13), Type: "chat.message"}})
+	if len(s.Pending()) != 0 {
+		t.Fatalf("the model's queue should be empty after its own read, got %d", len(s.Pending()))
+	}
+	if len(s.PendingForHuman()) != 3 {
+		t.Fatalf("the person has been told nothing; their queue should still hold 3, got %d", len(s.PendingForHuman()))
+	}
+	// A hook delivered up to 12 into the person's own session.
+	s.ConsumeUpTo(12)
+	if got := s.PendingForHuman(); len(got) != 1 || *got[0].Seq != 13 {
+		t.Fatalf("after a hook delivery through 12, the person is owed only #13, got %v", got)
+	}
+}

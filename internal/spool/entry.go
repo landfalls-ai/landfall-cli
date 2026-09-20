@@ -78,6 +78,12 @@ type Entry struct {
 	Text string   `json:"text"`
 	Refs []string `json:"refs,omitempty"`
 
+	// Kind is the caller's OWN say on how this publishes ("note", "finding",
+	// "claim", "widget"), when it gave one. Empty means the worker classifies
+	// from the text as it always has. An explicit kind is a stronger signal
+	// than any marker: the agent said what this is, in the schema itself.
+	Kind string `json:"kind,omitempty"`
+
 	// Widget carries the structured values for a widget hand-off, when the
 	// caller supplied them explicitly (widgetType/title/data), rather than
 	// leaving the worker to infer one from free text. Nil for every other

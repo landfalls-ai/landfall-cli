@@ -841,3 +841,40 @@ func TestStatusPendingCountsOnlyWhatIsWorthTelling(t *testing.T) {
 		t.Fatalf("status pending = %d, want 1 (the chat message)", res.Pending)
 	}
 }
+
+// A session that keeps the person-facing queue answers status from it.
+type fakeHumanQueueSession struct {
+	fakeSession
+	told []client.Event
+}
+
+func (f *fakeHumanQueueSession) PendingForHuman() []client.Event { return f.told }
+
+func TestStatusCountsWhatThePersonHasNotBeenToldNotWhatAModelRead(t *testing.T) {
+	s := &fakeHumanQueueSession{
+		fakeSession: fakeSession{cursor: 9}, // the model's queue is empty: a subagent read everything
+		told: []client.Event{
+			{Seq: seq(7), Type: "chat.message"},
+			{Seq: seq(8), Type: "agent.query"},
+			{Seq: seq(9), Type: "edge.finding"},
+		},
+	}
+	res := HandleSocketRequest(StatusRequest(), s, HandleOptions{PID: 1}).(StatusResponse)
+	if res.Pending != 2 {
+		t.Fatalf("status pending = %d, want 2 (the chat message and the finding the person has not been told)", res.Pending)
+	}
+}
+
+func TestPeekPutsAMessageAddressedToAPersonFirst(t *testing.T) {
+	s := &fakeSession{
+		cursor: 1,
+		pending: []client.Event{
+			{Seq: seq(2), Type: "edge.finding", Payload: map[string]any{"text": "p99 latency spiked at 14:05"}},
+			{Seq: seq(3), Type: "chat.message", Payload: map[string]any{"text": "@alice can you confirm the TTL change?"}},
+		},
+	}
+	res := HandleSocketRequest(PeekRequest(), s, HandleOptions{PID: 1}).(PeekResponse)
+	if len(res.Digest) != 2 || !strings.Contains(res.Digest[0], "#3 chat.message") || !strings.Contains(res.Digest[0], "addressed") {
+		t.Fatalf("digest = %v, want the addressed chat line first and marked", res.Digest)
+	}
+}

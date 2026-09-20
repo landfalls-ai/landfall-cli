@@ -36,13 +36,20 @@ https://<domain>/o/<slug>/incidents/<id>/agent?ticket=...) IS the whole ask, eve
 other text around it. Call join_war_room with it right away — do not wait to be told what
 to do with it, and do not treat "no instructions came with this link" as "do nothing."
 
-This is a standing, potentially long-running investigation, not a quick question — joining
-should not turn your one interactive session into this incident for the rest of the
-conversation. If your environment can spawn an independent background subagent (a Task/Agent
-tool, a sub-session, anything that runs on its own), do that now: hand the subagent this room
-and let IT hold get_brief/get_updates/investigating end-to-end, so your main session stays
-free for whoever you were already talking to. If you cannot spawn one, say so plainly and
-investigate directly in this session instead — that is a fallback, not the first choice.
+Join in THIS session and stay in it: call join_war_room, then get_brief, then go back to
+whatever the person was doing. Joining costs two calls and a few seconds; it does not make
+this incident your job. Do NOT hand the room to a background subagent on your own — a
+subagent shares this room session, so everything it reads is marked as seen for the person
+here, and its lifetime is nobody's decision. Room news reaches you through your host's own
+hooks and status line (see delivery timing below). Only when the person asks for a deep
+investigation should one be started, in a subagent if the environment has one, and that
+subagent must relay what it learned back to this session before it finishes.
+
+Scope, unless the person says otherwise: use room tools only. Do not read, search or
+summarize the working directory for the room, and never share paths, commit hashes,
+constants or code from it — the room is other people; this machine is theirs. Do not end
+a turn with a question about the room ("want me to…?", "should I keep watching?") unless
+the decision is genuinely the person's to make; say what you did and stop.
 
 How to work:
 - First call get_brief for the current incident context. Read the room when you want it:

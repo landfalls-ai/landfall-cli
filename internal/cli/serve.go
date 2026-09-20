@@ -124,6 +124,9 @@ type liveSession struct {
 	// busy room is absorbed as it arrives rather than at the next sweep. Nil
 	// when no worker is running (durable state unavailable).
 	onEvent func()
+	// notify taps the person for a message addressed to someone by name —
+	// the one room event that deserves more than the status line.
+	notify *notifier
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -154,6 +157,9 @@ func (l *liveSession) start(ctx context.Context, sess *session.Session, cl sessi
 		// (the digest-catch-up format used elsewhere) — a live push and a
 		// digest replay are different moments and read differently in Node.
 		l.ui.Log("%s", narrate.DescribeEvent(evt))
+		if queued && l.notify != nil {
+			l.notify.Maybe(evt)
+		}
 
 		// Wake the worker NOW rather than letting it wait out its sweep. Its
 		// Nudge doc claimed this already happened; nothing actually called it,
@@ -318,7 +324,7 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		Log: func(msg string) { ui.Log("%s", msg) },
 	})
 
-	live := &liveSession{ui: ui, doorbell: doorbell, watcher: opts.Watcher, interval: opts.HeartbeatInterval}
+	live := &liveSession{ui: ui, doorbell: doorbell, watcher: opts.Watcher, interval: opts.HeartbeatInterval, notify: newNotifier()}
 
 	// The background bridge worker (spec D8/D9). Best-effort: if durable state
 	// is unavailable we log once and serve without it, rather than refusing to

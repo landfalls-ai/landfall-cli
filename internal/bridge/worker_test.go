@@ -452,3 +452,24 @@ func (f *fakePub) updateCount() int {
 	defer f.mu.Unlock()
 	return f.updateN
 }
+
+func TestAnExplicitKindFromTheCallerWinsOverTheClassifier(t *testing.T) {
+	// "the retry storm began at 14:22Z" classifies as a finding; the agent said
+	// it is a note (an answer to a teammate). The agent's word wins.
+	if Classify("the retry storm began at 14:22Z, answering bob") != KindFinding {
+		t.Fatal("precondition: the text alone classifies as a finding")
+	}
+	e := &spool.Entry{Text: "the retry storm began at 14:22Z, answering bob", Kind: "note"}
+	if got := kindFor(e); got != KindNote {
+		t.Fatalf("kindFor = %q, want note", got)
+	}
+	e.Kind = "remediation" // not a Kind: fall back to the classifier, never error
+	if got := kindFor(e); got != KindFinding {
+		t.Fatalf("unknown kind should fall back to the classifier, got %q", got)
+	}
+	e.Kind = ""
+	e.Widget = &spool.WidgetPayload{WidgetType: "stat", Title: "t", Data: map[string]any{}}
+	if got := kindFor(e); got != KindWidget {
+		t.Fatalf("a structured widget payload still wins, got %q", got)
+	}
+}

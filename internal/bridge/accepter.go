@@ -32,8 +32,8 @@ func NewAccepter(sp *spool.Spool, notify func()) *Accepter {
 
 // Accept records a hand-off durably and returns its id. No network I/O — it is
 // on share_with_room's calling path (FR-001).
-func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *tools.WidgetPayload, sourceQueryFailed bool) (string, bool, error) {
-	e, err := a.spool.AcceptWidget(incidentID, agentInstanceID, text, refs, toSpoolWidget(widget), sourceQueryFailed)
+func (a *Accepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *tools.WidgetPayload, sourceQueryFailed bool, kind string) (string, bool, error) {
+	e, err := a.spool.AcceptKind(incidentID, agentInstanceID, text, refs, toSpoolWidget(widget), sourceQueryFailed, kind)
 	if err != nil {
 		if errors.Is(err, spool.ErrFull) {
 			return "", false, tools.ErrQueueFull

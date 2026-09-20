@@ -4,13 +4,17 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
+	"github.com/landfalls-ai/landfall-cli/internal/bridge"
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
+	"github.com/landfalls-ai/landfall-cli/internal/tools"
 )
 
 // frontEnd is `serve` in daemon mode: this process is a READER of a room the
@@ -65,8 +69,9 @@ func (f *frontEnd) attach(cfg client.Config) (*daemon.Response, error) {
 		Room: &cfg,
 		Reader: &daemon.ReaderSpec{
 			Name: f.readerName(), Kind: string(daemon.KindAgent), Host: f.host,
-			WorkspaceKey: hooks.WorkspaceKey(f.ws.Dir()),
+			WorkspaceKey: hooks.WorkspaceKey(f.ws.Dir()), Workspace: f.ws.Dir(),
 		},
+		Fingerprints: computeFingerprints(f.ws.Dir()),
 	}, 5*time.Second)
 	if err != nil {
 		return nil, err
@@ -180,4 +185,46 @@ func (d *daemonSession) consume(upTo int64) int64 {
 		return -1
 	}
 	return *res.Cursor
+}
+
+// holdingAccepter is the daemon-mode Accepter: the spool accepts as always,
+// then the daemon is asked what the text names from this workspace. A match in
+// a room whose person has not allowed working-directory content holds the
+// entry (spec FR-008); share_with_room tells the agent so through HeldReporter.
+type holdingAccepter struct {
+	inner *bridge.Accepter
+	fe    *frontEnd
+	mu    sync.Mutex
+	held  map[string][]string
+}
+
+func newHoldingAccepter(inner *bridge.Accepter, fe *frontEnd) *holdingAccepter {
+	return &holdingAccepter{inner: inner, fe: fe, held: map[string][]string{}}
+}
+
+func (h *holdingAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *tools.WidgetPayload, sourceQueryFailed bool, kind string) (string, bool, error) {
+	id, redacted, err := h.inner.Accept(incidentID, agentInstanceID, text, refs, widget, sourceQueryFailed, kind)
+	if err != nil || !h.fe.attached {
+		return id, redacted, err
+	}
+	res, merr := daemon.Send(h.fe.socketPath, daemon.Request{Op: "match", RoomKey: h.fe.roomKey, ReaderName: h.fe.reader, Text: text}, 2*time.Second)
+	if merr != nil || res == nil || !res.Held {
+		return id, redacted, nil
+	}
+	if herr := h.inner.Hold(incidentID, id, res.Matched); herr != nil {
+		h.fe.log("hold: could not mark " + id + " held (" + herr.Error() + "); it will publish")
+		return id, redacted, nil
+	}
+	h.mu.Lock()
+	h.held[id] = res.Matched
+	h.mu.Unlock()
+	h.fe.log("held " + id + ": names the working directory (" + strings.Join(res.Matched, ", ") + "); `landfall allow-cwd` releases it")
+	return id, redacted, nil
+}
+
+// HeldReason implements tools.HeldReporter.
+func (h *holdingAccepter) HeldReason(id string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.held[id]
 }

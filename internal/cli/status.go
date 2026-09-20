@@ -17,6 +17,8 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
+	"github.com/landfalls-ai/landfall-cli/internal/spool"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -143,7 +145,21 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 	// room for this workspace, falls through to the per-pid sockets a
 	// fallback-mode serve still binds.
 	if res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "status", WorkspaceKey: hooks.WorkspaceKey(ws.Dir())}, hooks.SocketTimeout); err == nil && res.Line != "" {
-		_, _ = ui.Out.Write([]byte(res.Line))
+		line := res.Line
+		// Holds live in this checkout's spool (the worker's), not in the daemon:
+		// count them here so the person sees "· N held" where they are working.
+		if sp, serr := spool.Open(ws.Getenv, hooks.WorkspaceKey(ws.Dir())); serr == nil {
+			held := 0
+			for _, r := range res.Rooms {
+				if items, herr := sp.Held(r.IncidentID); herr == nil {
+					held += len(items)
+				}
+			}
+			if held > 0 {
+				line += fmt.Sprintf(" · %d held", held)
+			}
+		}
+		_, _ = ui.Out.Write([]byte(line))
 		return 0
 	}
 	line := FormatStatusLine(QueryStatus(ws))

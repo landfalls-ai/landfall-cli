@@ -54,6 +54,9 @@ type ReaderSpec struct {
 	Kind         string `json:"kind"`
 	Host         string `json:"host"`
 	WorkspaceKey string `json:"workspaceKey"`
+	// Workspace is the directory itself, for the doorbell the daemon writes
+	// there (hooks watch a file under the workspace, not a key).
+	Workspace string `json:"workspace,omitempty"`
 }
 
 // Fingerprints is what the front end computed from its working directory
@@ -86,6 +89,8 @@ type Response struct {
 	Matched         []string             `json:"matched,omitempty"`
 	EntryID         string               `json:"entryId,omitempty"`
 	Redacted        bool                 `json:"redacted,omitempty"`
+	// Allowed (match): the person has allowed working-directory content for the room.
+	Allowed bool `json:"allowed,omitempty"`
 }
 
 // RoomView is a room as `rooms`, `peek` and `status` describe it.
@@ -133,15 +138,15 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err != nil {
 			return fail("could not join the room: " + err.Error())
 		}
-		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey})
+		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace})
 		// An agent front end runs in the person's terminal: the person becomes a
 		// reader of this room at the same moment, at the same position, so what
 		// happens from here on is untold to THEM until a hook shows it.
 		if kind == KindAgent && req.Reader.WorkspaceKey != "" {
-			room.Attach(Reader{Name: TerminalReaderName(req.Reader.WorkspaceKey), Kind: KindTerminal, WorkspaceKey: req.Reader.WorkspaceKey})
+			room.Attach(Reader{Name: TerminalReaderName(req.Reader.WorkspaceKey), Kind: KindTerminal, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace})
 		}
 		if req.Fingerprints != nil {
-			d.setFingerprints(room.Key, req.Fingerprints)
+			d.setFingerprints(room.Key+"|"+req.Reader.WorkspaceKey, req.Fingerprints)
 		}
 		d.save()
 		frame, _ := room.Frame(ctx)
@@ -235,8 +240,11 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		d.requestStop()
 		return ok()
 
-	case "share", "allow-cwd", "held", "drop-held":
-		return d.handleHold(ctx, req)
+	case "match":
+		return d.match(req)
+
+	case "allow-cwd":
+		return d.allowCwd(req)
 	}
 	return fail("unknown op " + strings.TrimSpace(fmt.Sprint(req.Op)))
 }
@@ -269,7 +277,7 @@ func (d *Daemon) peek(req Request) Response {
 		}
 		res.Rooms = append(res.Rooms, RoomView{
 			RoomKey: room.Key, IncidentID: room.Config.IncidentID, Slug: room.Config.Slug, Connection: room.Connection,
-			Count: len(untold), Held: d.heldCount(room.Key), MaxSeq: room.MaxSeq(), Cursor: rd.Cursor, Digest: digest, Events: untold,
+			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: rd.Cursor, Digest: digest, Events: untold,
 		})
 	}
 	return res
@@ -328,11 +336,59 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 	var res Response
 	if uerr := json.Unmarshal(line, &req); uerr != nil {
 		res = fail("bad request: " + uerr.Error())
+	} else if req.Op == "subscribe" {
+		d.subscribe(ctx, conn, req)
+		return
 	} else {
 		res = d.handler.Handle(ctx, req)
 	}
 	body, _ := json.Marshal(res)
 	_, _ = conn.Write(append(body, '\n'))
+}
+
+// subscribe is the one long-lived connection (research R10): substantive
+// events of a room stream to the caller as they arrive, one JSON line each.
+// The reader's cursor is NOT moved by this stream; the panel or push host
+// says what it has shown with consume/delta, as every other reader does.
+func (d *Daemon) subscribe(ctx context.Context, conn net.Conn, req Request) {
+	room := d.room(req.RoomKey)
+	if room == nil {
+		body, _ := json.Marshal(fail("no such room"))
+		_, _ = conn.Write(append(body, '\n'))
+		return
+	}
+	_ = conn.SetDeadline(time.Time{})
+	ch, unsubscribe := room.Subscribe()
+	defer unsubscribe()
+	ack := ok()
+	ack.RoomKey, ack.Connection = room.Key, room.Connection
+	body, _ := json.Marshal(ack)
+	if _, err := conn.Write(append(body, '\n')); err != nil {
+		return
+	}
+	// A closed peer is noticed on the next write; a read in the background
+	// notices it sooner and ends the loop.
+	gone := make(chan struct{})
+	go func() {
+		_, _ = bufio.NewReader(conn).ReadByte()
+		close(gone)
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-gone:
+			return
+		case evt := <-ch:
+			line, err := json.Marshal(map[string]any{"seq": evt.SeqOr(-1), "event": evt})
+			if err != nil {
+				continue
+			}
+			if _, err := conn.Write(append(line, '\n')); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // Send is the client side: one request, one answer, over the daemon socket.

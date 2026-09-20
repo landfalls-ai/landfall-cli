@@ -98,6 +98,17 @@ type Entry struct {
 	// believed they shared is not what the room will see, and finding that out
 	// later, from the timeline, would be worse.
 	Redacted bool `json:"redacted,omitempty"`
+
+	// SourceQueryFailed is the caller's OWN self-report, at hand-off time,
+	// that this text/widget was produced after one of its own tool calls
+	// failed (a service the local environment doesn't emulate, a malformed
+	// response, a transient disconnect). Never independently verified — the
+	// same trust level already given to the hand-off's text itself. Carried
+	// through to publication so the room's admission gate can screen it
+	// (Landfall feature 20260920-132909); absent/false for every hand-off
+	// that doesn't set it, which is every hand-off from before this field
+	// existed.
+	SourceQueryFailed bool `json:"source_query_failed,omitempty"`
 }
 
 // WidgetPayload is the structured content of a widget hand-off — the values

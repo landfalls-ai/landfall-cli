@@ -22,7 +22,12 @@ type Accepter interface {
 	// redacted reports that the text was altered on the way in (FR-010). The
 	// caller is expected to SAY so: quietly rewriting what someone wrote means
 	// they find out later, from the timeline, which is worse.
-	Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload) (id string, redacted bool, err error)
+	//
+	// sourceQueryFailed is share_with_room's caller's OWN self-report that
+	// this hand-off was produced after one of its own tool calls failed —
+	// never independently verified here, carried through so the room's
+	// admission gate can screen it (Landfall feature 20260920-132909).
+	Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool) (id string, redacted bool, err error)
 }
 
 // WidgetPayload is the structured content of a widget hand-off, as
@@ -88,7 +93,7 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 
 		cfg := cl.Config()
-		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widgetOf(args))
+		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widgetOf(args), sourceQueryFailedOf(args))
 		switch {
 		case errors.Is(err, ErrQueueFull):
 			// FR-012: never silent. A responder must not believe a finding
@@ -106,6 +111,16 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		}
 		return "shared — the room will have this shortly. Carry on; nothing to follow up.", nil
 	}
+}
+
+// sourceQueryFailedOf reads the optional self-report that this hand-off
+// followed a failed tool call (Landfall feature 20260920-132909). Absent or
+// not literally `true` is `false` — only an explicit, affirmative self-report
+// counts, the same way `widgetOf` requires an explicit structured value
+// rather than inferring one.
+func sourceQueryFailedOf(args map[string]any) bool {
+	v, _ := args["sourceQueryFailed"].(bool)
+	return v
 }
 
 // refsOf pulls the optional local references out of the argument map,

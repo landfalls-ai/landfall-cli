@@ -80,6 +80,7 @@ type Room struct {
 	readers map[string]*Reader
 
 	lastReaderLeftAt time.Time
+	openedAt         time.Time
 	deps             Deps
 	cancel           context.CancelFunc
 	stopWatch        func()
@@ -104,6 +105,7 @@ func OpenRoom(ctx context.Context, cfg client.Config, deps Deps) (*Room, error) 
 		client:     cl,
 		readers:    map[string]*Reader{},
 		deps:       deps,
+		openedAt:   deps.now(),
 	}
 	if res != nil {
 		r.AgentInstanceID = res.AgentInstanceID
@@ -296,12 +298,19 @@ func (r *Room) ConnectedReaders() int {
 	return r.connectedLocked()
 }
 
-// IdleSince is when the last reader left, or zero while any is attached.
+// IdleSince is when the last reader left, or zero while any is attached. A
+// room that has had no attached reader since it was opened (one restored from
+// state after a stop, whose readers came back detached) counts as idle since it
+// was opened: otherwise a daemon restored with nobody reading would live for
+// ever, holding a phantom presence in the room (found live, 2026-09-21).
 func (r *Room) IdleSince() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.connectedLocked() > 0 {
 		return time.Time{}
+	}
+	if r.lastReaderLeftAt.IsZero() {
+		return r.openedAt
 	}
 	return r.lastReaderLeftAt
 }

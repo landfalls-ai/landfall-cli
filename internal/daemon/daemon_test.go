@@ -390,3 +390,24 @@ func TestTheDaemonRingsTheDoorbellForAWorkspaceOnTheFirstUntoldItem(t *testing.T
 		t.Fatalf("the first untold substantive item must ring the workspace's doorbell: %v", err)
 	}
 }
+
+func TestARestoredRoomNobodyReadsIsIdleFromTheStart(t *testing.T) {
+	edge := &fakeEdge{}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	past := time.Now().Add(-time.Hour)
+	st := &State{V: StateVersion, Rooms: map[string]RoomState{
+		"http://x/o/acme/inc-1": {
+			Config:  client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"},
+			Readers: map[string]*Reader{"claude-code:ws:1": {Name: "claude-code:ws:1", Kind: KindAgent, Cursor: 3, LastSeenAt: past}},
+		},
+	}}
+	d.restore(context.Background(), st)
+	if !d.idle() {
+		// grace in the test daemon is 200 ms; openedAt is "now", so wait it out
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !d.idle() {
+		t.Fatal("a restored room with every reader detached must count as idle, or the daemon lives for ever")
+	}
+}

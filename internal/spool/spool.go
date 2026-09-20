@@ -89,7 +89,7 @@ func (s *Spool) path(incidentID string) string {
 // guarantee: the process can die between the write and the flush, and the
 // responder is told their finding was accepted when it is gone.
 func (s *Spool) Accept(incidentID, agentInstanceID, text string, refs []string) (*Entry, error) {
-	return s.AcceptWidget(incidentID, agentInstanceID, text, refs, nil)
+	return s.AcceptWidget(incidentID, agentInstanceID, text, refs, nil, false)
 }
 
 // AcceptWidget is Accept plus an optional structured widget payload — the
@@ -97,7 +97,15 @@ func (s *Spool) Accept(incidentID, agentInstanceID, text string, refs []string) 
 // instead of being reconstructed later from a free-text marker (classify.go).
 // widget is nil for every non-widget hand-off, and Accept above is exactly
 // this call with widget always nil, so every existing caller is unaffected.
-func (s *Spool) AcceptWidget(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload) (*Entry, error) {
+//
+// sourceQueryFailed is the caller's OWN self-report that whatever it is
+// about to hand off was produced after one of its tool calls failed — never
+// independently verified here, the same trust level already given to the
+// hand-off's text itself. Carried through to the room so a failed-tool-call
+// finding/claim can be screened out of shared context rather than accepted
+// as fact (Landfall feature 20260920-132909). false for every existing
+// caller, so nothing changes for a hand-off that never sets it.
+func (s *Spool) AcceptWidget(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool) (*Entry, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -119,14 +127,15 @@ func (s *Spool) AcceptWidget(incidentID, agentInstanceID, text string, refs []st
 	// crash, a restart and a reboot before it publishes; redacting on the way
 	// out would mean the raw credential was durably stored the whole time.
 	e := &Entry{
-		ID:              newID(),
-		IncidentID:      incidentID,
-		AgentInstanceID: agentInstanceID,
-		Text:            Redact(text),
-		Refs:            RedactAll(refs),
-		Widget:          widget,
-		State:           Queued,
-		CreatedAt:       time.Now().UTC(),
+		ID:                newID(),
+		IncidentID:        incidentID,
+		AgentInstanceID:   agentInstanceID,
+		Text:              Redact(text),
+		Refs:              RedactAll(refs),
+		Widget:            widget,
+		SourceQueryFailed: sourceQueryFailed,
+		State:             Queued,
+		CreatedAt:         time.Now().UTC(),
 	}
 	// Both halves of the input, not just the text. A credential can arrive in a
 	// ref alone — a URL with inline creds, say — and reporting "nothing was

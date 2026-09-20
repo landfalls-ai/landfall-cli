@@ -286,6 +286,14 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 	if len(e.Refs) > 0 {
 		body["refs"] = e.Refs
 	}
+	// Landfall feature 20260920-132909: the responder's/agent's own self-report
+	// that this hand-off followed a failed tool call. Only an affirmative
+	// `true` is ever forwarded — the server-side mapping treats the key's mere
+	// presence as meaningful, so an explicit `false` is indistinguishable from
+	// omitting it and would be noise on the wire.
+	if e.SourceQueryFailed {
+		body["sourceQueryFailed"] = true
+	}
 	// The fix for the empty-tile problem: without this, a KindWidget hand-off
 	// only ever carried {text, publishedVia} — the server-side mapping
 	// (edge-consolidation's contributionEvent) defaults widgetType to "stat",

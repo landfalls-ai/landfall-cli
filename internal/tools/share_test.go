@@ -10,19 +10,20 @@ import (
 )
 
 type fakeAccepter struct {
-	incidentID string
-	agentID    string
-	text       string
-	refs       []string
-	widget     *WidgetPayload
-	err        error
-	redacted   bool
-	calls      int
+	incidentID        string
+	agentID           string
+	text              string
+	refs              []string
+	widget            *WidgetPayload
+	sourceQueryFailed bool
+	err               error
+	redacted          bool
+	calls             int
 }
 
-func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload) (string, bool, error) {
+func (f *fakeAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *WidgetPayload, sourceQueryFailed bool) (string, bool, error) {
 	f.calls++
-	f.incidentID, f.agentID, f.text, f.refs, f.widget = incidentID, agentInstanceID, text, refs, widget
+	f.incidentID, f.agentID, f.text, f.refs, f.widget, f.sourceQueryFailed = incidentID, agentInstanceID, text, refs, widget, sourceQueryFailed
 	if f.err != nil {
 		return "", false, f.err
 	}
@@ -215,6 +216,57 @@ func TestShareWithoutWidgetArgumentPassesNil(t *testing.T) {
 	}
 	if acc.widget != nil {
 		t.Fatalf("widget = %+v, want nil for a plain hand-off", acc.widget)
+	}
+}
+
+// TestShareWithSourceQueryFailedPassesItThrough — Landfall feature
+// 20260920-132909: the caller's own self-report that this hand-off followed a
+// failed tool call reaches the Accepter, so the room's admission gate can
+// screen it rather than treat it as verified fact.
+func TestShareWithSourceQueryFailedPassesItThrough(t *testing.T) {
+	acc := &fakeAccepter{}
+	sess := session.New(session.Options{Client: &fakeClient{}})
+	tool := shareTool(t, sess, acc)
+
+	_, err := tool.Handler(context.Background(), map[string]any{
+		"text":              "ecs describeServices failed, service looks unhealthy",
+		"sourceQueryFailed": true,
+	})
+	if err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if !acc.sourceQueryFailed {
+		t.Fatal("sourceQueryFailed argument was dropped, not passed to the Accepter")
+	}
+}
+
+// TestShareWithoutSourceQueryFailedDefaultsFalse pins the default: a hand-off
+// that never mentions it must not be silently treated as failure-derived.
+func TestShareWithoutSourceQueryFailedDefaultsFalse(t *testing.T) {
+	acc := &fakeAccepter{}
+	sess := session.New(session.Options{Client: &fakeClient{}})
+	tool := shareTool(t, sess, acc)
+
+	if _, err := tool.Handler(context.Background(), map[string]any{"text": "p95 rose"}); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if acc.sourceQueryFailed {
+		t.Fatal("sourceQueryFailed = true, want false when the argument is absent")
+	}
+}
+
+// TestShareWithSourceQueryFailedFalseIsExplicit pins that a literal `false` is
+// treated identically to absence — an explicit non-affirmation, not a signal.
+func TestShareWithSourceQueryFailedFalseIsExplicit(t *testing.T) {
+	acc := &fakeAccepter{}
+	sess := session.New(session.Options{Client: &fakeClient{}})
+	tool := shareTool(t, sess, acc)
+
+	if _, err := tool.Handler(context.Background(), map[string]any{"text": "p95 rose", "sourceQueryFailed": false}); err != nil {
+		t.Fatalf("share: %v", err)
+	}
+	if acc.sourceQueryFailed {
+		t.Fatal("sourceQueryFailed = true, want false for an explicit false")
 	}
 }
 

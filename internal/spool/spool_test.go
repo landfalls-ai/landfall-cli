@@ -93,6 +93,42 @@ func TestAcceptIsDurableImmediately(t *testing.T) {
 	}
 }
 
+// TestAcceptWidgetPersistsSourceQueryFailed — Landfall feature 20260920-132909.
+// The self-report survives a crash exactly like the rest of the entry (FR-008):
+// it is on disk immediately, and reading the entry back gives the same value.
+func TestAcceptWidgetPersistsSourceQueryFailed(t *testing.T) {
+	s := open(t)
+	e, err := s.AcceptWidget("inc-1", "agent-1", "ecs describeServices failed", nil, nil, true)
+	if err != nil {
+		t.Fatalf("AcceptWidget: %v", err)
+	}
+	if !e.SourceQueryFailed {
+		t.Fatal("SourceQueryFailed = false on the entry Accept returned")
+	}
+
+	pending, err := s.Pending("inc-1")
+	if err != nil {
+		t.Fatalf("Pending: %v", err)
+	}
+	if len(pending) != 1 || !pending[0].SourceQueryFailed {
+		t.Fatalf("Pending() = %+v, want one entry with SourceQueryFailed=true", pending)
+	}
+}
+
+// TestAcceptDefaultsSourceQueryFailedFalse pins that the plain Accept() path
+// (every pre-existing caller) is byte-identical: no hand-off is silently
+// treated as failure-derived just because this field now exists.
+func TestAcceptDefaultsSourceQueryFailedFalse(t *testing.T) {
+	s := open(t)
+	e, err := s.Accept("inc-1", "agent-1", "p95 rose", nil)
+	if err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	if e.SourceQueryFailed {
+		t.Fatal("SourceQueryFailed = true from the plain Accept() path, want false")
+	}
+}
+
 // TestSurvivesRestartAndReportsUnknownOutcome covers the window D9's
 // reconciliation exists for: the process died AFTER claiming an entry, so the
 // publish may or may not have landed.

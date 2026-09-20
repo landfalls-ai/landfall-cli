@@ -429,6 +429,13 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 					"title":      strProp(""),
 					"data":       map[string]any{"type": "object", "description": widgetShapes},
 				}, "widgetType", "title", "data"),
+				"sourceQueryFailed": map[string]any{
+					"type": "boolean",
+					"description": "Set true when what you're sharing was produced after one of YOUR OWN tool calls failed " +
+						"(a service the local environment doesn't emulate, a malformed response, a timeout). This is your own " +
+						"self-report — it is never independently checked — and it keeps the room's admission gate from treating " +
+						"a failure-derived finding as verified fact. Omit or leave false for anything backed by a successful query.",
+				},
 			}, "text"),
 			Handler: b.shareWithRoom(acc),
 		})

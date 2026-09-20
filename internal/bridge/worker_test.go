@@ -176,6 +176,62 @@ func TestPublishesQueuedHandOffs(t *testing.T) {
 	}
 }
 
+// TestPublishForwardsSourceQueryFailed — Landfall feature 20260920-132909: the
+// caller's self-report that this hand-off followed a failed tool call reaches
+// the wire, under the SAME key name the server's edge-consolidation mapping
+// reads (see internal/bridge/worker.go's own comment on this line).
+func TestPublishForwardsSourceQueryFailed(t *testing.T) {
+	sp, mi, _ := rig(t)
+	if _, err := sp.AcceptWidget("inc-1", "agent-1", "ecs describeServices failed", nil, nil, true); err != nil {
+		t.Fatalf("AcceptWidget: %v", err)
+	}
+
+	pub := &fakePub{instanceID: "agent-1"}
+	w := New(sp, mi, nil)
+	w.Interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w.Start(ctx, pub, client.Config{IncidentID: "inc-1"})
+	defer w.Stop()
+
+	waitFor(t, func() bool { return pub.count() == 1 }, "the hand-off to reach the room")
+	pub.mu.Lock()
+	body := pub.published[0]
+	pub.mu.Unlock()
+	if v, _ := body["sourceQueryFailed"].(bool); !v {
+		t.Fatalf("published body = %+v, want sourceQueryFailed: true", body)
+	}
+}
+
+// TestPublishOmitsSourceQueryFailedWhenNotSet pins the default: the key must
+// be ABSENT, not `false` — see worker.go's own comment on why a present
+// `false` would be wire noise indistinguishable from omission server-side,
+// and the point of this test is that ordinary hand-offs are unaffected.
+func TestPublishOmitsSourceQueryFailedWhenNotSet(t *testing.T) {
+	sp, mi, _ := rig(t)
+	if _, err := sp.Accept("inc-1", "agent-1", "p95 rose", nil); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+
+	pub := &fakePub{instanceID: "agent-1"}
+	w := New(sp, mi, nil)
+	w.Interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	w.Start(ctx, pub, client.Config{IncidentID: "inc-1"})
+	defer w.Stop()
+
+	waitFor(t, func() bool { return pub.count() == 1 }, "the hand-off to reach the room")
+	pub.mu.Lock()
+	body := pub.published[0]
+	pub.mu.Unlock()
+	if _, present := body["sourceQueryFailed"]; present {
+		t.Fatalf("published body = %+v, want no sourceQueryFailed key at all", body)
+	}
+}
+
 // TestReconcileAcksWhatAlreadyLanded is the SC-004 case that matters: the
 // process died AFTER the server accepted the publish but BEFORE the local ack.
 // Republishing would duplicate a finding in the room.

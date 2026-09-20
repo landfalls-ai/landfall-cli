@@ -149,7 +149,9 @@ func WorkspaceKey(cwd string) string {
 // so fall back to ~/.local/state/landfall/run/. Shared with stage.go, which in
 // Node repeats the same expression (`stage.mjs:48-57`) — one copy here so the
 // two can never drift apart about which directory they mean.
-func runtimeDir(ws Workspace) string {
+// RuntimeDir is exported for internal/daemon (the daemon socket, lock, log and
+// state live directly under it; per-workspace hook sockets live one level down).
+func RuntimeDir(ws Workspace) string {
 	base := ws.Getenv("XDG_RUNTIME_DIR")
 	if base != "" {
 		return filepath.Join(base, "landfall")
@@ -172,7 +174,7 @@ type SocketLocation struct {
 // SocketLocationFor resolves the socket directory for a workspace.
 func SocketLocationFor(ws Workspace) SocketLocation {
 	key := WorkspaceKey(ws.Dir())
-	return SocketLocation{Key: key, Dir: filepath.Join(runtimeDir(ws), key)}
+	return SocketLocation{Key: key, Dir: filepath.Join(RuntimeDir(ws), key)}
 }
 
 // NameFor is the socket filename for a pid (or a `<pid>-<n>` collision name).
@@ -198,7 +200,8 @@ func (l SocketLocation) IsOurs(name string) bool { return strings.HasSuffix(name
 //
 // Do NOT "fix" an over-long base by shortening the key or changing the layout:
 // both are pinned by FR-007's cross-implementation discovery requirement.
-func maxSocketPathLen() int {
+// MaxSocketPathLen is exported for internal/daemon, which binds its own socket.
+func MaxSocketPathLen() int {
 	switch runtime.GOOS {
 	case "linux", "android":
 		return 108
@@ -726,7 +729,7 @@ func StartHookSocket(ctx context.Context, s SocketSession, opts StartOptions) *B
 		// over-long $XDG_RUNTIME_DIR (or $HOME) is the single most likely reason
 		// a bind fails on macOS, and "invalid argument" is not a diagnosable
 		// message for it.
-		if lim := maxSocketPathLen(); len(socketPath) >= lim {
+		if lim := MaxSocketPathLen(); len(socketPath) >= lim {
 			opts.log(fmt.Sprintf(
 				"hook socket unavailable (path %q is %d bytes, over the %d-byte sockaddr_un.sun_path limit on %s) — lifecycle hooks will not see this session.",
 				socketPath, len(socketPath), lim, runtime.GOOS))
@@ -932,4 +935,14 @@ func QueryHookSockets(req SocketRequest, ws Workspace, timeout time.Duration) []
 		answers = append(answers, SocketAnswer{SocketPath: sockets[i], Response: *resp})
 	}
 	return answers
+}
+
+// DaemonSocketPath is where the per-user room daemon listens:
+// <RuntimeDir>/daemon.sock. One per user per machine, not per workspace and
+// not per process — that is the whole point of the daemon (feature
+// 20260922-local-room-daemon). The same length rule as the hook sockets
+// applies; a base directory too long to bind is reported by the daemon, never
+// silently truncated.
+func DaemonSocketPath(ws Workspace) string {
+	return filepath.Join(RuntimeDir(ws), "daemon.sock")
 }

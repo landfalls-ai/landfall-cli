@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
+	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
@@ -127,6 +128,9 @@ type liveSession struct {
 	// notify taps the person for a message addressed to someone by name —
 	// the one room event that deserves more than the status line.
 	notify *notifier
+	// noBeat: in daemon mode the daemon beats presence for the machine; this
+	// process must not add a second heartbeat under the same instance id.
+	noBeat bool
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -138,7 +142,9 @@ func (l *liveSession) start(ctx context.Context, sess *session.Session, cl sessi
 	l.stop()
 
 	liveCtx, cancel := context.WithCancel(ctx)
-	go beat(liveCtx, cl, l.interval)
+	if !l.noBeat {
+		go beat(liveCtx, cl, l.interval)
+	}
 
 	unwatch := l.watcher.Watch(liveCtx, cfg, cl.AgentInstanceID, func(evt client.Event) {
 		// #227: ring the doorbell on the 0 → non-empty EDGE only. A session that
@@ -242,6 +248,11 @@ type serveOptions struct {
 	// Version is the MCP serverInfo version. Empty means the linker-stamped
 	// buildVersion.
 	Version string
+	// EnsureDaemon decides whether this serve runs as a front end of the room
+	// daemon (feature 20260922-local-room-daemon). Nil means daemon.EnsureRunning
+	// with the default detached spawn; tests inject a stub. LANDFALL_DAEMON=0
+	// forces the per-process path regardless.
+	EnsureDaemon func(ws hooks.Workspace, log func(string)) bool
 	// HeartbeatInterval is keepLive's beat. Zero means HEARTBEAT_MS.
 	HeartbeatInterval time.Duration
 }
@@ -282,6 +293,9 @@ func (o serveOptions) withDefaults(ui *UI) serveOptions {
 	}
 	if o.HeartbeatInterval == 0 {
 		o.HeartbeatInterval = heartbeatInterval
+	}
+	if o.EnsureDaemon == nil {
+		o.EnsureDaemon = func(ws hooks.Workspace, log func(string)) bool { return daemon.EnsureRunning(ws, nil, log) }
 	}
 	return o
 }
@@ -326,6 +340,22 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	live := &liveSession{ui: ui, doorbell: doorbell, watcher: opts.Watcher, interval: opts.HeartbeatInterval, notify: newNotifier()}
 
+	// Daemon mode (feature 20260922-local-room-daemon): this process becomes a
+	// reader of a room the per-user daemon owns. The daemon joins once for the
+	// machine, beats presence, watches the realtime socket and keeps every
+	// reader's cursor; this process keeps answering MCP from its own HTTP
+	// client. When no daemon can run, everything below is skipped and serve is
+	// exactly what it was: one process, one cursor (spec FR-006).
+	var fe *frontEnd
+	if opts.EnsureDaemon(opts.Workspace, func(msg string) { ui.Log("%s", msg) }) {
+		fe = newFrontEnd(opts.Workspace, func(msg string) { ui.Log("%s", msg) })
+		opts.NewClient = fe.clientFactory
+		live.watcher = noopWatcher{}
+		live.noBeat = true
+		live.notify = nil // the daemon notifies for the machine
+		ui.Log("room daemon: this session will attach as a reader (cursor kept by the daemon)")
+	}
+
 	// The background bridge worker (spec D8/D9). Best-effort: if durable state
 	// is unavailable we log once and serve without it, rather than refusing to
 	// start — a responder mid-incident needs MCP more than they need the queue.
@@ -366,6 +396,10 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		},
 	})
 
+	if fe != nil {
+		sess.SetFlushOverride(fe.delta)
+	}
+
 	cfg, err := opts.Resolve(stopCtx, ui, link)
 	if err != nil {
 		return err
@@ -389,9 +423,18 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 	// StartHookSocket returns nil (having already logged why) when binding is
 	// impossible, and a serve process that cannot offer the socket must still
 	// serve MCP. Deliberately NOT treated as an error here.
-	sock := hooks.StartHookSocket(stopCtx, sess, hooks.StartOptions{
+	var sockSession hooks.SocketSession = sess
+	consume := func(_ hooks.SocketSession, upTo int64) int64 { return sess.ConsumeUpTo(upTo) }
+	if fe != nil {
+		// Research R11: the per-pid protocol-1 socket stays bound and answers
+		// from the daemon's view of this workspace's TERMINAL reader.
+		ds := &daemonSession{fe: fe, sess: sess}
+		sockSession = ds
+		consume = func(_ hooks.SocketSession, upTo int64) int64 { return ds.consume(upTo) }
+	}
+	sock := hooks.StartHookSocket(stopCtx, sockSession, hooks.StartOptions{
 		Workspace: opts.Workspace,
-		Consume:   func(_ hooks.SocketSession, upTo int64) int64 { return sess.ConsumeUpTo(upTo) },
+		Consume:   consume,
 		Log:       func(msg string) { ui.Log("%s", msg) },
 	})
 	if sock != nil {
@@ -402,6 +445,11 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 	serveErr := serveStdio(stopCtx, opts.In, opts.Out, mcp.Options{
 		Tools:      tools.BuildWithAccepter(sess, accepter),
 		ServerInfo: &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
+		OnInitialize: func(ci mcp.ClientInfo) {
+			if fe != nil {
+				fe.onInitialize(ci)
+			}
+		},
 		// Must match the surface actually registered — instructions naming
 		// tools that do not exist send the agent hunting for them mid-incident.
 		Instructions: tools.InstructionsFor(accepter != nil),

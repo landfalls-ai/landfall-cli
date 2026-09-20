@@ -55,7 +55,20 @@ const (
 	Publishing State = "publishing"
 	Published  State = "published"
 	Abandoned  State = "abandoned"
+	// Held is a hand-off the room daemon stopped because it names the person's
+	// working directory (feature 20260922-local-room-daemon, FR-008). It is
+	// not queued, so the worker never publishes it; it leaves this state only
+	// by the person's hand: `landfall allow-cwd` → Queued, `landfall held drop`
+	// → Abandoned. A room change abandons it exactly as it abandons Queued.
+	Held State = "held"
 )
+
+// HeldReason is why an entry is Held: what in its text matched the working
+// directory, shown to the person verbatim so the hold is explainable.
+type HeldReason struct {
+	Matched []string  `json:"matched"`
+	HeldAt  time.Time `json:"held_at"`
+}
 
 // Entry is one hand-off awaiting publication.
 type Entry struct {
@@ -83,6 +96,9 @@ type Entry struct {
 	// from the text as it always has. An explicit kind is a stronger signal
 	// than any marker: the agent said what this is, in the schema itself.
 	Kind string `json:"kind,omitempty"`
+
+	// Held is set while State == Held (see HeldReason); nil otherwise.
+	Held *HeldReason `json:"held,omitempty"`
 
 	// Widget carries the structured values for a widget hand-off, when the
 	// caller supplied them explicitly (widgetType/title/data), rather than

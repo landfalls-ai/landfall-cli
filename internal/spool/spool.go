@@ -315,7 +315,7 @@ func (s *Spool) Abandon(incidentID string) (int, error) {
 
 	n := 0
 	for _, e := range entries {
-		if e.State == Queued || e.State == Publishing {
+		if e.State == Queued || e.State == Publishing || e.State == Held {
 			if err := s.mark(incidentID, e.ID, func(x *Entry) { x.State = Abandoned }); err != nil {
 				return n, err
 			}
@@ -401,4 +401,68 @@ func safeName(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// --- the working-directory hold (feature 20260922-local-room-daemon) --------
+
+// Hold stops a queued entry because its text names the person's working
+// directory. The worker never sees a Held entry; only the person's own command
+// releases or drops it.
+func (s *Spool) Hold(incidentID, id string, matched []string) error {
+	return s.mark(incidentID, id, func(e *Entry) {
+		e.State = Held
+		e.Held = &HeldReason{Matched: append([]string(nil), matched...), HeldAt: time.Now().UTC()}
+	})
+}
+
+// Held lists a room's held entries, oldest first.
+func (s *Spool) Held(incidentID string) ([]*Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.load(incidentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Entry, 0)
+	for _, e := range entries {
+		if e.State == Held {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// ReleaseHeld requeues every held entry of a room — the person allowed
+// working-directory content for it — and returns how many.
+func (s *Spool) ReleaseHeld(incidentID string) (int, error) {
+	held, err := s.Held(incidentID)
+	if err != nil {
+		return 0, err
+	}
+	for _, e := range held {
+		if err := s.mark(incidentID, e.ID, func(x *Entry) { x.State = Queued; x.Held = nil }); err != nil {
+			return 0, err
+		}
+	}
+	return len(held), nil
+}
+
+// DropHeld abandons one held entry at the person's request. Refused for an
+// entry that is not held: dropping queued work is not what this command is for.
+func (s *Spool) DropHeld(incidentID, id string) error {
+	s.mu.Lock()
+	entries, err := s.load(incidentID)
+	s.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if e.ID == id {
+			if e.State != Held {
+				return fmt.Errorf("entry %s is %s, not held", id, e.State)
+			}
+			return s.mark(incidentID, id, func(x *Entry) { x.State = Abandoned })
+		}
+	}
+	return fmt.Errorf("no entry %s in incident %s", id, incidentID)
 }

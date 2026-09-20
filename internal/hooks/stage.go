@@ -54,7 +54,7 @@ const StageFile = "pending-digest.json"
 // StageDir is the runtime directory this workspace's stage lives in — the SAME
 // 0700 directory as the sockets, not the repository.
 func StageDir(ws Workspace) string {
-	return filepath.Join(runtimeDir(ws), WorkspaceKey(ws.Dir()))
+	return filepath.Join(RuntimeDir(ws), WorkspaceKey(ws.Dir()))
 }
 
 // StagePath is the stage file for one workspace.

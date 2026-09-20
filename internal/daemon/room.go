@@ -60,12 +60,6 @@ func (d Deps) now() time.Time {
 	return time.Now()
 }
 
-func (d Deps) log(msg string) {
-	if d.Log != nil {
-		d.Log(msg)
-	}
-}
-
 // Room is one incident this machine has joined, owned by the daemon.
 type Room struct {
 	mu sync.Mutex

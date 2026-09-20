@@ -12,7 +12,6 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
-	"github.com/landfalls-ai/landfall-cli/internal/realtime"
 )
 
 // ProtocolVersion is the daemon socket's `v`. It is 2 because the per-pid hook
@@ -326,7 +325,7 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	var req Request
-	res := Response{}
+	var res Response
 	if uerr := json.Unmarshal(line, &req); uerr != nil {
 		res = fail("bad request: " + uerr.Error())
 	} else {
@@ -370,6 +369,3 @@ func Send(socketPath string, req Request, timeout time.Duration) (*Response, err
 	}
 	return &res, nil
 }
-
-// isPlumbingEvent is a tiny seam for tests.
-var isPlumbingEvent = realtime.IsPlumbing

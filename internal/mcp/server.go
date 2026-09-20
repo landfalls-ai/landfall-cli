@@ -42,6 +42,11 @@ type ServerInfo struct {
 type Options struct {
 	Tools      []Tool
 	ServerInfo *ServerInfo
+	// OnInitialize, when set, receives the client's self-description from the
+	// `initialize` request. Until 2026-09-21 the server answered `initialize`
+	// without reading its params at all; the room daemon names each reader by
+	// host (claude-code, cursor, codex), which is what this hands over.
+	OnInitialize func(ClientInfo)
 	// Instructions carries the fixed standing guidance the MCP client folds
 	// into the model's context on connect. The key is OMITTED entirely when
 	// empty — never emitted as null or "".
@@ -109,6 +114,18 @@ type CallToolResult struct {
 	IsError bool      `json:"isError,omitempty"`
 }
 
+// ClientInfo is the client's self-description on `initialize`.
+type ClientInfo struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
+}
+
+// InitializeParams is the part of `initialize`'s params the server reads.
+type InitializeParams struct {
+	ProtocolVersion string     `json:"protocolVersion"`
+	ClientInfo      ClientInfo `json:"clientInfo"`
+}
+
 type callParams struct {
 	Name      string         `json:"name"`
 	Arguments map[string]any `json:"arguments"`
@@ -137,6 +154,12 @@ func HandleMessage(ctx context.Context, msg *Request, opts Options) *Response {
 
 	switch msg.Method {
 	case "initialize":
+		if opts.OnInitialize != nil && len(msg.Params) > 0 {
+			var p InitializeParams
+			if json.Unmarshal(msg.Params, &p) == nil {
+				opts.OnInitialize(p.ClientInfo)
+			}
+		}
 		info := ServerInfo{Name: "landfall", Version: "0.1.0"}
 		if opts.ServerInfo != nil {
 			info = *opts.ServerInfo

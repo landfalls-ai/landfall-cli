@@ -116,6 +116,11 @@ type Session struct {
 	attention  snapshot[client.Attention]
 	divergence snapshot[client.Divergence]
 
+	// flushOverride, when set, replaces FlushPending's body: in daemon mode
+	// the room daemon holds this reader's cursor and answers its delta
+	// (feature 20260922-local-room-daemon), so the local queue is not consulted.
+	flushOverride func(ctx context.Context) *client.FrameDelta
+
 	redeem        RedeemFunc
 	clientFactory ClientFactory
 	onJoined      func(s *Session, cfg client.Config) error
@@ -365,6 +370,10 @@ func (s *Session) prunePendingLocked(clearDropped bool) {
 // than silently discarding what it was owed.
 func (s *Session) FlushPending(ctx context.Context) *client.FrameDelta {
 	s.mu.Lock()
+	if o := s.flushOverride; o != nil {
+		s.mu.Unlock()
+		return o(ctx)
+	}
 	owed := len(s.pending) > 0 || s.pendingDropped > 0
 	cl := s.client
 	since := s.cursor
@@ -596,4 +605,11 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 		}
 	}
 	return cfg, nil
+}
+
+// SetFlushOverride routes FlushPending to the room daemon (see flushOverride).
+func (s *Session) SetFlushOverride(fn func(ctx context.Context) *client.FrameDelta) {
+	s.mu.Lock()
+	s.flushOverride = fn
+	s.mu.Unlock()
 }

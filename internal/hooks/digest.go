@@ -74,8 +74,15 @@ func BuildInjection(peeks []SocketAnswer, maxChars int) Injection {
 	}
 
 	var lines []string
+	seen := map[string]bool{}
 	for _, p := range owed {
-		lines = append(lines, p.Response.Digest...)
+		for _, l := range p.Response.Digest {
+			if seen[l] { // two sockets for one reader, see stop.go
+				continue
+			}
+			seen[l] = true
+			lines = append(lines, l)
+		}
 	}
 
 	resumeSeq := owed[0].Response.CursorOr(-1)

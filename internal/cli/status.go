@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/spf13/cobra"
 )
@@ -137,6 +138,14 @@ func FormatStatusLine(status *hooks.SocketResponse) string {
 // The line goes to ui.Out, which for this command is the real stdout: the
 // statusline IS this command's machine-readable output.
 func RunStatus(ui *UI, ws hooks.Workspace) int {
+	// The room daemon first (feature 20260922-local-room-daemon): one call,
+	// the person's own untold count. A daemon that is not running, or has no
+	// room for this workspace, falls through to the per-pid sockets a
+	// fallback-mode serve still binds.
+	if res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "status", WorkspaceKey: hooks.WorkspaceKey(ws.Dir())}, hooks.SocketTimeout); err == nil && res.Line != "" {
+		_, _ = ui.Out.Write([]byte(res.Line))
+		return 0
+	}
 	line := FormatStatusLine(QueryStatus(ws))
 	if line != "" {
 		_, _ = ui.Out.Write([]byte(line))

@@ -24,7 +24,8 @@ import (
 func workspaceRoom(ws hooks.Workspace, incidentFilter string) (roomKey, incidentID string, err error) {
 	res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "rooms"}, time.Second)
 	if err != nil {
-		return "", "", errors.New("no room daemon is running here; holds exist only in daemon mode")
+		return "", "", errors.New("no room daemon is running here. The daemon lives while your agent's session is in a room " +
+			"(and a minute after); start or resume that session, then run this again")
 	}
 	key := hooks.WorkspaceKey(ws.Dir())
 	var matches []daemon.RoomView
@@ -41,7 +42,7 @@ func workspaceRoom(ws hooks.Workspace, incidentFilter string) (roomKey, incident
 	}
 	switch len(matches) {
 	case 0:
-		return "", "", errors.New("this checkout is not reading any room")
+		return "", "", errors.New("this checkout is not reading any room right now; start or resume your agent's session in it, then run this again")
 	case 1:
 		return matches[0].RoomKey, matches[0].IncidentID, nil
 	}
@@ -135,7 +136,8 @@ func newAllowCwdCommand(ui *UI) *cobra.Command {
 		if err != nil {
 			return err
 		}
-		ui.Outf("released %d share(s); working-directory content may now leave this machine for incident %s\n", n, incidentID)
+		ui.Outf("released %d share(s); working-directory content may now leave this machine for incident %s. "+
+			"They publish from your agent's session (its background worker sweeps every few seconds).\n", n, incidentID)
 		return nil
 	})
 	c.DisableFlagParsing = true

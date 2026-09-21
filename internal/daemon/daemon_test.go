@@ -25,6 +25,9 @@ type fakeEdge struct {
 	delta   func(since int64) *client.FrameDelta
 	updates func(since int64) []client.Event
 	frame   *client.ContextFrame
+	// attention answers GetAttention; attentionReads counts the calls.
+	attention      *client.Attention
+	attentionReads int
 }
 
 func (f *fakeEdge) Join(context.Context) (*client.JoinResult, error) {
@@ -72,7 +75,12 @@ func (f *fakeEdge) GetContextDelta(_ context.Context, since int64) (*client.Fram
 func (f *fakeEdge) SearchContext(context.Context, string) (*client.SearchResult, error) {
 	return nil, nil
 }
-func (f *fakeEdge) GetAttention(context.Context) (*client.Attention, error)   { return nil, nil }
+func (f *fakeEdge) GetAttention(context.Context) (*client.Attention, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attentionReads++
+	return f.attention, nil
+}
 func (f *fakeEdge) GetDivergence(context.Context) (*client.Divergence, error) { return nil, nil }
 func (f *fakeEdge) GetSignalCatalog(context.Context) ([]client.SignalCatalogEntry, error) {
 	return nil, nil
@@ -461,5 +469,43 @@ func TestANewReaderStartsAtTheFramesPositionNotAtMinusOne(t *testing.T) {
 	a := d.handler.Handle(context.Background(), Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}})
 	if !a.OK || a.Reader == nil || a.Reader.Cursor != 17 {
 		t.Fatalf("a new reader must start at the frame's as-of seq (17): %+v", a.Reader)
+	}
+}
+
+func TestPeekCarriesTheRoomsAttentionAndRefreshesItWhenAnEventTouchesIt(t *testing.T) {
+	edge := &fakeEdge{attention: &client.Attention{VotesAwaited: []client.VoteAwaited{{Statement: "TTL was 60 s"}}}}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	ctx := context.Background()
+	h := d.handler
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	if a := h.Handle(ctx, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}}); !a.OK {
+		t.Fatalf("attach: %+v", a)
+	}
+	wire.emit(client.Event{Seq: seq(10), Type: "chat.message", Payload: map[string]any{"text": "hello"}})
+
+	p := h.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws"})
+	if !p.OK || len(p.Rooms) != 1 || p.Rooms[0].Attention == nil || len(p.Rooms[0].Attention.VotesAwaited) != 1 {
+		t.Fatalf("peek must carry the room's attention: %+v", p)
+	}
+	// A second peek with nothing new reuses the snapshot; a vote event marks it
+	// stale and the next peek reads again.
+	h.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws"})
+	edge.mu.Lock()
+	reads := edge.attentionReads
+	edge.mu.Unlock()
+	if reads != 1 {
+		t.Fatalf("a peek with nothing new must not re-read attention, got %d reads", reads)
+	}
+	edge.mu.Lock()
+	edge.attention = &client.Attention{}
+	edge.mu.Unlock()
+	wire.emit(client.Event{Seq: seq(11), Type: "claim.positioned", Payload: map[string]any{}})
+	p3 := h.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws"})
+	edge.mu.Lock()
+	reads = edge.attentionReads
+	edge.mu.Unlock()
+	if reads != 2 || p3.Rooms[0].Attention == nil || len(p3.Rooms[0].Attention.VotesAwaited) != 0 {
+		t.Fatalf("an event touching attention must make the next peek read again: reads=%d %+v", reads, p3.Rooms[0].Attention)
 	}
 }

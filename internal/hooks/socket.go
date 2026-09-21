@@ -430,6 +430,10 @@ type DaemonRoom struct {
 	Cursor     int64    `json:"cursor"`
 	MaxSeq     int64    `json:"maxSeq"`
 	Digest     []string `json:"digest"`
+	// Attention is the room's own answer to the Stop hook's second question
+	// (quarantined citations, awaited positions), so a hook needs no front end
+	// alive to learn it. Nil when the daemon has never fetched it.
+	Attention *client.Attention `json:"attention,omitempty"`
 }
 
 // TerminalReaderName is the daemon's reader for the person at a checkout:

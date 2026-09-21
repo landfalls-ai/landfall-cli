@@ -74,6 +74,7 @@ func TestAHookReadsTheDaemonsTerminalReaderDirectly(t *testing.T) {
 	fd := startFakeDaemon(t, ws, []DaemonRoom{{
 		RoomKey: "http://x/o/acme/inc-1", IncidentID: "inc-1", Slug: "acme", Connection: "live",
 		Count: 2, Cursor: 19, MaxSeq: 41, Digest: []string{"bob: rolling back", "carol: cache TTL finding"},
+		Attention: &client.Attention{VotesAwaited: []client.VoteAwaited{{Statement: "TTL was 60 s"}}},
 	}})
 
 	answers := QueryWorkspace(PeekRequest(), ws, 0)
@@ -89,6 +90,9 @@ func TestAHookReadsTheDaemonsTerminalReaderDirectly(t *testing.T) {
 	}
 	if !OwesUpdates(a) {
 		t.Fatal("the daemon's untold count must read as owed")
+	}
+	if a.Response.Attention == nil || len(a.Response.Attention.VotesAwaited) != 1 {
+		t.Fatalf("the daemon's attention must reach the hook: %+v", a.Response.Attention)
 	}
 
 	// A consume for that answer reaches the daemon, for the terminal reader of

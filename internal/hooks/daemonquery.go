@@ -13,8 +13,9 @@
 //
 //   - a `serve` in fallback mode (LANDFALL_DAEMON=0, or no daemon could be
 //     started) is a real session with its own cursor and no daemon behind it;
-//   - the room's attention (quarantined citations, awaited positions) lives in
-//     the front end's own session snapshot, which the daemon does not carry.
+//   - the room's attention (quarantined citations, awaited positions) is read
+//     by the daemon since v0.8.10; a front end's own snapshot still fills in
+//     when the daemon has none yet (its first peek before any read landed).
 //
 // So the two are MERGED, per incident: a per-pid answer for an incident the
 // daemon already answered contributes its attention and nothing else (its
@@ -59,6 +60,7 @@ func DaemonPeek(ws Workspace, timeout time.Duration) []SocketAnswer {
 				OK: true, V: res.V,
 				IncidentID: r.IncidentID, Slug: r.Slug, Connected: r.Connection == "live",
 				Count: &count, Cursor: &cursor, MaxSeq: &maxSeq, Digest: r.Digest,
+				Attention: r.Attention,
 			},
 		})
 	}

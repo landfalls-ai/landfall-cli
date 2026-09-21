@@ -43,18 +43,31 @@ var artifactExtTypes = map[string]string{
 }
 
 // widgetTypes is every canvas widget type the server's catalog renders
-// (monorepo feature 20260904-130050). The server validates a shared widget's
-// data against the type's closed contract and refuses a mismatch with the
-// shape error; `describe_widget_types` returns the catalog with what each is
-// for and the shape it expects. Kept in the same order as the server's list.
-var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "codeFinding"}
+// (monorepo feature 20260904-130050, extended by 20260921-140000). The server
+// validates a shared widget's data against the type's closed contract and refuses a
+// mismatch with the shape error; `describe_widget_types` returns the catalog with what
+// each is for and the shape it expects.
+//
+// KEPT IN THE SAME ORDER AS THE SERVER'S LIST, and that is not decoration. This list
+// drifted once already: `events` and `graph` shipped server-side on 2026-09-21 and this
+// stayed at seven long enough that the comment claiming it was in sync was simply
+// false. Nothing catches it -- the monorepo's drift test is one-directional, asserting
+// only that everything here EXISTS there, so a short list passes silently and the cost
+// is an agent that cannot share a type the server would have accepted. When the server
+// gains a type, add it here in the same two-repo rhythm as every other CLI follow-up.
+var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "codeFinding", "events", "graph"}
 
 const widgetShapes = "Shapes: stat {value:number, unit?, delta?, deltaLabel?, trend?:\"up\"|\"down\"|\"flat\", tone?, baseline?, spark?:number[]}; " +
 	"chart {series:[{label, unit?, points:[{t:ISO-8601, v:number}]}], thresholds?:[{value,label?,tone?}], markers?:[{t,label,kind?}]}; " +
 	"table {columns:[{key,label,type:\"string\"|\"number\"|\"time\"|\"status\"|\"share\"}], rows:[{...}]}; " +
 	"logView {lines:[{t?,level?,message}]}; timeline {events:[{t,label,kind?,correlated?}]}; " +
 	"geo {points:[{place:\"eu-west-1\"|\"DUB\"|\"Frankfurt\"|…, value?, unit?, tone?:\"good\"|\"warning\"|\"serious\"|\"critical\", pulse?, label?}], unit?} " +
-	"(coordinates are filled in from the place name). Call describe_widget_types for the full catalog."
+	"(coordinates are filled in from the place name); " +
+	"events {events:[{t:ISO-8601, actor:{kind,id,label?}, action, target?:{kind,id,label?}, outcome?:\"success\"|\"failure\"|\"denied\"|\"unknown\", sourceIp?, userAgent?, errorCode?}], window?} " +
+	"(an audit or control-plane trail: the actor and the target are values rather than prose, so the card groups by actor and links a target to its resource page; actor.kind is a lower-case token and the vocabulary is open); " +
+	"graph {nodes:[{id, label, kind?, tone?, entity?:{kind,id,label?}, trust?:\"confirmed\"|\"established\"|\"inferred\"}], edges:[{from, to, label?, kind?, tone?, trust?, direction?}], focus?, omitted?, legend?} " +
+	"(a topology. Every edge endpoint MUST name a node that exists or the server refuses the payload. Any trust you send is demoted to \"inferred\" on arrival: \"confirmed\" means confirmed in the organisation's own architecture map, which only the server can establish, so a contributed link is always drawn as unconfirmed). " +
+	"Call describe_widget_types for the full catalog."
 
 // EdgeAgentInstructions is the standing operating guidance for an edge
 // investigator, surfaced through the MCP `initialize` `instructions` field, so

@@ -106,6 +106,10 @@ type RoomView struct {
 	MaxSeq       int64      `json:"maxSeq"`
 	Cursor       int64      `json:"cursor"`
 	Digest       []string   `json:"digest,omitempty"`
+	// Attention (peek only) is what the room wants from this machine's agent:
+	// the Stop hook's second reason to refuse, read here so a hook needs no
+	// front end alive to learn it (contracts/daemon-ipc.md).
+	Attention *client.Attention `json:"attention,omitempty"`
 	// Events is the untold set itself (peek only), so a front end's per-pid
 	// hook socket can answer protocol-1 hooks from the daemon's view.
 	Events []client.Event `json:"events,omitempty"`
@@ -257,6 +261,12 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 
 // peek answers for one workspace's terminal reader across every room that has
 // one (a checkout with two rooms reports both), never advancing anything.
+// peekAttentionBudget bounds the attention read a peek makes: within a hook's
+// own patience (hooks.SocketTimeout is 250 ms per socket, the daemon call is
+// one of them), so a slow server degrades to the last snapshot, never to a
+// hook that hangs.
+const peekAttentionBudget = 900 * time.Millisecond
+
 func (d *Daemon) peek(req Request) Response {
 	res := ok()
 	for _, room := range d.rooms() {
@@ -284,6 +294,7 @@ func (d *Daemon) peek(req Request) Response {
 		res.Rooms = append(res.Rooms, RoomView{
 			RoomKey: room.Key, IncidentID: room.Config.IncidentID, Slug: room.Config.Slug, Connection: room.Connection,
 			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: rd.Cursor, Digest: digest, Events: untold,
+			Attention: room.Attention(context.Background(), peekAttentionBudget),
 		})
 	}
 	return res

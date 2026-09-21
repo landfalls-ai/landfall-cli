@@ -88,10 +88,16 @@ type Room struct {
 
 	lastReaderLeftAt time.Time
 	openedAt         time.Time
-	deps             Deps
-	cancel           context.CancelFunc
-	stopWatch        func()
-	subscribers      map[chan client.Event]struct{}
+	// attention is what the room is waiting on from this machine's agent
+	// identity (quarantined citations, awaited positions): the Stop hook's
+	// second reason to refuse (#252). Refreshed on demand by peek, marked
+	// stale by any event narrate.TouchesAttention names. Nil until fetched.
+	attention      *client.Attention
+	attentionStale bool
+	deps           Deps
+	cancel         context.CancelFunc
+	stopWatch      func()
+	subscribers    map[chan client.Event]struct{}
 }
 
 // OpenRoom joins the incident once for the whole machine and starts presence
@@ -255,9 +261,41 @@ func (r *Room) enqueue(evt client.Event) {
 		default: // a slow subscriber drops the event; it can `delta` for the rest
 		}
 	}
+	if narrate.TouchesAttention(evt.Type) {
+		r.mu.Lock()
+		r.attentionStale = true
+		r.mu.Unlock()
+	}
 	if r.deps.OnEvent != nil {
 		r.deps.OnEvent(r, evt)
 	}
+}
+
+// Attention is the room's attention projection for this machine's agent
+// identity, as current as one read within `budget` can make it. A read that
+// fails or times out returns the last snapshot (nil if there never was one):
+// a hook must never block on it, and "unknown" reads as "nothing owed" there,
+// which is the recoverable direction.
+func (r *Room) Attention(ctx context.Context, budget time.Duration) *client.Attention {
+	r.mu.Lock()
+	stale, have := r.attentionStale, r.attention
+	r.mu.Unlock()
+	if have != nil && !stale {
+		return have
+	}
+	if budget <= 0 {
+		budget = time.Second
+	}
+	actx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	got, err := r.client.GetAttention(actx)
+	if err != nil {
+		return have
+	}
+	r.mu.Lock()
+	r.attention, r.attentionStale = got, false
+	r.mu.Unlock()
+	return got
 }
 
 // Subscribe registers a live stream of the room's substantive events.

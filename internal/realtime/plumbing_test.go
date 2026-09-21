@@ -14,6 +14,7 @@ func TestIsPlumbingNamesTheRoomsOwnMachinery(t *testing.T) {
 		"edge.query",
 		"edge.participant.heartbeat",
 		"edge.ticket.redeemed",
+		"edge.interrupt.delivered",
 		"widget.pinned",
 	}
 	for _, typ := range plumbing {

@@ -33,6 +33,10 @@ var plumbingPrefixes = []string{
 	"edge.query",
 	"edge.participant.",
 	"edge.ticket.",
+	// edge.interrupt.delivered: the server recording that an interrupt reached an
+	// agent; a receipt, not a message. Three of these filled a prompt digest in
+	// the v0.8.7 idle run (specs/20260922-local-room-daemon/verification-deployed.md).
+	"edge.interrupt.",
 	"widget.",
 	"presence.",
 	"canvas.",

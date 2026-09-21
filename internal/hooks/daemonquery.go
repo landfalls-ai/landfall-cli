@@ -37,7 +37,9 @@ const daemonAnswerPrefix = "daemon:"
 func IsDaemonAnswer(socketPath string) bool { return strings.HasPrefix(socketPath, daemonAnswerPrefix) }
 
 // DaemonRoomKeyOf is the room key a daemon answer's SocketPath carries.
-func DaemonRoomKeyOf(socketPath string) string { return strings.TrimPrefix(socketPath, daemonAnswerPrefix) }
+func DaemonRoomKeyOf(socketPath string) string {
+	return strings.TrimPrefix(socketPath, daemonAnswerPrefix)
+}
 
 // DaemonPeek asks the daemon what the terminal reader of this workspace has
 // not been told, one SocketAnswer per room. Nil when there is no daemon, it did

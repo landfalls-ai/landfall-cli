@@ -220,6 +220,15 @@ func MaxSocketPathLen() int {
 type SocketRequest struct {
 	Op   any `json:"op"`
 	UpTo any `json:"upTo,omitempty"`
+
+	// The room daemon's verbs (feature 20260922-local-room-daemon, contracts/
+	// daemon-ipc.md) share this framing: one JSON line each way. A hook asks the
+	// daemon `peek` for a workspace and `consume` for one room's terminal reader
+	// with the same client as it asks a per-pid socket; the per-pid verbs ignore
+	// these three fields.
+	WorkspaceKey string `json:"workspaceKey,omitempty"`
+	RoomKey      string `json:"roomKey,omitempty"`
+	ReaderName   string `json:"readerName,omitempty"`
 }
 
 // StatusRequest, PeekRequest and ConsumeRequest are the three requests a caller
@@ -350,6 +359,11 @@ type SocketResponse struct {
 	Digest    []string          `json:"digest,omitempty"`
 	Attention *client.Attention `json:"attention,omitempty"`
 
+	// Rooms is the room daemon's `peek` answer: one entry per room this
+	// workspace reads, each with the terminal reader's untold count, cursor and
+	// digest (contracts/daemon-ipc.md). Absent from every per-pid answer.
+	Rooms []DaemonRoom `json:"rooms,omitempty"`
+
 	// Raw is the exact bytes the server sent, when this response came off a
 	// socket (or out of a cache/stage file). Re-emitting those bytes rather than
 	// a re-encoding is what keeps a Go-written stage or status cache readable by
@@ -401,6 +415,27 @@ func (r SocketResponse) MaxSeqOr(fallback int64) int64 {
 	}
 	return *r.MaxSeq
 }
+
+// DaemonRoom is the part of the daemon's room view a hook reads: enough to
+// build a digest and to name the room a consume is for. The daemon's full view
+// (readers, held count) lives in internal/daemon; this is its wire subset,
+// decoded here because internal/daemon imports this package and cannot be
+// imported back.
+type DaemonRoom struct {
+	RoomKey    string   `json:"roomKey"`
+	IncidentID string   `json:"incidentId"`
+	Slug       string   `json:"slug"`
+	Connection string   `json:"connection"`
+	Count      int      `json:"count"`
+	Cursor     int64    `json:"cursor"`
+	MaxSeq     int64    `json:"maxSeq"`
+	Digest     []string `json:"digest"`
+}
+
+// TerminalReaderName is the daemon's reader for the person at a checkout:
+// what the hooks and the status line read as. internal/daemon uses this same
+// function, so the two can never disagree about the name.
+func TerminalReaderName(workspaceKey string) string { return "terminal:" + workspaceKey }
 
 // SocketAnswer is one socket's answer, tagged with the socket it came from so a
 // follow-up `consume` reaches the right session.

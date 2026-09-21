@@ -314,9 +314,25 @@ func lock(path string) (func(), error) {
 
 // Reachable reports whether a daemon answers on the socket.
 func Reachable(ws hooks.Workspace) bool {
-	_, err := Send(hooks.DaemonSocketPath(ws), Request{Op: "rooms"}, 500*time.Millisecond)
+	_, err := reach(ws)
 	return err == nil
 }
+
+// reach is Reachable with the reason. The timeout is generous on purpose: a
+// `serve` asks this once, at start-up, often at the same moment the person's
+// agent host, two teammates' agents and an investigation are all starting on
+// the same machine (the terminal harness starts them within one second of
+// each other). On 2026-09-21 a 500 ms probe missed a healthy daemon under that
+// load and the session ran the whole afternoon in-process, with the
+// working-directory hold out of reach (run terminal-1789965443125).
+func reach(ws hooks.Workspace) (*Response, error) {
+	return Send(hooks.DaemonSocketPath(ws), Request{Op: "rooms"}, 1500*time.Millisecond)
+}
+
+// SpawnWait is how long a `serve` waits for a daemon it just spawned. The
+// daemon binds its socket only after restoring the rooms of its state file,
+// and each restore is a join round trip plus a backfill against the server.
+const SpawnWait = 8 * time.Second
 
 // EnsureRunning returns once a daemon answers, spawning `<self> daemon`
 // detached if none does. It never returns an error that should stop `serve`:
@@ -335,14 +351,15 @@ func EnsureRunning(ws hooks.Workspace, spawn func() error, log func(string)) boo
 		log("daemon unavailable (" + err.Error() + "); running in-process (one cursor per process)")
 		return false
 	}
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(SpawnWait)
+	var last error
 	for time.Now().Before(deadline) {
-		if Reachable(ws) {
+		if _, last = reach(ws); last == nil {
 			return true
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	log("daemon unavailable (did not answer within 2 s); running in-process (one cursor per process)")
+	log(fmt.Sprintf("daemon unavailable (did not answer within %s: %v); running in-process (one cursor per process)", SpawnWait, last))
 	return false
 }
 

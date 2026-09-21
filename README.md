@@ -278,8 +278,10 @@ their tokens, readers and cursors) lives in `<runtime dir>/daemon/state.json`, m
 `<runtime dir>` is `$XDG_RUNTIME_DIR/landfall` or `~/.local/state/landfall/run`. A `stop` or a
 signal keeps that state so a restart rejoins; an idle exit forgets it. If the daemon cannot run
 (`LANDFALL_DAEMON=0`, or a runtime path too long to bind a socket), `serve` says so once and
-behaves exactly as before: one process, one cursor. Hooks and `landfall status` from an older
-binary keep working, because a front end still binds the per-process socket they look for.
+behaves exactly as before: one process, one cursor. Since v0.8.7 the hooks and `landfall status`
+read the daemon directly, as your own reader, in one call; a front end still binds the
+per-process socket an older binary's hooks look for, and a `serve` running without the daemon
+is still found through it.
 
 ### The working-directory hold
 

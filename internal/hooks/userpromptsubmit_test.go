@@ -450,7 +450,7 @@ func TestTheWholeIdlePathRingWakeStageResumeDeliverConsumeClear(t *testing.T) {
 	var emitted string
 	delivered := RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },
@@ -479,7 +479,7 @@ func TestTheWholeIdlePathRingWakeStageResumeDeliverConsumeClear(t *testing.T) {
 	// 4. the next prompt on an unchanged room is silent.
 	again := RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },
@@ -513,7 +513,7 @@ func TestServeExitsBetweenTheWakeAndThePromptSoTheStageStillDelivers(t *testing.
 	var emitted string
 	delivered := RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },
@@ -553,7 +553,7 @@ func TestASpentStageIsDroppedBeforeServeCanExitAndMakeItLookPendingAgain(t *test
 	injected := false
 	RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },
@@ -572,7 +572,7 @@ func TestASpentStageIsDroppedBeforeServeCanExitAndMakeItLookPendingAgain(t *test
 	// resurrect.
 	after := RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },
@@ -604,7 +604,7 @@ func TestTwoIdleSessionsInOneWorkspaceEachKeepTheirOwnCursor(t *testing.T) {
 	var emitted string
 	RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },

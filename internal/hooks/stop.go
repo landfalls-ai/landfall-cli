@@ -439,7 +439,7 @@ func runStopHandler(_ context.Context, deps HookDeps) HookResult {
 		Input:    deps.Input,
 		Protocol: ProtocolForHost(deps.Host),
 		Query:    workspaceQuery(deps.Workspace),
-		Send:     workspaceSend(),
+		Send:     workspaceSend(deps.Workspace),
 		Emit:     deps.emit,
 	})
 	result := "allowed"
@@ -451,19 +451,20 @@ func runStopHandler(_ context.Context, deps HookDeps) HookResult {
 	return HookResult{ExitCode: out.ExitCode, Result: result}
 }
 
-// workspaceQuery is the production Query: every socket in the workspace,
-// concurrently. It never errors — QueryHookSockets already treats an unreachable
-// socket as silence — so the error branch above exists for an injected query.
+// workspaceQuery is the production Query: the room daemon first, then every
+// per-pid socket in the workspace, merged per incident (daemonquery.go). It
+// never errors — an unreachable socket is silence — so the error branch above
+// exists for an injected query.
 func workspaceQuery(ws Workspace) func(SocketRequest) ([]SocketAnswer, error) {
 	return func(req SocketRequest) ([]SocketAnswer, error) {
-		return QueryHookSockets(req, ws, 0), nil
+		return QueryWorkspace(req, ws, 0), nil
 	}
 }
 
-// workspaceSend is the production Send.
-func workspaceSend() func(string, SocketRequest) error {
+// workspaceSend is the production Send: a consume goes back to wherever the
+// answer came from, the daemon or a per-pid socket.
+func workspaceSend(ws Workspace) func(string, SocketRequest) error {
 	return func(socketPath string, req SocketRequest) error {
-		_, err := SendToSocket(socketPath, req, 0)
-		return err
+		return SendToAnswer(ws, socketPath, req, 0)
 	}
 }

@@ -268,7 +268,7 @@ func runUserPromptSubmitHandler(_ context.Context, deps HookDeps) HookResult {
 	ws := deps.Workspace
 	out := RunUserPromptSubmitHook(UserPromptSubmitOptions{
 		Query:   workspaceQuery(ws),
-		Send:    workspaceSend(),
+		Send:    workspaceSend(ws),
 		Stage:   func() *Stage { return ReadStage(ws) },
 		Unstage: func() { ClearStage(ws) },
 		Clear:   func() { ClearDoorbell(ws.Dir()) },

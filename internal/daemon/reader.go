@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
+	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 	"github.com/landfalls-ai/landfall-cli/internal/realtime"
 )
@@ -48,8 +49,10 @@ type Reader struct {
 const SilentReaderTTL = time.Hour
 
 // TerminalReaderName is the one reader per workspace that stands for the
-// person. Hooks and the status line read and advance this reader only.
-func TerminalReaderName(workspaceKey string) string { return "terminal:" + workspaceKey }
+// person. Hooks and the status line read and advance this reader only; the
+// name is defined once, in internal/hooks, because a hook process builds it
+// without this package.
+func TerminalReaderName(workspaceKey string) string { return hooks.TerminalReaderName(workspaceKey) }
 
 // Untold is what this reader has not been shown: events past its cursor that
 // are not room machinery, addressed messages first, then by seq. Derived on

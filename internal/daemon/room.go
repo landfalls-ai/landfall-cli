@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -54,6 +55,12 @@ type Deps struct {
 	// stored: the daemon's passive surfaces (notification, doorbell) hang here.
 	OnEvent func(room *Room, evt client.Event)
 	Now     func() time.Time
+}
+
+func (d Deps) log(msg string) {
+	if d.Log != nil {
+		d.Log(msg)
+	}
 }
 
 func (d Deps) now() time.Time {
@@ -116,6 +123,16 @@ func OpenRoom(ctx context.Context, cfg client.Config, deps Deps) (*Room, error) 
 
 // RestoreRoom rejoins a room from persisted state (the daemon restarted). The
 // readers come back with their cursors; the token is the stored one.
+//
+// THE RING IS BACKFILLED FROM THE SERVER. Cursors persist; the event ring does
+// not, and a reader's untold set is derived from the ring. Without this, an
+// item that arrived seconds before a stop, or during the gap before the next
+// daemon came up, vanished from the person's view for good (measured
+// 2026-09-21: a teammate's message posted one second before `landfall daemon
+// stop` never reached the person, while the same run re-attached within the
+// same second). `GetUpdates(since)` returns raw events, exactly what the ring
+// holds, so the untold sets come back as if the daemon had never stopped. The
+// backfill is quiet: no doorbell, no notification for what is being restored.
 func RestoreRoom(ctx context.Context, st RoomState, deps Deps) (*Room, error) {
 	r, err := OpenRoom(ctx, st.Config, deps)
 	if err != nil {
@@ -123,13 +140,53 @@ func RestoreRoom(ctx context.Context, st RoomState, deps Deps) (*Room, error) {
 	}
 	r.mu.Lock()
 	r.CwdAllowed = st.CwdAllowed
+	lowest := int64(-1)
+	first := true
 	for name, rd := range st.Readers {
 		cp := *rd
 		cp.Connected = false
 		r.readers[name] = &cp
+		if first || cp.Cursor < lowest {
+			lowest = cp.Cursor
+			first = false
+		}
 	}
 	r.mu.Unlock()
+	if len(st.Readers) > 0 {
+		since := lowest
+		if since < 0 {
+			since = 0
+		}
+		if events, uerr := r.client.GetUpdates(ctx, since); uerr == nil {
+			for _, e := range events {
+				r.enqueueQuiet(e)
+			}
+		} else {
+			deps.log("could not backfill " + st.Config.IncidentID + " since " + fmt.Sprint(since) + ": " + uerr.Error())
+		}
+	}
 	return r, nil
+}
+
+// enqueueQuiet stores an event in the ring without ringing anything: for the
+// backfill after a restart, where the events are not news to the surfaces,
+// only to the untold sets.
+func (r *Room) enqueueQuiet(evt client.Event) {
+	if evt.Seq == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.events {
+		if e.Seq != nil && *e.Seq == *evt.Seq {
+			return
+		}
+	}
+	r.events = append(r.events, evt)
+	sort.SliceStable(r.events, func(i, j int) bool { return r.events[i].SeqOr(0) < r.events[j].SeqOr(0) })
+	for len(r.events) > RingMax {
+		r.events = r.events[1:]
+	}
 }
 
 func (r *Room) start(ctx context.Context) {

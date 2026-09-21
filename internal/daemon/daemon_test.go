@@ -18,11 +18,13 @@ import (
 
 // fakeEdge is the minimum EdgeClient the daemon touches.
 type fakeEdge struct {
-	mu     sync.Mutex
-	joins  int
-	leaves int
-	beats  int
-	delta  func(since int64) *client.FrameDelta
+	mu      sync.Mutex
+	joins   int
+	leaves  int
+	beats   int
+	delta   func(since int64) *client.FrameDelta
+	updates func(since int64) []client.Event
+	frame   *client.ContextFrame
 }
 
 func (f *fakeEdge) Join(context.Context) (*client.JoinResult, error) {
@@ -48,8 +50,16 @@ func (f *fakeEdge) FlagContext(context.Context, int64, string, string) error    
 func (f *fakeEdge) PositionClaim(context.Context, int64, string, string) error   { return nil }
 func (f *fakeEdge) StageClaim(context.Context, map[string]any) error             { return nil }
 func (f *fakeEdge) GetBrief(context.Context) ([]client.Event, error)             { return nil, nil }
-func (f *fakeEdge) GetUpdates(context.Context, int64) ([]client.Event, error)    { return nil, nil }
+func (f *fakeEdge) GetUpdates(_ context.Context, since int64) ([]client.Event, error) {
+	if f.updates != nil {
+		return f.updates(since), nil
+	}
+	return nil, nil
+}
 func (f *fakeEdge) GetContextFrame(context.Context) (*client.ContextFrame, error) {
+	if f.frame != nil {
+		return f.frame, nil
+	}
 	return &client.ContextFrame{}, nil
 }
 func (f *fakeEdge) GetContextDelta(_ context.Context, since int64) (*client.FrameDelta, error) {
@@ -409,5 +419,47 @@ func TestARestoredRoomNobodyReadsIsIdleFromTheStart(t *testing.T) {
 	}
 	if !d.idle() {
 		t.Fatal("a restored room with every reader detached must count as idle, or the daemon lives for ever")
+	}
+}
+
+func TestRestoreBackfillsTheRingSoUntoldItemsSurviveARestart(t *testing.T) {
+	edge := &fakeEdge{}
+	edge.updates = func(since int64) []client.Event {
+		if since != 20 {
+			t.Fatalf("backfill must start at the lowest reader cursor (20), got %d", since)
+		}
+		return []client.Event{
+			{Seq: seq(21), Type: "agent.query"},
+			{Seq: seq(22), Type: "chat.message", Payload: map[string]any{"text": "posted one second before the stop"}},
+		}
+	}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	st := &State{V: StateVersion, Rooms: map[string]RoomState{
+		"http://x/o/acme/inc-1": {
+			Config: client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"},
+			Readers: map[string]*Reader{
+				"claude-code:ws:1":       {Name: "claude-code:ws:1", Kind: KindAgent, Cursor: 25, WorkspaceKey: "ws"},
+				TerminalReaderName("ws"): {Name: TerminalReaderName("ws"), Kind: KindTerminal, Cursor: 20, WorkspaceKey: "ws"},
+			},
+		},
+	}}
+	d.restore(context.Background(), st)
+	p := d.handler.Handle(context.Background(), Request{Op: "peek", WorkspaceKey: "ws"})
+	if !p.OK || len(p.Rooms) != 1 || p.Rooms[0].Count != 1 {
+		t.Fatalf("after a restart the person is still owed the chat message: %+v", p)
+	}
+}
+
+func TestANewReaderStartsAtTheFramesPositionNotAtMinusOne(t *testing.T) {
+	edge := &fakeEdge{}
+	asOf := int64(17)
+	edge.frame = &client.ContextFrame{AsOfSeq: &asOf}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	a := d.handler.Handle(context.Background(), Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}})
+	if !a.OK || a.Reader == nil || a.Reader.Cursor != 17 {
+		t.Fatalf("a new reader must start at the frame's as-of seq (17): %+v", a.Reader)
 	}
 }

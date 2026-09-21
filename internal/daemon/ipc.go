@@ -138,6 +138,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err != nil {
 			return fail("could not join the room: " + err.Error())
 		}
+		// The frame first: a new reader starts at the room's current position
+		// (the frame's as-of seq), not at -1. At -1 its first delta would replay
+		// the whole incident and its untold set would count history as news.
+		frame, _ := room.Frame(ctx)
 		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace})
 		// An agent front end runs in the person's terminal: the person becomes a
 		// reader of this room at the same moment, at the same position, so what
@@ -150,7 +154,6 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		d.opts.Log(fmt.Sprintf("attached %s (%s) to %s at cursor %d; %d reader(s) connected", rd.Name, rd.Kind, room.Config.IncidentID, rd.Cursor, room.ConnectedReaders()))
 		d.save()
-		frame, _ := room.Frame(ctx)
 		res := ok()
 		res.RoomKey, res.AgentInstanceID, res.Reader, res.Frame, res.Connection = room.Key, room.AgentInstanceID, rd, frame, room.Connection
 		return res

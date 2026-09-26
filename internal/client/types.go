@@ -113,6 +113,59 @@ type WidgetCatalogEntry struct {
 	DataShape string   `json:"dataShape"`
 }
 
+// --- monorepo 20260921-101054-war-room-chat-context: the room's own scope ---
+//
+// A human can pin what an investigation is about (repos, architecture
+// components, telemetry sources, a time window, artifacts, past incidents),
+// write standing guidance for the organization, steer a run, and turn
+// Beacon's chat replies off. All four ride on the SAME frame read this CLI
+// already makes, so `get_brief` carries them with no extra round trip — the
+// Landfall Edge desktop bridge picks the same four fields by name.
+//
+// Every field is optional on the wire and stays optional here: a server older
+// than that feature simply omits them, and the renderer drops the block.
+// There is deliberately no matching WRITE verb in this CLI: `context.attached`,
+// `steer.recorded` and `beacon.listening.changed` are in the server's
+// HUMAN_ONLY_EVENT_TYPES, so an agent principal cannot append them at all.
+// Pinning scope is a person's decision about their own room.
+
+// ActorRef is who did something, as the frame reports it. `DisplayName` is
+// absent when the server could not resolve the member.
+type ActorRef struct {
+	HumanActorID string `json:"humanActorId"`
+	DisplayName  string `json:"displayName"`
+}
+
+// FrameAttachment is one live pinned scope item — a `context.attached` row
+// not since detached. `Label` is enriched by the server (the pure projection
+// never looks anything up), so it is what to render; `Ref` carries the
+// kind-specific ids for an agent that wants to act on them.
+type FrameAttachment struct {
+	Seq   int64             `json:"seq"`
+	Kind  string            `json:"kind"`
+	Ref   map[string]string `json:"ref"`
+	Label string            `json:"label"`
+	By    ActorRef          `json:"by"`
+	Stale bool              `json:"stale"`
+}
+
+// FrameInstructions is the organization's standing guidance document.
+// `ComponentSections` arrives ALREADY filtered by the server to the
+// components pinned to this room, so rendering every entry is correct — this CLI must not re-filter it and
+// must not assume an unpinned component's section is reachable here.
+type FrameInstructions struct {
+	Version           int64             `json:"version"`
+	Body              string            `json:"body"`
+	ComponentSections map[string]string `json:"componentSections"`
+}
+
+// FrameFocus is what a human most recently asked the investigation to focus
+// on: the newest `steer.recorded` since the last run started.
+type FrameFocus struct {
+	Focus string   `json:"focus"`
+	By    ActorRef `json:"by"`
+}
+
 // ContextFrame is GET /edge/context/frame.
 type ContextFrame struct {
 	AsOfSeq       *int64               `json:"asOfSeq"`
@@ -122,6 +175,12 @@ type ContextFrame struct {
 	Brief         Brief                `json:"brief"`
 	Participants  []Participant        `json:"participants"`
 	WidgetCatalog []WidgetCatalogEntry `json:"widgetCatalog,omitempty"`
+	Attachments   []FrameAttachment    `json:"attachments,omitempty"`
+	Instructions  *FrameInstructions   `json:"instructions,omitempty"`
+	// A pointer, not a bool: `listening` absent means a server that does not
+	// know about the feature, which must not read as "Beacon is muted".
+	Listening *bool       `json:"listening,omitempty"`
+	Focus     *FrameFocus `json:"focus,omitempty"`
 }
 
 // DeltaItem is one classified change in a FrameDelta.

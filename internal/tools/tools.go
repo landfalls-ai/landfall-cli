@@ -187,8 +187,12 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			Handler:     b.narrated("get_updates", b.getUpdates),
 		},
 		{
-			Name:        "get_brief",
-			Description: "Get the current incident brief: title/severity/status, an established-vs-open summary, and who is here.",
+			Name: "get_brief",
+			Description: "Get the current incident brief: title/severity/status, an established-vs-open summary, and who is here. " +
+				"Also carries, when the room has them: the scope a human pinned to it (repos, architecture components, telemetry " +
+				"sources, a time window, artifacts, past incidents) — read within that scope unless the person says otherwise — " +
+				"the organization's standing instructions, what a human asked the investigation to focus on, and whether Beacon " +
+				"is answering chat. You cannot set any of these: pinning scope is the person's decision about their own room.",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 			Handler:     b.narrated("get_brief", b.getBrief),
 		},

@@ -3,6 +3,7 @@ package narrate
 import (
 	"fmt"
 	"math"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -59,6 +60,134 @@ func briefLines(items []client.BriefItem, heading string) []string {
 	return lines
 }
 
+// --- the room's pinned scope (monorepo 20260921-101054) --------------------
+
+func actorWord(by client.ActorRef) string {
+	if by.DisplayName != "" {
+		return by.DisplayName
+	}
+	if by.HumanActorID != "" {
+		return by.HumanActorID
+	}
+	return "someone"
+}
+
+// refSummary is the fallback label for an attachment the server did not
+// enrich. Keys are sorted so the same ref always renders the same way —
+// a Go map iterates in a randomized order, and a brief that reshuffles
+// between two reads of an unchanged room reads as a change that did not
+// happen.
+func refSummary(ref map[string]string) string {
+	if len(ref) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(ref))
+	for k := range ref {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, k+"="+ref[k])
+	}
+	return strings.Join(parts, " ")
+}
+
+func attachmentLabel(a client.FrameAttachment) string {
+	if a.Label != "" {
+		return a.Label
+	}
+	if summary := refSummary(a.Ref); summary != "" {
+		return summary
+	}
+	return "(unlabelled)"
+}
+
+// scopeLines renders the attachments a human pinned to the room. The heading
+// carries the instruction that makes the block worth sending at all: an agent
+// that reads the list but keeps querying the whole estate has gained nothing.
+func scopeLines(atts []client.FrameAttachment) []string {
+	if len(atts) == 0 {
+		return nil
+	}
+	lines := []string{"Scope pinned to this room — read within it unless the person says otherwise:"}
+	for _, a := range atts {
+		kind := a.Kind
+		if kind == "" {
+			kind = "context"
+		}
+		note := ""
+		if a.Stale {
+			note = "; it no longer resolves"
+		}
+		lines = append(lines, fmt.Sprintf("  %s: %s (pinned by %s%s)", kind, attachmentLabel(a), actorWord(a.By), note))
+	}
+	return lines
+}
+
+// instructionLines renders the organization's standing guidance. The body is
+// rendered WHOLE and never truncated: it is a deliberate instruction from the
+// organization, and a silently cut instruction is worse than a long brief.
+// ComponentSections arrives already filtered by the server to the components
+// pinned here, so every entry belongs in this room; the element id is
+// translated to the attachment's own label when one is pinned for it.
+func instructionLines(doc *client.FrameInstructions, atts []client.FrameAttachment) []string {
+	if doc == nil {
+		return nil
+	}
+	body := strings.TrimSpace(doc.Body)
+	if body == "" && len(doc.ComponentSections) == 0 {
+		return nil
+	}
+	labels := map[string]string{}
+	for _, a := range atts {
+		if a.Kind == "component" && a.Ref["elementId"] != "" {
+			labels[a.Ref["elementId"]] = attachmentLabel(a)
+		}
+	}
+	lines := []string{fmt.Sprintf("Organization instructions (version %d):", doc.Version)}
+	lines = append(lines, indentBlock(body)...)
+	ids := make([]string, 0, len(doc.ComponentSections))
+	for id := range doc.ComponentSections {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		section := strings.TrimSpace(doc.ComponentSections[id])
+		if section == "" {
+			continue
+		}
+		name := labels[id]
+		if name == "" {
+			name = id
+		}
+		lines = append(lines, "  For "+name+":")
+		for _, l := range indentBlock(section) {
+			lines = append(lines, "  "+l)
+		}
+	}
+	return lines
+}
+
+// indentBlock indents every line of a multi-line block by two spaces, so a
+// document with its own headings cannot be mistaken for the brief's own
+// structure. An empty block renders nothing.
+func indentBlock(text string) []string {
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	raw := strings.Split(text, "\n")
+	out := make([]string, 0, len(raw))
+	for _, l := range raw {
+		if strings.TrimSpace(l) == "" {
+			out = append(out, "")
+			continue
+		}
+		out = append(out, "  "+l)
+	}
+	return out
+}
+
 // RenderFrame renders a client.ContextFrame as the text join_war_room/
 // get_brief return — a real, usable brief in one call (SC-002).
 //
@@ -113,6 +242,28 @@ func RenderFrame(frame *client.ContextFrame) string {
 			parts[i] = participantLabel(p)
 		}
 		lines = append(lines, "", "Participants: "+strings.Join(parts, ", "))
+	}
+
+	// The room's own scope, guidance, steer and Beacon switch (monorepo
+	// 20260921-101054, contracts/brief.md). Each rides on the frame this
+	// method already has, is optional on the wire, and renders only when the
+	// server actually sent it — so this is additive against an older server.
+	if scope := scopeLines(frame.Attachments); len(scope) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, scope...)
+	}
+	if frame.Focus != nil && strings.TrimSpace(frame.Focus.Focus) != "" {
+		lines = append(lines, "", fmt.Sprintf("Focus: %s (asked by %s)", strings.TrimSpace(frame.Focus.Focus), actorWord(frame.Focus.By)))
+	}
+	// Only the explicit false is worth a line. Listening is the default, and
+	// an absent field means a server that predates the switch — neither is
+	// news, and both would read as one.
+	if frame.Listening != nil && !*frame.Listening {
+		lines = append(lines, "", "Beacon is not listening to chat in this room: it answers direct mentions only.")
+	}
+	if doc := instructionLines(frame.Instructions, frame.Attachments); len(doc) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, doc...)
 	}
 
 	freshness := "freshness unknown"

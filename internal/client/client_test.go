@@ -586,3 +586,78 @@ func contains(list []string, want string) bool {
 	}
 	return false
 }
+
+// TestContextFrameDecodesTheRoomScopeFieldsOnTheWire pins the json tags of
+// the four fields the monorepo's war-room chat-and-context feature added to
+// the frame. The payload below is transcribed field-for-field from the
+// server's own ContextFrame interface (the @landfall/context-frame types
+// module) — a tag typo here would not fail to compile and would not fail any
+// render test written against a Go literal; it would just silently drop the
+// room's pinned scope out of every brief, which is precisely the bug this
+// CLI would never notice on its own.
+func TestContextFrameDecodesTheRoomScopeFieldsOnTheWire(t *testing.T) {
+	const payload = `{
+	  "version": 12,
+	  "asOfSeq": 11,
+	  "freshnessMs": 1500,
+	  "incident": {"title":"Checkout latency","severity":"SEV-2","status":"investigating","alertSource":"CloudWatch"},
+	  "brief": {"established":[],"workingTheory":[],"disproved":[],"open":[]},
+	  "participants": [],
+	  "attachments": [
+	    {"seq":4,"kind":"repo","ref":{"owner":"landfalls-ai","repo":"landfall"},"label":"landfalls-ai/landfall","by":{"humanActorId":"usr-1","displayName":"Dana"}},
+	    {"seq":6,"kind":"component","ref":{"elementId":"el-1"},"label":"checkout-api","by":{"humanActorId":"usr-2"},"stale":true}
+	  ],
+	  "instructions": {"version":4,"body":"Quote the runbook you used.","componentSections":{"el-1":"Warmed by a cron at :05."}},
+	  "listening": false,
+	  "focus": {"focus":"did the 10:02 rollback do it?","by":{"humanActorId":"usr-1","displayName":"Dana"}}
+	}`
+
+	var frame ContextFrame
+	if err := json.Unmarshal([]byte(payload), &frame); err != nil {
+		t.Fatalf("decoding a server frame: %v", err)
+	}
+
+	if len(frame.Attachments) != 2 {
+		t.Fatalf("attachments = %d, want 2", len(frame.Attachments))
+	}
+	first := frame.Attachments[0]
+	if first.Seq != 4 || first.Kind != "repo" || first.Label != "landfalls-ai/landfall" {
+		t.Errorf("first attachment decoded as %+v", first)
+	}
+	if first.Ref["owner"] != "landfalls-ai" || first.Ref["repo"] != "landfall" {
+		t.Errorf("attachment ref decoded as %v", first.Ref)
+	}
+	if first.By.DisplayName != "Dana" || first.By.HumanActorID != "usr-1" {
+		t.Errorf("attacher decoded as %+v", first.By)
+	}
+	if !frame.Attachments[1].Stale {
+		t.Error("a stale component attachment decoded as fresh")
+	}
+
+	if frame.Instructions == nil || frame.Instructions.Version != 4 {
+		t.Fatalf("instructions decoded as %+v", frame.Instructions)
+	}
+	if frame.Instructions.ComponentSections["el-1"] != "Warmed by a cron at :05." {
+		t.Errorf("component sections decoded as %v", frame.Instructions.ComponentSections)
+	}
+
+	if frame.Listening == nil || *frame.Listening {
+		t.Errorf("listening decoded as %v, want an explicit false", frame.Listening)
+	}
+	if frame.Focus == nil || frame.Focus.Focus != "did the 10:02 rollback do it?" || frame.Focus.By.DisplayName != "Dana" {
+		t.Errorf("focus decoded as %+v", frame.Focus)
+	}
+}
+
+// A server that predates the feature sends none of the four. Listening in
+// particular must stay nil rather than decoding to Go's false, which the
+// renderer would report as "Beacon is not listening".
+func TestContextFrameWithoutRoomScopeLeavesEveryFieldAbsent(t *testing.T) {
+	var frame ContextFrame
+	if err := json.Unmarshal([]byte(`{"version":1,"asOfSeq":0,"incident":{},"brief":{},"participants":[]}`), &frame); err != nil {
+		t.Fatalf("decoding an older server's frame: %v", err)
+	}
+	if frame.Attachments != nil || frame.Instructions != nil || frame.Listening != nil || frame.Focus != nil {
+		t.Errorf("an older frame decoded with scope fields set: %+v", frame)
+	}
+}

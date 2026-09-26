@@ -162,3 +162,127 @@ func TestRenderSearchHits_WithHits(t *testing.T) {
 		t.Errorf("RenderSearchHits = %q, want %q", got, want)
 	}
 }
+
+// --- the room's pinned scope (monorepo 20260921-101054) --------------------
+
+func TestRenderFrame_OmitsScopeBlocksWhenServerSendsNone(t *testing.T) {
+	// An older server sends no attachments/instructions/listening/focus at
+	// all. The brief must look exactly as it did before, with no empty
+	// headings and — the one that would actually mislead — no claim that
+	// Beacon has stopped listening.
+	got := RenderFrame(&client.ContextFrame{
+		Incident: client.Incident{Title: "Checkout latency"},
+		AsOfSeq:  seqPtr(7),
+	})
+	for _, absent := range []string{"Scope pinned", "Focus:", "not listening", "Organization instructions"} {
+		if strings.Contains(got, absent) {
+			t.Errorf("render of a frame without scope contains %q; full output:\n%s", absent, got)
+		}
+	}
+}
+
+func TestRenderFrame_RendersPinnedScope(t *testing.T) {
+	frame := &client.ContextFrame{
+		Incident: client.Incident{Title: "Checkout latency"},
+		Attachments: []client.FrameAttachment{
+			{Seq: 4, Kind: "repo", Label: "landfalls-ai/landfall", By: client.ActorRef{DisplayName: "Dana"}},
+			{Seq: 6, Kind: "component", Ref: map[string]string{"elementId": "el-1"}, Label: "checkout-api", By: client.ActorRef{DisplayName: "Alex"}, Stale: true},
+			{Seq: 9, Kind: "window", Ref: map[string]string{"until": "10:00", "since": "09:00"}, By: client.ActorRef{HumanActorID: "usr-3"}},
+		},
+		AsOfSeq: seqPtr(9),
+	}
+	got := RenderFrame(frame)
+	for _, want := range []string{
+		"Scope pinned to this room — read within it unless the person says otherwise:",
+		"  repo: landfalls-ai/landfall (pinned by Dana)",
+		"  component: checkout-api (pinned by Alex; it no longer resolves)",
+		// No label from the server: the ref itself, keys sorted so two reads
+		// of an unchanged room render identically.
+		"  window: since=09:00 until=10:00 (pinned by usr-3)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RenderFrame output missing %q; full output:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderFrame_RendersFocusAndSilentBeacon(t *testing.T) {
+	no := false
+	got := RenderFrame(&client.ContextFrame{
+		Incident:  client.Incident{Title: "Checkout latency"},
+		Focus:     &client.FrameFocus{Focus: "  did the 10:02 rollback do it?  ", By: client.ActorRef{DisplayName: "Dana"}},
+		Listening: &no,
+		AsOfSeq:   seqPtr(9),
+	})
+	if !strings.Contains(got, "Focus: did the 10:02 rollback do it? (asked by Dana)") {
+		t.Errorf("focus line missing or not trimmed; full output:\n%s", got)
+	}
+	if !strings.Contains(got, "Beacon is not listening to chat in this room") {
+		t.Errorf("silent-Beacon line missing; full output:\n%s", got)
+	}
+}
+
+func TestRenderFrame_ListeningTrueSaysNothing(t *testing.T) {
+	yes := true
+	got := RenderFrame(&client.ContextFrame{Incident: client.Incident{Title: "x"}, Listening: &yes})
+	if strings.Contains(got, "listening") {
+		t.Errorf("listening=true should render no line; full output:\n%s", got)
+	}
+}
+
+func TestRenderFrame_RendersInstructionsWholeAndLabelsSections(t *testing.T) {
+	frame := &client.ContextFrame{
+		Incident: client.Incident{Title: "Checkout latency"},
+		Attachments: []client.FrameAttachment{
+			{Seq: 6, Kind: "component", Ref: map[string]string{"elementId": "el-1"}, Label: "checkout-api", By: client.ActorRef{DisplayName: "Alex"}},
+		},
+		Instructions: &client.FrameInstructions{
+			Version: 4,
+			Body:    "Never page the on-call before 07:00.\nQuote the runbook you used.",
+			ComponentSections: map[string]string{
+				"el-1": "Its cache is warmed by a cron at :05.",
+				"el-9": "An unpinned component the server should not have sent.",
+			},
+		},
+		AsOfSeq: seqPtr(9),
+	}
+	got := RenderFrame(frame)
+	for _, want := range []string{
+		"Organization instructions (version 4):",
+		"  Never page the on-call before 07:00.",
+		"  Quote the runbook you used.",
+		// The element id is translated through the pinned attachment's label.
+		"  For checkout-api:",
+		"    Its cache is warmed by a cron at :05.",
+		// The server filters componentSections to pinned components; this CLI
+		// renders what it is given rather than re-deriving that rule.
+		"  For el-9:",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RenderFrame output missing %q; full output:\n%s", want, got)
+		}
+	}
+}
+
+func TestRenderFrame_EmptyInstructionsDocumentRendersNothing(t *testing.T) {
+	got := RenderFrame(&client.ContextFrame{
+		Incident:     client.Incident{Title: "x"},
+		Instructions: &client.FrameInstructions{Version: 2, Body: "   "},
+	})
+	if strings.Contains(got, "Organization instructions") {
+		t.Errorf("an empty document should render no heading; full output:\n%s", got)
+	}
+}
+
+func TestRenderFrame_ScopeStaysAboveTheFooter(t *testing.T) {
+	// The "As of seq" line is the brief's terminator; anything appended after
+	// it reads as a separate message rather than part of the brief.
+	got := RenderFrame(&client.ContextFrame{
+		Incident:    client.Incident{Title: "x"},
+		Attachments: []client.FrameAttachment{{Seq: 1, Kind: "repo", Label: "a/b", By: client.ActorRef{DisplayName: "Dana"}}},
+		AsOfSeq:     seqPtr(3),
+	})
+	if strings.Index(got, "Scope pinned") > strings.Index(got, "As of seq") {
+		t.Errorf("scope rendered below the footer; full output:\n%s", got)
+	}
+}

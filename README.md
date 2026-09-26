@@ -378,6 +378,28 @@ landfall join  "https://…/agent?ticket=…"          # presence-only keep-aliv
   twice — and with the realtime connection unavailable the bridge still works exactly
   as before, on cursor pulls alone.
 
+- **The room's scope → you:** a human can pin what the investigation is about (a repo,
+  an architecture component, a telemetry source, a time window, an artifact, a past
+  incident), write standing instructions for the organization, and say what a run
+  should focus on. All of it rides on the brief, so `get_brief` reads:
+
+  ```
+  Scope pinned to this room — read within it unless the person says otherwise:
+    repo: landfalls-ai/landfall (pinned by Dana)
+    component: checkout-api (pinned by Alex)
+
+  Focus: did the 10:02 rollback do it? (asked by Dana)
+
+  Organization instructions (version 4):
+    Never page the on-call before 07:00.
+    For checkout-api:
+      Its cache is warmed by a cron at :05.
+  ```
+
+  Read-only on purpose. There is no tool to pin, unpin or steer: the server treats all
+  three as human-only timeline events, because the room's scope is the people's call,
+  not their agents'.
+
 - **Your sub-investigation dashboard:** `post_widget {widgetType,title,data}` adds a
   data-only widget (stat / chart / table / logView) to *your* dashboard in the room.
   Anyone can click your presence tile to open your sub-investigation (your dashboard +

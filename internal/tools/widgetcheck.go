@@ -58,7 +58,7 @@ var (
 const maxWidgetProblems = 8
 
 // ValidateWidget checks a widget payload against its type's contract: the
-// type is one the room renders, the title is set, and the data has the shape
+// type is one the room accepts from an agent (widgetTypes), the title is set, and the data has the shape
 // the catalog describes (required keys, no unknown keys, numbers finite,
 // times ISO-8601, series and point counts within the room's caps). It returns
 // every problem found, in a stable order, or nil when the widget is fine.
@@ -67,13 +67,15 @@ func ValidateWidget(w *WidgetPayload) []string {
 	if w == nil {
 		return []string{"widget must be an object: {widgetType, title, data}"}
 	}
-	known := false
-	for _, t := range widgetTypes {
-		if w.WidgetType == t {
-			known = true
-		}
-	}
-	if !known {
+	known := postable(w.WidgetType)
+	switch {
+	case w.WidgetType == "codeFinding":
+		// In the room's catalog, so an agent reading it may reach for it, but
+		// the room makes that card itself and refuses it from an agent.
+		c.errf("%s is not a widget an agent can post: the room makes that card itself. "+
+			"Share it as a finding in words, naming the file and lines, or use one of: %s",
+			quote(w.WidgetType), joinAny(widgetTypes))
+	case !known:
 		if w.WidgetType == "" {
 			c.errf("widget.widgetType is required (one of %s)", joinAny(widgetTypes))
 		} else {
@@ -101,8 +103,6 @@ func ValidateWidget(w *WidgetPayload) []string {
 			c.timeline(w.Data)
 		case "geo":
 			c.geo(w.Data)
-		case "codeFinding":
-			c.codeFinding(w.Data)
 		case "events":
 			c.events(w.Data)
 		case "graph":
@@ -110,6 +110,17 @@ func ValidateWidget(w *WidgetPayload) []string {
 		}
 	}
 	return c.errs
+}
+
+// postable reports whether the room accepts a widget of this type from an
+// edge agent (widgetTypes, the server's EDGE_WIDGET_TYPES).
+func postable(widgetType string) bool {
+	for _, t := range widgetTypes {
+		if widgetType == t {
+			return true
+		}
+	}
+	return false
 }
 
 // widgetProblem renders ValidateWidget's findings as the one error the agent
@@ -548,41 +559,6 @@ func (c *widgetChecker) inRange(d map[string]any, k, where string, lo, hi float6
 	n, isNum := jsNumber(v)
 	if !isNum || math.IsNaN(n) || math.IsInf(n, 0) || n < lo || n > hi {
 		c.errf("%s.%s must be a number from %g to %g (got %s)", where, k, lo, hi, shown(v))
-	}
-}
-
-func (c *widgetChecker) codeFinding(d map[string]any) {
-	c.closed(d, []string{"codeRef", "snippet"}, "codeFinding")
-	if ref, ok := c.object(d["codeRef"], "codeFinding.codeRef"); ok {
-		w := "codeFinding.codeRef"
-		c.closed(ref, []string{"provider", "owner", "repo", "ref", "path", "lineStart", "lineEnd", "pullRequestNumber", "permalink"}, w)
-		for _, k := range []string{"owner", "repo", "ref", "permalink"} {
-			c.reqNonEmpty(ref, k, w)
-		}
-		if p, isStr := ref["permalink"].(string); isStr && p != "" && !strings.HasPrefix(p, "https://") {
-			c.errf("%s.permalink must be an https URL (got %s)", w, shown(p))
-		}
-		c.optString(ref, "path", w)
-		c.optNumber(ref, "lineStart", w)
-		c.optNumber(ref, "lineEnd", w)
-		c.optNumber(ref, "pullRequestNumber", w)
-	}
-	if sn, ok := c.object(d["snippet"], "codeFinding.snippet"); ok {
-		w := "codeFinding.snippet"
-		c.closed(sn, []string{"lines", "startLine"}, w)
-		lines, isArr := sn["lines"].([]any)
-		allStrings := isArr
-		for _, l := range lines {
-			if _, isStr := l.(string); !isStr {
-				allStrings = false
-			}
-		}
-		if !allStrings {
-			c.errf("%s.lines must be an array of strings", w)
-		}
-		if !finite(sn["startLine"]) {
-			c.errf("%s.startLine must be a number (got %s)", w, shown(sn["startLine"]))
-		}
 	}
 }
 

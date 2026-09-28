@@ -92,7 +92,6 @@ func TestTheCheckNamesEachProblemPrecisely(t *testing.T) {
 		{"graph dangling edge", &WidgetPayload{WidgetType: "graph", Title: "x", Data: map[string]any{"nodes": []any{map[string]any{"id": "a", "label": "a"}}, "edges": []any{map[string]any{"from": "a", "to": "b"}}}}, `graph.edges[0].to names no node in graph.nodes (got "b")`},
 		{"graph duplicate id", &WidgetPayload{WidgetType: "graph", Title: "x", Data: map[string]any{"nodes": []any{map[string]any{"id": "a", "label": "a"}, map[string]any{"id": "a", "label": "b"}}, "edges": []any{}}}, `graph.nodes[1].id "a" is not unique`},
 		{"events actor kind", &WidgetPayload{WidgetType: "events", Title: "x", Data: map[string]any{"events": []any{map[string]any{"t": "2026-09-21T03:12:44Z", "action": "Put", "actor": map[string]any{"kind": "IAM User", "id": "u"}}}}}, "events.events[0].actor.kind must be a lower-case token"},
-		{"codeFinding permalink", &WidgetPayload{WidgetType: "codeFinding", Title: "x", Data: map[string]any{"codeRef": map[string]any{"owner": "o", "repo": "r", "ref": "main", "permalink": "http://x"}, "snippet": map[string]any{"lines": []any{"a"}, "startLine": 1.0}}}, "codeFinding.codeRef.permalink must be an https URL"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -227,5 +226,49 @@ func TestPostWidgetRefusesBeforeItPosts(t *testing.T) {
 	out := callTool(t, list, "post_widget", map[string]any{"widgetType": "stat", "title": "Error rate", "data": map[string]any{"value": 6.7}})
 	if !strings.Contains(out, `Widget "Error rate" added`) || len(c.recorded("contribute")) != 1 {
 		t.Fatalf("a good widget did not post: %q", out)
+	}
+}
+
+// TestACodeFindingIsRefusedWhereTheRoomWouldRefuseIt: codeFinding is in the
+// room's catalog, but its edge route takes only the data-only types
+// (EDGE_WIDGET_TYPES) and answers 400 "unknown widget type" to a codeFinding.
+// Both edge paths refuse it in the same result, with the reason, rather than
+// answering "shared" or "added" for a widget that can never land. Even the
+// room's own catalog example is refused.
+func TestACodeFindingIsRefusedWhereTheRoomWouldRefuseIt(t *testing.T) {
+	example := catalogExamples(t)["codeFinding"]
+	if example == nil {
+		t.Fatal("precondition: the catalog fixture carries a codeFinding example")
+	}
+	for _, v := range widgetTypes {
+		if v == "codeFinding" {
+			t.Fatal("codeFinding is advertised in the widget enum the edge tools send")
+		}
+	}
+	problems := ValidateWidget(&WidgetPayload{WidgetType: "codeFinding", Title: "origin.ts TTL", Data: example})
+	if len(problems) != 1 || !strings.Contains(problems[0], `"codeFinding" is not a widget an agent can post`) {
+		t.Fatalf("problems = %q", problems)
+	}
+
+	post := checkWidget(func(context.Context, map[string]any) (string, error) {
+		t.Fatal("post_widget posted a codeFinding")
+		return "", nil
+	})
+	if _, err := post(context.Background(), map[string]any{"widgetType": "codeFinding", "title": "origin.ts TTL", "data": example}); err == nil ||
+		!strings.Contains(err.Error(), "Nothing was posted") || !strings.Contains(err.Error(), "the room makes that card itself") {
+		t.Fatalf("post_widget err = %v", err)
+	}
+
+	acc := &fakeAccepter{}
+	share := shareTool(t, newSession(&fakeClient{}), acc)
+	_, err := share.Handler(context.Background(), map[string]any{
+		"text":   "the origin TTL is 120s in origin.ts",
+		"widget": map[string]any{"widgetType": "codeFinding", "title": "origin.ts TTL", "data": example},
+	})
+	if err == nil || !strings.Contains(err.Error(), "Nothing was shared") || !strings.Contains(err.Error(), "the room makes that card itself") {
+		t.Fatalf("share_with_room err = %v", err)
+	}
+	if acc.calls != 0 {
+		t.Fatal("a codeFinding was queued")
 	}
 }

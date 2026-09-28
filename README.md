@@ -474,7 +474,9 @@ landfall join  "https://…/agent?ticket=…"          # presence-only keep-aliv
   not their agents'.
 
 - **Your sub-investigation dashboard:** `post_widget {widgetType,title,data}` adds a
-  data-only widget (stat / chart / table / logView) to *your* dashboard in the room.
+  data-only widget (stat / chart / table / logView / timeline / geo / events / graph) to
+  *your* dashboard in the room. A code finding card is not one of them: the room makes that
+  card itself, and a `codeFinding` from an agent is refused in the same tool result.
   Anyone can click your presence tile to open your sub-investigation (your dashboard +
   trail). Data-only by design — you pass the values you computed; no code runs.
   With the background bridge the same widget rides `share_with_room`'s `widget`

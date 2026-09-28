@@ -42,20 +42,26 @@ var artifactExtTypes = map[string]string{
 	".markdown": "text/markdown", ".json": "application/json",
 }
 
-// widgetTypes is every canvas widget type the server's catalog renders
-// (monorepo feature 20260904-130050, extended by 20260921-140000). The server
-// validates a shared widget's data against the type's closed contract and refuses a
-// mismatch with the shape error; `describe_widget_types` returns the catalog with what
-// each is for and the shape it expects.
+// widgetTypes is every canvas widget type the room accepts FROM AN EDGE AGENT: the
+// server's EDGE_WIDGET_TYPES (its edge-consolidation library), which is
+// dataOnlyTypes() of the widget catalog (monorepo feature 20260904-130050, extended by
+// 20260921-140000).
+// The server validates a shared widget's data against the type's closed contract and
+// refuses a mismatch with the shape error; `describe_widget_types` returns the catalog
+// with what each is for and the shape it expects.
+//
+// NOT the whole catalog. `codeFinding` is in the catalog but is not data-only: the
+// room builds that card itself from a finding that carries a code reference, and its
+// edge route answers 400 "unknown widget type" to one posted directly. It was listed
+// here until 2026-09-28, so share_with_room answered "shared" and post_widget "added"
+// for a widget the room always refused. ValidateWidget refuses it with its own reason.
 //
 // KEPT IN THE SAME ORDER AS THE SERVER'S LIST, and that is not decoration. This list
 // drifted once already: `events` and `graph` shipped server-side on 2026-09-21 and this
 // stayed at seven long enough that the comment claiming it was in sync was simply
-// false. Nothing catches it -- the monorepo's drift test is one-directional, asserting
-// only that everything here EXISTS there, so a short list passes silently and the cost
-// is an agent that cannot share a type the server would have accepted. When the server
-// gains a type, add it here in the same two-repo rhythm as every other CLI follow-up.
-var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "codeFinding", "events", "graph"}
+// false. When the server's edge list gains a type, add it here in the same two-repo
+// rhythm as every other CLI follow-up.
+var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "events", "graph"}
 
 const widgetShapes = "Shapes: stat {value:number, unit?, delta?, deltaLabel?, trend?:\"up\"|\"down\"|\"flat\", tone?, baseline?, spark?:number[]}; " +
 	"chart {series:[{label, unit?, points:[{t:ISO-8601, v:number}]}], thresholds?:[{value,label?,tone?}], markers?:[{t,label,kind?}]}; " +
@@ -107,9 +113,9 @@ How to work:
   (durable cursor — only what is new since you last looked).
 - Publish concise results as you go: post_finding for findings, propose_action for
   remediations, post_widget to add a widget (stat, chart, table, logView, timeline, a geo
-  world map keyed by region, or a code finding) to your own sub-investigation dashboard;
-  describe_widget_types lists what each type is for. Every tool call also narrates your
-  presence to the room.
+  world map keyed by region, an events audit trail, or a graph of how things connect) to
+  your own sub-investigation dashboard; describe_widget_types lists what each type is for.
+  Every tool call also narrates your presence to the room.
 - Remediations are suggest-only: propose_action records a suggestion; a person applies
   it outside Landfall and records it as applied. You never make the change yourself,
   and Landfall never makes it either.
@@ -411,7 +417,7 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 	list = append(list, mcp.Tool{
 		Name: "describe_widget_types",
 		Description: "Describe the canvas widget types you can share (stat, chart, table, logView, timeline, geo world map, " +
-			"code finding): what each is for, what it is best for, and the data shape the room renders. Read this before " +
+			"events, graph): what each is for, what it is best for, and the data shape the room renders. Read this before " +
 			"choosing a widgetType. Static reference data from the server's catalog.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Handler:     b.narrated("describe_widget_types", b.describeWidgetTypes),
@@ -875,10 +881,19 @@ func (b *bridge) describeWidgetTypes(ctx context.Context, _ map[string]any, _ st
 		return "", err
 	}
 	b.sess.NoteFrame(frame)
-	if len(frame.WidgetCatalog) == 0 {
+	// Only the types an agent can post. The frame carries the whole catalog,
+	// codeFinding included, which the room builds itself and refuses from an
+	// agent; listing it here invited a widget that could never land.
+	catalog := make([]client.WidgetCatalogEntry, 0, len(frame.WidgetCatalog))
+	for _, e := range frame.WidgetCatalog {
+		if postable(e.Type) {
+			catalog = append(catalog, e)
+		}
+	}
+	if len(catalog) == 0 {
 		return "This server sent no widget catalog; the widget types it accepts are: " + joinAny(widgetTypes) + ". " + widgetShapes, nil
 	}
-	out, err := json.MarshalIndent(map[string]any{"types": frame.WidgetCatalog}, "", "  ")
+	out, err := json.MarshalIndent(map[string]any{"types": catalog}, "", "  ")
 	if err != nil {
 		return "", err
 	}

@@ -965,6 +965,28 @@ func TestDescribeWidgetTypesReturnsTheServersCatalog(t *testing.T) {
 	}
 }
 
+// TestDescribeWidgetTypesListsOnlyWhatAnAgentCanPost: the frame carries the
+// whole catalog, codeFinding included; an agent is shown only the types the
+// room takes from it.
+func TestDescribeWidgetTypesListsOnlyWhatAnAgentCanPost(t *testing.T) {
+	fc := &fakeClient{frame: &client.ContextFrame{WidgetCatalog: []client.WidgetCatalogEntry{
+		{Type: "chart", Label: "Chart", Purpose: "a trend", DataShape: "{ series: [...] }"},
+		{Type: "codeFinding", Label: "Code finding", Purpose: "the line at fault", DataShape: "{ codeRef, snippet }"},
+	}}}
+	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
+	if !strings.Contains(out, `"chart"`) {
+		t.Fatalf("a postable type is missing: %s", out)
+	}
+	if strings.Contains(out, "codeFinding") {
+		t.Fatalf("codeFinding is offered to an agent that cannot post it: %s", out)
+	}
+	for _, text := range []string{EdgeAgentInstructions, find(t, Build(newSession(fc)), "describe_widget_types").Description} {
+		if strings.Contains(strings.ToLower(text), "code finding") {
+			t.Errorf("the agent is still told it can post a code finding: %q", text)
+		}
+	}
+}
+
 func TestDescribeWidgetTypesFallsBackToTheEnumOnAnOlderServer(t *testing.T) {
 	fc := &fakeClient{frame: &client.ContextFrame{}}
 	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})

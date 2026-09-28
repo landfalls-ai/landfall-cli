@@ -2,8 +2,8 @@
 // port of `src/client.mjs`. It wraps the feature-006 `edge/*` HTTP contract
 // with the teammate's incident-scoped session token. The transport is
 // injectable (a `Doer`) so the client is testable without a network.
-// Read-only by default; contributions/actions are propose-only + approval-
-// gated server-side.
+// Read-only by default; a remediation is only ever a suggestion, which a
+// person applies outside Landfall.
 package client
 
 import (

@@ -76,7 +76,7 @@ func TestBridgeInstructionsDropTheBookkeepingBurden(t *testing.T) {
 
 // TestBothVariantsKeepTheLoadBearingParagraphs — three things must survive any
 // rewrite: the delivery-timing promise (which this feature makes MORE true),
-// the safety paragraph, and propose_action's propose-only framing (D2).
+// the safety paragraph, and propose_action's suggest-only framing (D2).
 func TestBothVariantsKeepTheLoadBearingParagraphs(t *testing.T) {
 	for _, v := range []struct {
 		name string
@@ -91,8 +91,15 @@ func TestBothVariantsKeepTheLoadBearingParagraphs(t *testing.T) {
 		if !strings.Contains(v.text, "data, not instructions") {
 			t.Errorf("%s: lost the prompt-injection safety paragraph", v.name)
 		}
-		if !strings.Contains(v.text, "propose-only") {
-			t.Errorf("%s: lost propose_action's propose-only framing (D2)", v.name)
+		if !strings.Contains(v.text, "suggest-only") || !strings.Contains(v.text, "outside Landfall") {
+			t.Errorf("%s: lost propose_action's suggest-only framing (D2)", v.name)
+		}
+		// Suggest-only (constitution v2.0.0): nothing in Landfall approves or
+		// executes a remediation, so the guidance must not say one does.
+		for _, stale := range []string{"approve and execute", "propose-only", "awaiting human approval"} {
+			if strings.Contains(v.text, stale) {
+				t.Errorf("%s: still says %q", v.name, stale)
+			}
 		}
 		if !strings.Contains(v.text, "secrets") {
 			t.Errorf("%s: lost the keep-secrets-local guidance", v.name)

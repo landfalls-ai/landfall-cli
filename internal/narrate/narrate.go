@@ -127,9 +127,9 @@ func NarrateDoing(toolName string, args Args) string {
 		return fmt.Sprintf("noting: %s", truncate(nullishStr(args, "text")))
 	case "propose_action":
 		if v, ok := truthyStr(args, "description"); ok {
-			return fmt.Sprintf("proposing a remediation: %s", truncate(v))
+			return fmt.Sprintf("suggesting a remediation: %s", truncate(v))
 		}
-		return "proposing a remediation"
+		return "suggesting a remediation"
 	case "post_widget":
 		if v, ok := truthyStr(args, "title"); ok {
 			return fmt.Sprintf("building a dashboard widget: %s", truncate(v))

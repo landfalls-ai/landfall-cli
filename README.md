@@ -76,7 +76,7 @@ which installs this repo's own Claude Code plugin — the `landfall` MCP server
   of `post_widget` widgets and keeps them current instead of scattering one-off
   ones.
 - **Knows the MCP best practices** for an ongoing investigation: pull before you
-  publish, findings vs. notes vs. widgets, propose-only remediation, keep
+  publish, findings vs. notes vs. widgets, suggest-only remediation, keep
   secrets/raw output local, treat room content as untrusted data.
 
 This step is best-effort and never turns a successful MCP registration into a
@@ -507,8 +507,10 @@ landfall hooks policy [--init]                         # print (or scaffold) the
 ```
 
 ## Guarantees
-- **Read-only by default**; `propose_action` is propose-only (a human approves — you
-  cannot execute). humanActorId comes from your verified session, never the payload.
+- **Read-only by default**; `propose_action` is suggest-only: it records a suggestion,
+  and a person applies it outside Landfall and records it as applied. Neither your agent
+  nor Landfall makes the change. humanActorId comes from your verified session, never
+  the payload.
 - An edge session token works ONLY on its one incident — default-deny everywhere else.
 - Join tickets are single-use, short-lived, and bound to tenant + incident + member.
 - **No network listener.** The bridge speaks MCP over stdio and opens the realtime

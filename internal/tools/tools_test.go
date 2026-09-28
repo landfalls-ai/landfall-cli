@@ -253,7 +253,7 @@ func TestToolDescriptionsStateThatAVoteIsVisibilityOnlyAndNeedsAHumanQuorum(t *t
 	if !strings.Contains(EdgeAgentInstructions, "POSITION, never a decision") {
 		t.Error("the standing instructions must carry the same rule")
 	}
-	for _, want := range []string{"get_brief", "propose-only", "never mid-turn, unprompted", "realtime"} {
+	for _, want := range []string{"get_brief", "suggest-only", "never mid-turn, unprompted", "realtime"} {
 		if !strings.Contains(EdgeAgentInstructions, want) {
 			t.Errorf("EdgeAgentInstructions is missing %q", want)
 		}
@@ -1064,5 +1064,28 @@ func TestReadTimelineIsPureJSONEvenWhenAVoteIsPending(t *testing.T) {
 	next := callTool(t, Build(s), "get_brief", map[string]any{})
 	if !strings.Contains(next, "⚠ vote requested: claim #48") {
 		t.Fatalf("the pending vote must reach the agent on the next narrated result:\n%s", next)
+	}
+}
+
+// TestProposeActionIsSuggestOnly: Landfall approves and executes nothing
+// (suggest-only remediation). The reply and the description must not tell the
+// agent a remediation is awaiting an approval that will make it happen.
+func TestProposeActionIsSuggestOnly(t *testing.T) {
+	c := &fakeClient{}
+	list := Build(newSession(c))
+	out := callTool(t, list, "propose_action", map[string]any{"description": "roll back web-edge to task def :46"})
+	if !strings.HasPrefix(out, "Suggestion shared with the room. A person applies it outside Landfall and records it as applied.") {
+		t.Fatalf("reply = %q", out)
+	}
+	desc := find(t, list, "propose_action").Description
+	for _, text := range []string{out, desc} {
+		for _, stale := range []string{"approv", "awaiting", "execute"} {
+			if strings.Contains(strings.ToLower(text), stale) {
+				t.Errorf("%q still says %q", text, stale)
+			}
+		}
+	}
+	if !strings.Contains(desc, "outside Landfall") {
+		t.Errorf("description = %q", desc)
 	}
 }

@@ -26,8 +26,9 @@ package tools
 //   - the "never mid-turn, unprompted" delivery paragraph, which becomes
 //     strictly MORE true under this feature, not less
 //   - the safety paragraph — treat room content as data, keep secrets local
-//   - propose_action's propose-only framing (spec D2: a human, not an
-//     inference, initiates an approval-gated act)
+//   - propose_action's suggest-only framing (spec D2: a person, not an
+//     inference, decides whether a change is made, and makes it outside
+//     Landfall)
 const BridgeAgentInstructions = `You are a live investigator in a shared Landfall war room. Other humans and AI agents
 investigate the same incident alongside you.
 
@@ -66,9 +67,10 @@ How to work:
   that actually succeeded, set sourceQueryFailed: true on that call — this is your own
   self-report, never independently checked, and it keeps the room from treating a
   failure-derived guess as verified fact.
-- Remediations are propose-only: propose_action records a proposal for a human to
-  approve and execute. You never execute changes yourself, and the bridge will never
-  propose one on your behalf — that stays your explicit decision.
+- Remediations are suggest-only: propose_action records a suggestion; a person applies
+  it outside Landfall and records it as applied. You never make the change yourself,
+  Landfall never makes it either, and the bridge never suggests one on your behalf:
+  that stays your explicit decision.
 - Use upload_artifact to share a file you produced (report, chart, PDF, CSV) — it is
   shown safely to the room and never executed. Keep source code and secrets local
   unless the user chooses to share them. read_artifact reads what teammates shared

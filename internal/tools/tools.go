@@ -110,8 +110,9 @@ How to work:
   world map keyed by region, or a code finding) to your own sub-investigation dashboard;
   describe_widget_types lists what each type is for. Every tool call also narrates your
   presence to the room.
-- Remediations are propose-only: propose_action records a proposal for a human to
-  approve and execute. You never execute changes yourself.
+- Remediations are suggest-only: propose_action records a suggestion; a person applies
+  it outside Landfall and records it as applied. You never make the change yourself,
+  and Landfall never makes it either.
 - Use upload_artifact to share a file you produced (report, chart, PDF, CSV) — it is
   shown safely to the room and never executed. Keep source code and secrets local
   unless the user chooses to share them. read_artifact reads what teammates shared
@@ -297,10 +298,12 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			Handler: b.narrated("read_artifact", b.readArtifact),
 		},
 		{
-			Name:        "propose_action",
-			Description: "Propose a remediation (propose-only; a human approves — you cannot execute).",
+			Name: "propose_action",
+			Description: "Suggest a remediation to the room: what to change, and in dryRunPreview what it would do. " +
+				"Suggest-only: a person decides whether to apply it, applies it outside Landfall and records it as applied. " +
+				"Neither you nor Landfall makes the change.",
 			InputSchema: obj(map[string]any{"description": strProp(""), "dryRunPreview": strProp("")}, "description"),
-			Handler:     b.narrated("propose_action", constant("Remediation proposed — awaiting human approval.")),
+			Handler:     b.narrated("propose_action", constant("Suggestion shared with the room. A person applies it outside Landfall and records it as applied.")),
 		},
 
 		// ---- vetting + claims (features 029/034 from the edge) -------------

@@ -115,6 +115,17 @@ waiting. (Until v0.8.12 the `Stop` hook refused the agent's conclusion instead, 
 made it run another turn on its own. That is now an explicit opt-in: see
 [What `Stop` does](#what-stop-does).)
 
+**Room news is information, not a task.** Your agent's standing instructions say the
+same thing the hooks do. Whatever reaches it from the room, inside one of its own tool
+results or with your next message, it mentions what bears on what you asked in one line
+and carries on with your request. It does not go off reading artifacts, posting to the
+room or running queries because of room news unless you ask. If someone in the room asks
+your agent for something, it tells you; whether it does it is your call. That includes a
+vote: when the room asks for your agent's position on a claim, your agent tells you, and
+takes a position only if you ask it to. With the background bridge, which `landfall serve`
+runs by default, your agent has no vote tools at all: if you want a position taken, take it
+yourself in the war room.
+
 ```
 landfall hooks install                  # every detected host
 landfall hooks install --only codex     # just one
@@ -221,6 +232,10 @@ this delivers it — no action beyond what you were already about to do.
 The cursor only advances once the digest has actually been handed over, so context is
 never consumed by a hook that could not deliver it.
 
+A status change in the digest carries what the person wrote with it (`resolved: Origin
+rollback complete; 5xx back to baseline.`), not just the event's type. Through v0.8.13
+a resolve note was dropped and the line read as a bare `status.changed`.
+
 The marker is a **doorbell, not a mailbox**: it carries a timestamp, a pid and a count,
 never a finding, a name or an incident id. The digest itself is staged next to the
 sockets outside your repo (`0600`), so nothing from the war room lands in a directory
@@ -305,7 +320,9 @@ your status line and your prompt digest count what *you* have not been shown.
 `landfall status` (the Claude Code status line) names the room the way the web app does, by
 its display id, `🔴 Acme 42 · 2 new · 1 vote awaited`, or by its title (`🔴 landfall:
 Checkout 5xx spike`) when the server has not sent one. It never shows the incident's internal
-id. Until your agent has read the room's brief once, it says `🔴 landfall`.
+id. Until your agent has read the room's brief once, it says `🔴 landfall`. `1 vote awaited`
+counts the staged claims the room is asking your agent to take a position on. Through v0.8.13
+the daemon's status line never showed it; only a fallback-mode `serve` did.
 
 ```
 landfall rooms              # which rooms this machine has open, and who is reading each
@@ -515,6 +532,42 @@ loki · logs
   logs.range (logs, range): LogQL range query.
     params: query (LogQL, e.g. {app="web"})
 ```
+
+`query_signals` answers with a bounded summary, not the source's raw JSON. A log read is the
+event count, the time range and up to 40 lines as `HH:MM:SSZ message` (the first half and the
+last half when there are more). A metric read is each series' name, point count, min, max and
+last value, then its points within the same budget. Anything else shows its main list, one item
+per line. It always says when it trimmed and how to get more: a narrower time window or filter
+in `params`, `maxLines` (up to 200), or the next page's token when the source has one. A single
+line longer than 300 characters is cut to fit, and the answer says how many were cut and that
+`raw: true` has them in full (`2 lines were cut at 300 characters; pass raw: true to read them
+in full.`), so the end of a long message, often the part that matters, is never lost unseen.
+
+```
+cloudwatch filterLogEvents: 1,284 log events, 2026-09-28 14:02:11Z to 14:31:40Z, across 3 streams.
+14:02:11Z upstream 503 from origin, route /checkout
+14:02:12Z retrying origin request, attempt 2
+...
+… 1,244 events not shown …
+...
+14:31:40Z origin healthy again, 0 errors in the last minute
+Trimmed: showing the first 20 and the last 20 of 1,284 events. To see more, narrow the time window or the filter in params, or raise maxLines (up to 200).
+
+cloudwatch getMetricStatistics: 1 series, 60 points, 2026-09-28 14:00:00Z to 14:59:00Z.
+5xxErrorRate (Percent): 60 points; min 0.1, max 12.4, last 3.2 at 14:59:00Z
+  14:00:00Z 0.1
+  ...
+```
+
+An MCP-server source answers in the MCP tool's own text, which is read through once more when it
+is JSON. mcp-grafana's `query_loki_logs` gets the same log view (and, for a LogQL metric query,
+the series view) from its own answer shape, which is not Loki's API; when it stopped at its
+`limit` with more left, the answer says so. Other MCP tools' JSON is read like any other
+answer: one of the views above when it has that shape, its main list when it does not.
+
+`raw: true` returns the source's own response as JSON instead, capped at 64 KB, for the rare
+field the summary leaves out. Through v0.8.13 that JSON, indented and unbounded, was the only
+answer: one CloudWatch log-group read could put over 100 KB into your agent's context.
 
 ## Env-config setup
 

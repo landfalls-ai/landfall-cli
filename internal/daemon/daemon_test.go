@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -507,5 +508,77 @@ func TestPeekCarriesTheRoomsAttentionAndRefreshesItWhenAnEventTouchesIt(t *testi
 	edge.mu.Unlock()
 	if reads != 2 || p3.Rooms[0].Attention == nil || len(p3.Rooms[0].Attention.VotesAwaited) != 0 {
 		t.Fatalf("an event touching attention must make the next peek read again: reads=%d %+v", reads, p3.Rooms[0].Attention)
+	}
+}
+
+// TestTheStatusLineSaysWhenAVoteIsAwaited: the per-pid socket's status always
+// counted votes awaited; the daemon's peek read the attention and never set
+// the count, so in daemon mode (the default since v0.8.0) the status line
+// never showed one.
+func TestTheStatusLineSaysWhenAVoteIsAwaited(t *testing.T) {
+	edge := &fakeEdge{
+		frame: &client.ContextFrame{Incident: client.Incident{DisplayID: "Acme 42"}},
+		attention: &client.Attention{VotesAwaited: []client.VoteAwaited{
+			{Statement: "TTL was 60 s", AuthoredBy: "Maya"},
+			{Statement: "the origin pool lost two hosts", AuthoredBy: "Ravi"},
+		}},
+	}
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, edge, wire)
+	ctx := context.Background()
+	h := d.handler
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	if a := h.Handle(ctx, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}}); !a.OK {
+		t.Fatalf("attach: %+v", a)
+	}
+
+	p := h.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws"})
+	if !p.OK || len(p.Rooms) != 1 || p.Rooms[0].VotesAwaited != 2 {
+		t.Fatalf("peek must count the votes awaited: %+v", p.Rooms)
+	}
+	if s := h.Handle(ctx, Request{Op: "status", WorkspaceKey: "ws"}); s.Line != "🔴 Acme 42 · 2 votes awaited" {
+		t.Fatalf("status line = %q", s.Line)
+	}
+
+	// One vote left after a claim event refreshes the snapshot.
+	edge.mu.Lock()
+	edge.attention = &client.Attention{VotesAwaited: []client.VoteAwaited{{Statement: "TTL was 60 s", AuthoredBy: "Maya"}}}
+	edge.mu.Unlock()
+	wire.emit(client.Event{Seq: seq(11), Type: "claim.positioned", Payload: map[string]any{}})
+	if s := h.Handle(ctx, Request{Op: "status", WorkspaceKey: "ws"}); !strings.HasSuffix(s.Line, " · 1 vote awaited") {
+		t.Fatalf("status line = %q", s.Line)
+	}
+
+	// None awaited: nothing said about votes.
+	edge.mu.Lock()
+	edge.attention = &client.Attention{}
+	edge.mu.Unlock()
+	wire.emit(client.Event{Seq: seq(12), Type: "claim.admitted", Payload: map[string]any{}})
+	if s := h.Handle(ctx, Request{Op: "status", WorkspaceKey: "ws"}); strings.Contains(s.Line, "vote") {
+		t.Fatalf("status line = %q", s.Line)
+	}
+}
+
+// TestTheDigestCarriesAResolveNote: the digest a UserPromptSubmit hook hands
+// the agent is the peek's lines. A resolve note used to render as a bare
+// "status.changed".
+func TestTheDigestCarriesAResolveNote(t *testing.T) {
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, &fakeEdge{}, wire)
+	ctx := context.Background()
+	h := d.handler
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	if a := h.Handle(ctx, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}}); !a.OK {
+		t.Fatalf("attach: %+v", a)
+	}
+	wire.emit(client.Event{Seq: seq(20), Type: "status.changed", ActorType: "human",
+		Payload: map[string]any{"status": "resolved", "note": "Origin rollback complete; 5xx back to baseline.", "displayName": "Dana"}})
+
+	p := h.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws"})
+	if !p.OK || len(p.Rooms) != 1 || len(p.Rooms[0].Digest) != 1 {
+		t.Fatalf("peek: %+v", p.Rooms)
+	}
+	if got := p.Rooms[0].Digest[0]; !strings.HasSuffix(got, "[Dana] — resolved: Origin rollback complete; 5xx back to baseline.") {
+		t.Fatalf("digest line = %q", got)
 	}
 }

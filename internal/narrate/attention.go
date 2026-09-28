@@ -84,7 +84,35 @@ func VoteKey(v client.VoteAwaited) string {
 // attention may be nil (an unreachable server means "nothing known to be
 // waiting"), matching the source's own `attention?.votesAwaited` guard.
 // Returns a zero-value Block (Text == "") when there is nothing new to say.
+//
+// It closes with VoteRequestFoot, the line for a surface that registers
+// corroborate_claim and contest_claim; VoteRequestBlockFor picks the line for
+// one that does not.
 func VoteRequestBlock(attention *client.Attention, notified map[string]bool, max int) Block {
+	return VoteRequestBlockFor(attention, notified, max, true)
+}
+
+// VoteRequestFoot and VoteRequestFootBridge close a vote-request block.
+//
+// A vote request is room news addressed to the agent, and room news is the
+// person's call: the agent says so in one line and takes a position only when
+// the person asks, the same rule its standing instructions give for any ask
+// from the room. The block used to end "vote and carry on", which told the
+// agent to post to the room on its own.
+//
+// The bridge line names no verb. With the bridge running, corroborate_claim
+// and contest_claim are not registered (the worker never votes, see
+// bridge/vetting.go), so naming them sends the agent looking for a verb it does
+// not have, or "answering" through share_with_room.
+const (
+	VoteRequestFoot = "Tell the person in one line; take a position with corroborate_claim or contest_claim only if they ask you to. " +
+		"A position is never a decision."
+	VoteRequestFootBridge = "Tell the person in one line; whether to take a position is their call, and they can take it in the war room."
+)
+
+// VoteRequestBlockFor is VoteRequestBlock for a surface that can, or cannot,
+// vote: canVote false closes with VoteRequestFootBridge.
+func VoteRequestBlockFor(attention *client.Attention, notified map[string]bool, max int, canVote bool) Block {
 	if attention == nil {
 		return Block{}
 	}
@@ -139,9 +167,11 @@ func VoteRequestBlock(attention *client.Attention, notified map[string]bool, max
 	if omitted > 0 {
 		lines = append(lines, fmt.Sprintf("+%d more claim(s) awaiting your position — see the war room.", omitted))
 	}
-	lines = append(lines,
-		"Take a position with corroborate_claim or contest_claim when you have evidence either way; "+
-			"your vote is a position, never a decision, so vote and carry on.")
+	if canVote {
+		lines = append(lines, VoteRequestFoot)
+	} else {
+		lines = append(lines, VoteRequestFootBridge)
+	}
 
 	keys := make([]string, len(shown))
 	for i, v := range shown {

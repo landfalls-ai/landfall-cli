@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"math"
 	"strconv"
+	"strings"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
@@ -251,9 +252,13 @@ func joinDot(parts []string) string {
 // claim.contested) carry theirs in statement/reason/stance rather than
 // text, so a reader that knew only the older fields rendered them as a bare
 // type with no body — hence the fallback chain below, ported field-for-field
-// from narrate.mjs's own chain.
+// from narrate.mjs's own chain. `note` is last: a remediation recorded as
+// applied outside Landfall carries what the person wrote there.
+//
+// A caller holding the whole event uses EventTextOf, which also knows the
+// types whose substance only their type explains (a status change).
 func EventText(payload Args) string {
-	for _, key := range []string{"text", "description", "doing", "summary", "statement", "reason", "stance"} {
+	for _, key := range []string{"text", "description", "doing", "summary", "statement", "reason", "stance", "note"} {
 		if v, ok := payload[key]; ok && v != nil {
 			if s, ok := v.(string); ok {
 				return s
@@ -262,6 +267,44 @@ func EventText(payload Args) string {
 		}
 	}
 	return ""
+}
+
+// EventTextOf is EventText for a whole event.
+//
+// A status change reads as "resolved: <note>". Its payload is {status, note?,
+// reason?}, none of which EventText's chain reads first, so the digest showed
+// a bare "status.changed" and a resolve note, the one line a person writes
+// when closing an incident, never reached an agent. Decided by the event's
+// type, not by a payload that happens to carry a `status`: other events do,
+// and their substance is elsewhere.
+func EventTextOf(e client.Event) string {
+	switch e.Type {
+	case "status.changed":
+		return statusChangeText(e.Payload)
+	case "claim.admitted":
+		if what := EventText(e.Payload); what != "" {
+			return what
+		}
+		return admittedText(e.Payload)
+	}
+	return EventText(e.Payload)
+}
+
+// statusChangeText is a status change as "resolved: <note>", the bare status
+// when nothing was written with it. A payload with text of its own, or with
+// no status, reads as EventText reads it.
+func statusChangeText(payload Args) string {
+	status, _ := payload["status"].(string)
+	status = strings.TrimSpace(status)
+	if _, hasText := payload["text"]; hasText || status == "" {
+		return EventText(payload)
+	}
+	for _, key := range []string{"note", "reason"} {
+		if s, _ := payload[key].(string); strings.TrimSpace(s) != "" {
+			return status + ": " + strings.TrimSpace(s)
+		}
+	}
+	return status
 }
 
 // IsTemplated reports whether this event's text is a fixed template with no
@@ -295,10 +338,7 @@ func IsTemplated(payload Args) bool {
 // "#0", since seq 0 is a real event.
 func FormatEventLine(e client.Event) string {
 	who := EventActor(e.Payload)
-	what := EventText(e.Payload)
-	if what == "" && e.Type == "claim.admitted" {
-		what = admittedText(e.Payload)
-	}
+	what := EventTextOf(e)
 	marker := ""
 	if IsTemplated(e.Payload) {
 		marker = " (no evidence — templated, not analysis)"
@@ -344,7 +384,7 @@ func truncate(s string) string {
 // this exists only so a human watching the terminal isn't left guessing.
 func DescribeEvent(e client.Event) string {
 	who := EventActor(e.Payload)
-	what := EventText(e.Payload)
+	what := EventTextOf(e)
 	body := ""
 	if what != "" {
 		body = fmt.Sprintf(": %q", truncateN(what, 100))

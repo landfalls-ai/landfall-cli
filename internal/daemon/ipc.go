@@ -423,11 +423,19 @@ func (d *Daemon) peek(req Request) Response {
 			digest = append(digest, line)
 		}
 		name := room.Name()
+		attention := room.AttentionFor(context.Background(), seat, peekAttentionBudget)
+		// VotesAwaited is read off the same attention snapshot the Stop hook
+		// reads. It was left unset here, so in daemon mode the status line
+		// never said a vote was waiting, while the per-pid socket status did.
+		votes := 0
+		if attention != nil {
+			votes = len(attention.VotesAwaited)
+		}
 		res.Rooms = append(res.Rooms, RoomView{
 			RoomKey: room.Key, IncidentID: room.Config.IncidentID, DisplayID: name.DisplayID, Title: name.Title,
 			Slug: room.Config.Slug, Connection: room.Connection,
 			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: cursor, Digest: digest, Events: untold,
-			Attention: room.AttentionFor(context.Background(), seat, peekAttentionBudget),
+			Attention: attention, VotesAwaited: votes,
 		})
 	}
 	return res

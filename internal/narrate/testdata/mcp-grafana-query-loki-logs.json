@@ -1,0 +1,105 @@
+{
+  "_note": "REAL CAPTURE (read-only) of grafana/mcp-grafana's query_loki_logs (the grafana/mcp-grafana:latest image built 2026-08-28, which reports version (devel), as the monorepo's libs/signals mcp-grafana-capture.json also does), recorded 2026-09-28 through the MCP TypeScript SDK client over Streamable HTTP (the transport Landfall's MCP-server source uses), against a throwaway Grafana 11.4.0 + Loki 3.2.1 pair on an isolated local Docker network with a Viewer service-account token; everything was deleted after the run. The log lines were pushed into that Loki for the capture, so the content is synthetic and the SHAPE is the server's own. Each `result` is the tools/call result exactly as the SDK returned it, which is what the MCP source passes through as the envelope's `raw`. Note the log timestamps: the server writes each as a JSON string that itself contains quote characters. Do not hand-edit the results; re-capture instead.",
+  "capturedAt": "2026-09-28T20:57:00Z",
+  "serverInfo": {
+    "name": "mcp-grafana",
+    "version": "(devel)"
+  },
+  "calls": {
+    "full": {
+      "name": "query_loki_logs",
+      "arguments": {
+        "datasourceUid": "landfall-loki",
+        "logql": "{env=\"dev\"}"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":[{\"timestamp\":\"\\\"1790628778841205000\\\"\",\"line\":\"retrying authorization against card processor\",\"labels\":{\"app\":\"payments\",\"env\":\"dev\",\"level\":\"warn\",\"service_name\":\"payments\"},\"structuredMetadata\":{\"detected_level\":\"warn\"}},{\"timestamp\":\"\\\"1790628698841205000\\\"\",\"line\":\"connection pool exhausted, waiting for a free connection\",\"labels\":{\"app\":\"payments\",\"env\":\"dev\",\"level\":\"warn\",\"service_name\":\"payments\"},\"structuredMetadata\":{\"detected_level\":\"warn\"}},{\"timestamp\":\"\\\"1790628858841205000\\\"\",\"line\":\"{\\\"level\\\":\\\"error\\\",\\\"msg\\\":\\\"payment authorization timed out\\\",\\\"route\\\":\\\"/checkout\\\",\\\"attempt\\\":3}\",\"labels\":{\"app\":\"checkout\",\"env\":\"dev\",\"level\":\"error\",\"service_name\":\"checkout\"},\"structuredMetadata\":{\"detected_level\":\"error\"}},{\"timestamp\":\"\\\"1790628738841205000\\\"\",\"line\":\"GET /checkout 503 upstream=payments latency_ms=5007\",\"labels\":{\"app\":\"checkout\",\"env\":\"dev\",\"level\":\"error\",\"service_name\":\"checkout\"},\"structuredMetadata\":{\"detected_level\":\"error\"}},{\"timestamp\":\"\\\"1790628678841205000\\\"\",\"line\":\"GET /checkout 503 upstream=payments latency_ms=5012\",\"labels\":{\"app\":\"checkout\",\"env\":\"dev\",\"level\":\"error\",\"service_name\":\"checkout\"},\"structuredMetadata\":{\"detected_level\":\"error\"}}],\"hints\":{\"summary\":\"This query used the default 1-hour lookback window because startRfc3339 and endRfc3339 were not provided.\",\"possibleCauses\":[],\"suggestedActions\":[\"If results seem incomplete or you need data from a wider time range, provide explicit startRfc3339 and endRfc3339 parameters.\"]},\"metadata\":{\"linesReturned\":5,\"maxLinesAllowed\":10,\"resultsTruncated\":false,\"totalLinesScanned\":5,\"startTime\":\"2026-09-28T19:56:35Z\",\"endTime\":\"2026-09-28T20:56:35Z\"}}"
+          }
+        ]
+      }
+    },
+    "compact": {
+      "name": "query_loki_logs",
+      "arguments": {
+        "datasourceUid": "landfall-loki",
+        "logql": "{env=\"dev\"}",
+        "format": "compact"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":[],\"streams\":[{\"labels\":{\"app\":\"payments\",\"env\":\"dev\",\"level\":\"warn\",\"service_name\":\"payments\"},\"lines\":[{\"timestamp\":\"\\\"1790628778841205000\\\"\",\"line\":\"retrying authorization against card processor\"},{\"timestamp\":\"\\\"1790628698841205000\\\"\",\"line\":\"connection pool exhausted, waiting for a free connection\"}]},{\"labels\":{\"app\":\"checkout\",\"env\":\"dev\",\"level\":\"error\",\"service_name\":\"checkout\"},\"lines\":[{\"timestamp\":\"\\\"1790628858841205000\\\"\",\"line\":\"{\\\"level\\\":\\\"error\\\",\\\"msg\\\":\\\"payment authorization timed out\\\",\\\"route\\\":\\\"/checkout\\\",\\\"attempt\\\":3}\"},{\"timestamp\":\"\\\"1790628738841205000\\\"\",\"line\":\"GET /checkout 503 upstream=payments latency_ms=5007\"},{\"timestamp\":\"\\\"1790628678841205000\\\"\",\"line\":\"GET /checkout 503 upstream=payments latency_ms=5012\"}]}],\"hints\":{\"summary\":\"This query used the default 1-hour lookback window because startRfc3339 and endRfc3339 were not provided.\",\"possibleCauses\":[],\"suggestedActions\":[\"If results seem incomplete or you need data from a wider time range, provide explicit startRfc3339 and endRfc3339 parameters.\"]},\"metadata\":{\"linesReturned\":5,\"maxLinesAllowed\":10,\"resultsTruncated\":false,\"totalLinesScanned\":5,\"startTime\":\"2026-09-28T19:56:35Z\",\"endTime\":\"2026-09-28T20:56:35Z\"}}"
+          }
+        ]
+      }
+    },
+    "limitReached": {
+      "name": "query_loki_logs",
+      "arguments": {
+        "datasourceUid": "landfall-loki",
+        "logql": "{env=\"dev\"}",
+        "limit": 2
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":[{\"timestamp\":\"\\\"1790628778841205000\\\"\",\"line\":\"retrying authorization against card processor\",\"labels\":{\"app\":\"payments\",\"env\":\"dev\",\"level\":\"warn\",\"service_name\":\"payments\"},\"structuredMetadata\":{\"detected_level\":\"warn\"}},{\"timestamp\":\"\\\"1790628858841205000\\\"\",\"line\":\"{\\\"level\\\":\\\"error\\\",\\\"msg\\\":\\\"payment authorization timed out\\\",\\\"route\\\":\\\"/checkout\\\",\\\"attempt\\\":3}\",\"labels\":{\"app\":\"checkout\",\"env\":\"dev\",\"level\":\"error\",\"service_name\":\"checkout\"},\"structuredMetadata\":{\"detected_level\":\"error\"}}],\"hints\":{\"summary\":\"This query used the default 1-hour lookback window because startRfc3339 and endRfc3339 were not provided.\",\"possibleCauses\":[],\"suggestedActions\":[\"If results seem incomplete or you need data from a wider time range, provide explicit startRfc3339 and endRfc3339 parameters.\"]},\"metadata\":{\"linesReturned\":2,\"maxLinesAllowed\":2,\"resultsTruncated\":true,\"totalLinesScanned\":5,\"startTime\":\"2026-09-28T19:56:56Z\",\"endTime\":\"2026-09-28T20:56:56Z\"}}"
+          }
+        ]
+      }
+    },
+    "metricRange": {
+      "name": "query_loki_logs",
+      "arguments": {
+        "datasourceUid": "landfall-loki",
+        "logql": "sum by (app) (count_over_time({env=\"dev\"}[5m]))",
+        "queryType": "range",
+        "stepSeconds": 60
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":[{\"values\":[{\"timestamp\":\"1790628720.000\",\"value\":1},{\"timestamp\":\"1790628780.000\",\"value\":2},{\"timestamp\":\"1790628840.000\",\"value\":2},{\"timestamp\":\"1790628900.000\",\"value\":3},{\"timestamp\":\"1790628960.000\",\"value\":3},{\"timestamp\":\"1790629020.000\",\"value\":2}],\"labels\":{\"app\":\"checkout\"}},{\"values\":[{\"timestamp\":\"1790628720.000\",\"value\":1},{\"timestamp\":\"1790628780.000\",\"value\":2},{\"timestamp\":\"1790628840.000\",\"value\":2},{\"timestamp\":\"1790628900.000\",\"value\":2},{\"timestamp\":\"1790628960.000\",\"value\":2},{\"timestamp\":\"1790629020.000\",\"value\":1}],\"labels\":{\"app\":\"payments\"}}],\"hints\":{\"summary\":\"This query used the default 1-hour lookback window because startRfc3339 and endRfc3339 were not provided.\",\"possibleCauses\":[],\"suggestedActions\":[\"If results seem incomplete or you need data from a wider time range, provide explicit startRfc3339 and endRfc3339 parameters.\"]},\"metadata\":{\"linesReturned\":2,\"maxLinesAllowed\":10,\"resultsTruncated\":false,\"totalLinesScanned\":5,\"startTime\":\"2026-09-28T19:56:35Z\",\"endTime\":\"2026-09-28T20:56:35Z\"}}"
+          }
+        ]
+      }
+    },
+    "metricInstant": {
+      "name": "query_loki_logs",
+      "arguments": {
+        "datasourceUid": "landfall-loki",
+        "logql": "sum by (app) (count_over_time({env=\"dev\"}[10m]))",
+        "queryType": "instant"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":[{\"timestamp\":\"1790629016.032\",\"value\":3,\"labels\":{\"app\":\"checkout\"}},{\"timestamp\":\"1790629016.032\",\"value\":2,\"labels\":{\"app\":\"payments\"}}],\"metadata\":{\"linesReturned\":2,\"maxLinesAllowed\":10,\"resultsTruncated\":false,\"totalLinesScanned\":5}}"
+          }
+        ]
+      }
+    },
+    "noMatch": {
+      "name": "query_loki_logs",
+      "arguments": {
+        "datasourceUid": "landfall-loki",
+        "logql": "{env=\"nothing-here\"}"
+      },
+      "result": {
+        "content": [
+          {
+            "type": "text",
+            "text": "{\"data\":[],\"hints\":{\"summary\":\"The Loki query returned no log entries for the specified time range.\",\"possibleCauses\":[\"The stream selector labels may not match any log streams\",\"No logs were ingested during the specified time range\",\"The filter expression may be too restrictive\",\"The label values in the selector may be misspelled or incorrect\"],\"suggestedActions\":[\"Use list_loki_label_names to verify available labels\",\"Use list_loki_label_values to check values for specific labels\",\"Use query_loki_stats to check if logs exist for the stream selector\",\"Try expanding the time range to see if logs exist in a different period\"],\"debug\":{\"timeRange\":\"2026-09-28T19:56:35Z to 2026-09-28T20:56:35Z\"}},\"metadata\":{\"linesReturned\":0,\"maxLinesAllowed\":10,\"resultsTruncated\":false,\"totalLinesScanned\":0,\"startTime\":\"2026-09-28T19:56:35Z\",\"endTime\":\"2026-09-28T20:56:35Z\"}}"
+          }
+        ]
+      }
+    }
+  }
+}

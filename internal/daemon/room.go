@@ -473,7 +473,9 @@ func RestoreRoom(ctx context.Context, st RoomState, deps Deps) (*Room, error) {
 	r.mu.Lock()
 	r.CwdAllowed = st.CwdAllowed
 	if st.Name != nil {
-		r.name = *st.Name
+		// Cleaned again: the state file is a file, and what it says is printed
+		// to the person's terminal.
+		r.name = st.Name.Clean()
 	}
 	for _, h := range st.Links {
 		r.addLinkLocked(h)

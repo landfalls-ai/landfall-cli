@@ -91,3 +91,40 @@ func TestAFrameWithNoNameKeepsTheLastOne(t *testing.T) {
 		t.Fatalf("name after an unnamed frame = %q", got)
 	}
 }
+
+// TestATitleWithEscapesReachesNoTerminal: the title is the server's words and
+// the status line and `landfall rooms` print it to the person's terminal. What
+// the daemon keeps, persists, restores and answers with carries no control
+// character, even from a state file written before names were cleaned.
+func TestATitleWithEscapesReachesNoTerminal(t *testing.T) {
+	const hostile = "Checkout \x1b[31m5xx\x1b[0m \x1b]0;owned\x07spike"
+	edge := &fakeEdge{frame: &client.ContextFrame{Incident: client.Incident{Title: hostile}}}
+	d, _ := testDaemon(t, edge, &fakeWire{})
+	ctx := context.Background()
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	a := d.handler.Handle(ctx, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}})
+	if !a.OK {
+		t.Fatalf("attach: %+v", a)
+	}
+	s := d.handler.Handle(ctx, Request{Op: "status", WorkspaceKey: "ws"})
+	rooms := d.handler.Handle(ctx, Request{Op: "rooms"})
+	for _, text := range []string{s.Line, rooms.Rooms[0].Title} {
+		if strings.ContainsAny(text, "\x1b\x07") {
+			t.Fatalf("a control character reached the answer: %q", text)
+		}
+	}
+	if s.Line != "🔴 landfall: Checkout [31m5xx[0m ]0;ownedspike" {
+		t.Fatalf("status line = %q", s.Line)
+	}
+
+	st := d.room(a.RoomKey).Snapshot()
+	st.Name = &narrate.RoomName{Title: hostile} // as an older build would have saved it
+	restored, err := RestoreRoom(ctx, st, Deps{NewClient: func(client.Config) session.EdgeClient { return &fakeEdge{} }})
+	if err != nil {
+		t.Fatalf("RestoreRoom: %v", err)
+	}
+	defer restored.Close(ctx)
+	if got := restored.Name().Title; strings.ContainsAny(got, "\x1b\x07") {
+		t.Fatalf("a restored name kept a control character: %q", got)
+	}
+}

@@ -1,13 +1,20 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
+	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
 )
 
@@ -224,8 +231,8 @@ func TestASecondHarnessJoinsWithTheSameLinkThroughTheDaemon(t *testing.T) {
 	if !l.OK || l.Room == nil || l.RoomKey != a.RoomKey || l.Room.Token != "t" || l.Room.AgentLabel != "" {
 		t.Fatalf("link lookup: %+v", l)
 	}
-	if miss := d.handler.Handle(ctx, Request{Op: "link", Link: LinkHash("https://app.landfalls.ai/j/other")}); miss.OK {
-		t.Fatal("an unknown link must not resolve")
+	if miss := d.handler.Handle(ctx, Request{Op: "link", Link: LinkHash("https://app.landfalls.ai/j/other")}); !miss.OK || miss.Room != nil || !miss.Claimed {
+		t.Fatalf("an unknown link is the caller's to redeem: %+v", miss)
 	}
 	cfg := *l.Room
 	cfg.AgentLabel = "Codex"
@@ -330,4 +337,179 @@ func TestEachSeatBeatsItsOwnPresence(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("both seats must heartbeat")
+}
+
+// Two harnesses started together with the same --link: the first to ask
+// redeems, the second waits for it and joins with what it got. The session is
+// recorded the moment the redeem lands, before any join, so a join that then
+// fails does not burn the link.
+func TestConcurrentRedeemsOfOneLinkAreSerialized(t *testing.T) {
+	d, _, _ := seatDaemon(t)
+	ctx := context.Background()
+	link := LinkHash("https://app.landfalls.ai/j/together")
+	first := d.handler.Handle(ctx, Request{Op: "link", Link: link})
+	if !first.Claimed {
+		t.Fatalf("the first caller holds the claim: %+v", first)
+	}
+	second := make(chan Response, 1)
+	go func() { second <- d.handler.Handle(ctx, Request{Op: "link", Link: link}) }()
+	select {
+	case r := <-second:
+		t.Fatalf("the second caller must wait for the first redeem, got %+v", r)
+	case <-time.After(100 * time.Millisecond):
+	}
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "redeemed", AgentLabel: "Claude Code"}
+	if r := d.handler.Handle(ctx, Request{Op: "link-redeemed", Link: link, Room: &cfg}); !r.OK {
+		t.Fatal(r.Error)
+	}
+	select {
+	case r := <-second:
+		if !r.OK || r.Claimed || r.Room == nil || r.Room.Token != "redeemed" || r.Room.AgentLabel != "" {
+			t.Fatalf("the second caller joins with the first redeem's session: %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the second caller never woke")
+	}
+	// No room was ever attached (the first join failed, say): the session is
+	// still there for a retry.
+	if r := d.handler.Handle(ctx, Request{Op: "link", Link: link}); r.Room == nil || r.Room.Token != "redeemed" {
+		t.Fatalf("a recorded redeem outlives a failed join: %+v", r)
+	}
+}
+
+func TestAFailedRedeemHandsTheClaimToTheNextCaller(t *testing.T) {
+	d, _, _ := seatDaemon(t)
+	ctx := context.Background()
+	link := LinkHash("https://app.landfalls.ai/j/flaky")
+	if r := d.handler.Handle(ctx, Request{Op: "link", Link: link}); !r.Claimed {
+		t.Fatalf("%+v", r)
+	}
+	second := make(chan Response, 1)
+	go func() { second <- d.handler.Handle(ctx, Request{Op: "link", Link: link}) }()
+	time.Sleep(50 * time.Millisecond)
+	d.handler.Handle(ctx, Request{Op: "link-failed", Link: link})
+	select {
+	case r := <-second:
+		if !r.Claimed {
+			t.Fatalf("after a failed redeem the waiter takes the claim: %+v", r)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the waiter never woke")
+	}
+}
+
+// A hook whose harness key matches no front end here (an inherited
+// CLAUDECODE, a renamed host) must not go silent.
+func TestAHookWhoseHarnessHasNoReaderFallsBackToTheWorkspace(t *testing.T) {
+	d, _, wire := seatDaemon(t)
+	ctx := context.Background()
+	attachAs(t, d, "Codex", "codex", "1", "")
+	wire.emit(client.Event{Seq: seq(9), Type: "edge.finding", Payload: map[string]any{"text": "p99 spiked"}})
+	p := d.handler.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws", Harness: "claude-code"})
+	if !p.OK || len(p.Rooms) != 1 || p.Rooms[0].Count != 1 {
+		t.Fatalf("an unmatched harness reads the workspace's sessions together: %+v", p)
+	}
+}
+
+// A reader whose seat was left has no own echo: a sibling's writes are news.
+func TestAReaderWhoseSeatIsGoneTreatsNothingAsItsOwnEcho(t *testing.T) {
+	d, _, wire := seatDaemon(t)
+	ctx := context.Background()
+	a := attachAs(t, d, "Claude Code", "claude-code", "1", "")
+	attachAs(t, d, "Codex", "codex", "2", "")
+	room := d.room(a.RoomKey)
+	d.handler.Handle(ctx, Request{Op: "detach", RoomKey: a.RoomKey, ReaderName: "codex:ws:2"})
+	room.ReapSeats(ctx, time.Hour)
+	if gone := room.ReapSeats(ctx, 0); len(gone) != 1 {
+		t.Fatalf("reaped %v", gone)
+	}
+	wire.emit(client.Event{Seq: seq(9), Type: "edge.finding", Payload: map[string]any{"text": "x", "agentInstanceId": a.AgentInstanceID}})
+	if u := room.UntoldFor(TerminalReaderNameFor("ws", "codex")); len(u) != 1 {
+		t.Fatalf("Claude Code's write is not Codex's own echo just because Codex's seat is gone: %+v", u)
+	}
+}
+
+// Protocol 3 answers its own clients in 3 and a request with no `v` (an older
+// serve, the Edge panel) in 2.
+func TestTheDaemonAnswersEachClientInItsOwnProtocol(t *testing.T) {
+	d, _, _ := seatDaemon(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = d.Run(ctx) }()
+	deadline := time.Now().Add(2 * time.Second)
+	for !Reachable(d.opts.Workspace) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	res, err := Send(hooks.DaemonSocketPath(d.opts.Workspace), Request{Op: "rooms"}, time.Second)
+	if err != nil || res.V != ProtocolVersion {
+		t.Fatalf("a current client is answered in %d: %v %+v", ProtocolVersion, err, res)
+	}
+	conn, err := net.Dial("unix", hooks.DaemonSocketPath(d.opts.Workspace))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = conn.Close() }()
+	_, _ = conn.Write([]byte(`{"op":"rooms"}` + "\n"))
+	line, _ := bufio.NewReader(conn).ReadBytes('\n')
+	var legacy Response
+	if json.Unmarshal(line, &legacy) != nil || legacy.V != LegacyProtocolVersion || !legacy.OK {
+		t.Fatalf("an older client is answered in protocol 2: %s", line)
+	}
+}
+
+// An upgrade: a protocol-2 daemon is still running when a new front end
+// starts. It is asked to hand over, and the new daemon takes its place.
+func TestANewFrontEndAsksAnOlderDaemonToHandOver(t *testing.T) {
+	d, _, _ := seatDaemon(t)
+	ws := d.opts.Workspace
+	rt := hooks.RuntimeDir(ws)
+	if err := os.MkdirAll(rt, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lock(filepath.Join(rt, "daemon.lock"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", hooks.DaemonSocketPath(ws))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(chan struct{})
+	go func() { // the old daemon: answers everything in protocol 2
+		for {
+			conn, aerr := ln.Accept()
+			if aerr != nil {
+				return
+			}
+			line, _ := bufio.NewReader(conn).ReadBytes('\n')
+			_, _ = conn.Write([]byte(`{"ok":true,"v":2}` + "\n"))
+			_ = conn.Close()
+			if strings.Contains(string(line), `"op":"stop"`) {
+				_ = ln.Close()
+				unlock()
+				close(stopped)
+				return
+			}
+		}
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var logs []string
+	spawn := func() error { go func() { _ = d.Run(ctx) }(); return nil }
+	if !EnsureRunning(ws, spawn, func(m string) { logs = append(logs, m) }) {
+		t.Fatalf("the new daemon must take over; log: %v", logs)
+	}
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("the older daemon was never asked to stop")
+	}
+	res, err := Send(hooks.DaemonSocketPath(ws), Request{Op: "rooms"}, time.Second)
+	if err != nil || res.V != ProtocolVersion {
+		t.Fatalf("the daemon answering now is this version's: %v %+v", err, res)
+	}
+	if len(logs) == 0 || !strings.Contains(logs[0], "older room daemon (protocol 2)") {
+		t.Fatalf("log: %v", logs)
+	}
 }

@@ -14,11 +14,41 @@ import (
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 )
 
-// ProtocolVersion is the daemon socket's `v`. It is 2 because the per-pid hook
-// socket is protocol 1 and the two are different sockets with different verbs;
-// see contracts/daemon-ipc.md and research R11 for why a version mismatch is
-// not the compatibility mechanism here (a second socket is).
-const ProtocolVersion = 2
+// ProtocolVersion is the daemon socket's `v`. It started at 2 because the
+// per-pid hook socket is protocol 1 and the two are different sockets with
+// different verbs (contracts/daemon-ipc.md, research R11).
+//
+// 3 (2026-09-28) is the daemon that gives each harness its own agent session.
+// A front end of this build that finds a protocol-2 daemon asks it to hand
+// over (EnsureRunning) rather than attach to a daemon that would fold every
+// harness back into one session until it idles out. A request carries its
+// own `v`; one that carries none is a protocol-2 client (an older `serve`,
+// the Edge panel, a hook), and is answered as protocol 2, whose shapes are a
+// subset of these, so an older front end keeps working against this daemon.
+const ProtocolVersion = 3
+
+// LegacyProtocolVersion is what a request with no `v` is answered with.
+const LegacyProtocolVersion = 2
+
+// VersionError is Send's answer when the daemon speaks another protocol. The
+// response is returned alongside it: the request was delivered and answered.
+type VersionError struct {
+	Theirs, Ours int
+}
+
+func (e *VersionError) Error() string {
+	return fmt.Sprintf("daemon speaks protocol %d, this binary %d", e.Theirs, e.Ours)
+}
+
+// JoinTimeout bounds one /edge/join the daemon makes (a room's first seat or
+// a later harness's); FrameAttachBudget the frame read an attach makes; and
+// LinkWait how long a second harness waits for a sibling that is redeeming
+// the same share link.
+const (
+	JoinTimeout       = 10 * time.Second
+	FrameAttachBudget = 3 * time.Second
+	LinkWait          = 12 * time.Second
+)
 
 // RequestTimeout bounds one request on the daemon socket. The status line
 // polls every 5 s; an answer must be well inside that.
@@ -30,6 +60,8 @@ const AttachTimeout = 15 * time.Second
 // Request is one line on the daemon socket.
 type Request struct {
 	Op string `json:"op"`
+	// V is the protocol the caller speaks; absent is LegacyProtocolVersion.
+	V int `json:"v,omitempty"`
 
 	// attach
 	Room         *client.Config `json:"room,omitempty"`
@@ -47,8 +79,10 @@ type Request struct {
 	// Since (delta) is an explicit sinceSeq from get_updates; absent means the
 	// reader's own cursor.
 	Since *int64 `json:"since,omitempty"`
-	// Link (attach, link) is LinkHash of the share link a front end joined
-	// with: attach records it on the room, `link` looks a room up by it.
+	// Link (attach, link, link-redeemed, link-failed) is LinkHash of a share
+	// link: attach records it on the room; `link` looks it up or claims the
+	// right to redeem it; `link-redeemed` records what the redeem gave (Room);
+	// `link-failed` releases the claim.
 	Link string `json:"link,omitempty"`
 
 	// share
@@ -106,9 +140,12 @@ type Response struct {
 	Redacted        bool                 `json:"redacted,omitempty"`
 	// Since (delta) is the seq the delta was read from.
 	Since *int64 `json:"since,omitempty"`
-	// Room (link) is the config a share link already opened on this machine,
-	// with no seat label: the asking front end adds its own.
+	// Room (link) is the config a share link already gave this machine, with
+	// no seat label: the asking front end adds its own.
 	Room *client.Config `json:"room,omitempty"`
+	// Claimed (link) says the caller holds the claim on a link nobody has
+	// redeemed yet: it redeems, then reports link-redeemed or link-failed.
+	Claimed bool `json:"claimed,omitempty"`
 	// Allowed (match): the person has allowed working-directory content for the room.
 	Allowed bool `json:"allowed,omitempty"`
 }
@@ -182,7 +219,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		// The frame first: a new reader starts at the room's current position
 		// (the frame's as-of seq), not at -1. At -1 its first delta would replay
 		// the whole incident and its untold set would count history as news.
-		frame, _ := room.Frame(ctx)
+		fctx, fcancel := context.WithTimeout(ctx, FrameAttachBudget)
+		frame, _ := room.Frame(fctx)
+		fcancel()
 		harness := req.Reader.Harness
 		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace, Harness: harness, Seat: seat.Label})
 		// An agent front end runs in the person's terminal: the person becomes a
@@ -203,21 +242,18 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		return res
 
 	case "link":
-		// A second harness handed a share link this machine already redeemed:
-		// the link is single-use, so answer with the room's own config and let
-		// the front end attach with it (its attach joins its own seat).
-		for _, room := range d.rooms() {
-			if room.HasLink(req.Link) {
-				room.mu.Lock()
-				cfg := room.Config
-				room.mu.Unlock()
-				cfg.AgentLabel = ""
-				res := ok()
-				res.RoomKey, res.Room = room.Key, &cfg
-				return res
-			}
+		return d.lookupOrClaimLink(ctx, req.Link)
+
+	case "link-redeemed":
+		if req.Room == nil || req.Link == "" {
+			return fail("link-redeemed needs the link and the room")
 		}
-		return fail("no room on this machine was opened with that link")
+		d.links.fulfil(req.Link, *req.Room)
+		return ok()
+
+	case "link-failed":
+		d.links.release(req.Link)
+		return ok()
 
 	case "seen":
 		// An agent reader was shown the room up to a point by a read of its
@@ -297,7 +333,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		// A hook process speaks for the person: it may move the terminal
 		// reader(s) its peek answered for, and nothing else (research R3).
-		names := terminalReadersFor(room, req)
+		names := d.terminalReadersFor(room, req)
 		if len(names) == 0 {
 			if req.ReaderName != "" {
 				if rd, okr := room.Reader(req.ReaderName); okr && rd.Kind != KindTerminal {
@@ -368,7 +404,7 @@ func (d *Daemon) peek(req Request) Response {
 		// created when an agent from that workspace attaches (Handle "attach"),
 		// never here: a hook or status line asking about a checkout must not
 		// enrol that checkout into every room the machine has open.
-		names := terminalReadersFor(room, req)
+		names := d.terminalReadersFor(room, req)
 		if len(names) == 0 {
 			continue
 		}
@@ -398,11 +434,13 @@ func (d *Daemon) peek(req Request) Response {
 //     to the workspace rule below);
 //   - with a harness: that harness's reader in this workspace, else the
 //     workspace's harness-less reader (a front end that could not name its
-//     host), else none: another harness's reader is never this hook's;
+//     host), else every terminal reader of the workspace together, logged
+//     once: a hook whose harness key does not match any front end here (an
+//     inherited environment, a host renamed between builds) must not go
+//     silent, and over-reporting is the recoverable direction;
 //   - with no harness: the harness-less reader, else every terminal reader of
-//     the workspace together. A hook that cannot tell which host ran it
-//     over-reports, as hooks always have; that is the recoverable direction.
-func terminalReadersFor(room *Room, req Request) []string {
+//     the workspace together.
+func (d *Daemon) terminalReadersFor(room *Room, req Request) []string {
 	// A hook names the harness-less reader alongside its harness so a daemon
 	// of an older build still understands it; here the harness decides.
 	if req.Harness != "" && req.WorkspaceKey != "" && req.ReaderName == TerminalReaderName(req.WorkspaceKey) {
@@ -427,10 +465,6 @@ func terminalReadersFor(room *Room, req Request) []string {
 		if _, ok := room.Reader(TerminalReaderNameFor(req.WorkspaceKey, req.Harness)); ok {
 			return []string{TerminalReaderNameFor(req.WorkspaceKey, req.Harness)}
 		}
-		if _, ok := room.Reader(legacy); ok {
-			return []string{legacy}
-		}
-		return nil
 	}
 	if _, ok := room.Reader(legacy); ok {
 		return []string{legacy}
@@ -440,6 +474,11 @@ func terminalReadersFor(room *Room, req Request) []string {
 		if rd.Kind == KindTerminal && rd.WorkspaceKey == req.WorkspaceKey {
 			names = append(names, rd.Name)
 		}
+	}
+	if req.Harness != "" && len(names) > 0 {
+		d.logOnce("harness-fallback|"+room.Key+"|"+req.WorkspaceKey+"|"+req.Harness, fmt.Sprintf(
+			"a %q hook asked about %s, where no %q session reads the room; answering for every session in that checkout (%s)",
+			req.Harness, room.Config.IncidentID, req.Harness, strings.Join(names, ", ")))
 	}
 	return names
 }
@@ -501,13 +540,18 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 		d.subscribe(ctx, conn, req)
 		return
 	} else {
-		// An attach may join the room over the network (once per harness);
-		// the two-second budget is for the status line's reads, not that.
-		if req.Op == "attach" {
+		// An attach may join the room over the network (once per harness),
+		// and a link lookup may wait for a sibling's redeem; the two-second
+		// budget is for the status line's reads, not those.
+		switch req.Op {
+		case "attach":
 			_ = conn.SetDeadline(time.Now().Add(AttachTimeout))
+		case "link":
+			_ = conn.SetDeadline(time.Now().Add(LinkWait + 2*time.Second))
 		}
 		res = d.handler.Handle(ctx, req)
 	}
+	res.V = answerVersion(req)
 	body, _ := json.Marshal(res)
 	_, _ = conn.Write(append(body, '\n'))
 }
@@ -527,6 +571,7 @@ func (d *Daemon) subscribe(ctx context.Context, conn net.Conn, req Request) {
 	ch, unsubscribe := room.Subscribe()
 	defer unsubscribe()
 	ack := ok()
+	ack.V = answerVersion(req)
 	ack.RoomKey, ack.Connection = room.Key, room.Connection
 	body, _ := json.Marshal(ack)
 	if _, err := conn.Write(append(body, '\n')); err != nil {
@@ -557,8 +602,20 @@ func (d *Daemon) subscribe(ctx context.Context, conn net.Conn, req Request) {
 	}
 }
 
+// answerVersion is the protocol a request is answered in: its own, or 2 for a
+// request that names none.
+func answerVersion(req Request) int {
+	if req.V == 0 {
+		return LegacyProtocolVersion
+	}
+	return ProtocolVersion
+}
+
 // Send is the client side: one request, one answer, over the daemon socket.
+// A daemon that answers in another protocol returns its response AND a
+// *VersionError: the request was delivered, the caller decides what that means.
 func Send(socketPath string, req Request, timeout time.Duration) (*Response, error) {
+	req.V = ProtocolVersion
 	if timeout <= 0 {
 		timeout = RequestTimeout
 	}
@@ -584,7 +641,7 @@ func Send(socketPath string, req Request, timeout time.Duration) (*Response, err
 		return nil, err
 	}
 	if res.V != ProtocolVersion {
-		return nil, fmt.Errorf("daemon speaks protocol %d, this binary %d", res.V, ProtocolVersion)
+		return &res, &VersionError{Theirs: res.V, Ours: ProtocolVersion}
 	}
 	if !res.OK {
 		return &res, errors.New(res.Error)

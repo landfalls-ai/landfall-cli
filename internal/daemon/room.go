@@ -55,6 +55,15 @@ type Deps struct {
 	// stored: the daemon's passive surfaces (notification, doorbell) hang here.
 	OnEvent func(room *Room, evt client.Event)
 	Now     func() time.Time
+	// JoinTimeout bounds each /edge/join; zero means the package JoinTimeout.
+	JoinTimeout time.Duration
+}
+
+func (d Deps) joinTimeout() time.Duration {
+	if d.JoinTimeout > 0 {
+		return d.JoinTimeout
+	}
+	return JoinTimeout
 }
 
 func (d Deps) log(msg string) {
@@ -102,6 +111,10 @@ type Seat struct {
 	// idleSince is when this seat's last agent reader left (or when it was
 	// opened, if none ever attached); zero while any is attached.
 	idleSince time.Time
+	// ctx carries the seat's presence beats; stop cancels it when the seat is
+	// left, so a beat never goes out for a seat that has gone.
+	ctx  context.Context
+	stop context.CancelFunc
 }
 
 // Room is one incident this machine has joined, owned by the daemon.
@@ -167,15 +180,20 @@ func OpenRoom(ctx context.Context, cfg client.Config, deps Deps) (*Room, error) 
 	return r, nil
 }
 
-// joinSeat is one /edge/join under the config's label.
+// joinSeat is one /edge/join under the config's label, bounded by the join
+// deadline whatever the caller's context is (the room's own is the daemon's
+// lifetime).
 func joinSeat(ctx context.Context, cfg client.Config, deps Deps) (*Seat, error) {
 	cfg.AgentLabel = SeatLabel(cfg)
 	cl := deps.NewClient(cfg)
-	res, err := cl.Join(ctx)
+	jctx, cancel := context.WithTimeout(ctx, deps.joinTimeout())
+	defer cancel()
+	res, err := cl.Join(jctx)
 	if err != nil {
 		return nil, err
 	}
-	seat := &Seat{Label: cfg.AgentLabel, Config: cfg, client: cl}
+	seatCtx, stop := context.WithCancel(context.Background())
+	seat := &Seat{Label: cfg.AgentLabel, Config: cfg, client: cl, ctx: seatCtx, stop: stop}
 	if res != nil {
 		seat.InstanceID = res.AgentInstanceID
 	}
@@ -214,6 +232,7 @@ func (r *Room) EnsureSeat(ctx context.Context, cfg client.Config) (*Seat, error)
 	r.mu.Lock()
 	if existing, ok := r.seats[label]; ok { // lost a race; keep the first
 		r.mu.Unlock()
+		seat.stop()
 		_ = seat.client.Leave(ctx)
 		return existing, nil
 	}
@@ -238,6 +257,16 @@ func (r *Room) AddLink(hash string) {
 	r.mu.Lock()
 	r.addLinkLocked(hash)
 	r.mu.Unlock()
+}
+
+// SessionConfig is the credential this machine holds for the room, with no
+// seat label: what a sibling harness joins with.
+func (r *Room) SessionConfig() client.Config {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cfg := r.Config
+	cfg.AgentLabel = ""
+	return cfg
 }
 
 // HasLink reports whether a share link (by LinkHash) belongs to this room.
@@ -277,12 +306,13 @@ func (r *Room) seatsLocked() []Seat {
 }
 
 // seatForLocked is the seat a reader speaks for: its own, or the primary when
-// it names none (a panel, or a reader persisted before seats existed).
+// it names none (a panel, or a reader persisted before seats existed). A
+// reader whose named seat is gone (its harness closed and the seat was left)
+// has none: treating the primary as its seat would make a sibling harness's
+// writes read as this reader's own echo.
 func (r *Room) seatForLocked(rd *Reader) *Seat {
 	if rd != nil && rd.Seat != "" {
-		if s, ok := r.seats[rd.Seat]; ok {
-			return s
-		}
+		return r.seats[rd.Seat]
 	}
 	return r.seats[r.primary]
 }
@@ -295,7 +325,7 @@ func (r *Room) ownIDsLocked(rd *Reader) []string {
 		if s := r.seatForLocked(rd); s != nil {
 			return []string{s.InstanceID}
 		}
-		return nil
+		return nil // its seat is gone: nothing in the room is its own echo
 	}
 	ids := make([]string, 0, len(r.seats))
 	for _, s := range r.seats {
@@ -354,6 +384,7 @@ func (r *Room) ReapSeats(ctx context.Context, grace time.Duration) []string {
 		if now.Sub(s.idleSince) >= grace {
 			gone = append(gone, s)
 			delete(r.seats, label)
+			s.stop()
 		}
 	}
 	if _, ok := r.seats[r.primary]; !ok {
@@ -477,16 +508,24 @@ func (r *Room) start(ctx context.Context) {
 				return
 			case <-t.C:
 				// One beat per seat: each harness's agent session is present in
-				// the room on its own account.
+				// the room on its own account. Each beat runs on its seat's own
+				// context and re-checks the seat is still held, so a seat left
+				// between the listing and the beat is never beaten for.
 				r.mu.Lock()
-				clients := make([]session.EdgeClient, 0, len(r.seats))
+				seats := make([]*Seat, 0, len(r.seats))
 				for _, s := range r.seats {
-					clients = append(clients, s.client)
+					seats = append(seats, s)
 				}
 				r.mu.Unlock()
-				for _, cl := range clients {
-					bctx, c := context.WithTimeout(context.Background(), interval)
-					_ = cl.Heartbeat(bctx, "investigating")
+				for _, s := range seats {
+					r.mu.Lock()
+					held := r.seats[s.Label] == s
+					r.mu.Unlock()
+					if !held || s.ctx.Err() != nil {
+						continue
+					}
+					bctx, c := context.WithTimeout(s.ctx, interval)
+					_ = s.client.Heartbeat(bctx, "investigating")
 					c()
 				}
 			}
@@ -890,6 +929,9 @@ func (r *Room) Close(ctx context.Context) {
 		r.cancel()
 	}
 	for _, s := range r.Seats() {
+		if s.stop != nil {
+			s.stop()
+		}
 		_ = s.client.Leave(ctx)
 	}
 	r.mu.Lock()

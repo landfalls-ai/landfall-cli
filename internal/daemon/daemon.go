@@ -43,8 +43,12 @@ type Daemon struct {
 	doorbells    map[string]*hooks.Doorbell
 	state        *State
 	statePath    string
-	stopCh       chan struct{}
-	stopOnce     sync.Once
+	links        linkBook
+	// loggedOnce keeps a repeated diagnostic (a hook whose harness has no
+	// reader here) to one line per key.
+	loggedOnce map[string]bool
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 // New builds a daemon (does not start it).
@@ -238,6 +242,19 @@ func (d *Daemon) shutdown(keepRooms bool) {
 	}
 }
 
+func (d *Daemon) logOnce(key, msg string) {
+	d.mu.Lock()
+	if d.loggedOnce == nil {
+		d.loggedOnce = map[string]bool{}
+	}
+	seen := d.loggedOnce[key]
+	d.loggedOnce[key] = true
+	d.mu.Unlock()
+	if !seen {
+		d.opts.Log(msg)
+	}
+}
+
 func (d *Daemon) requestStop() { d.stopOnce.Do(func() { close(d.stopCh) }) }
 
 // restore rejoins persisted rooms with their stored tokens (research R6).
@@ -353,6 +370,27 @@ func reach(ws hooks.Workspace) (*Response, error) {
 	return Send(hooks.DaemonSocketPath(ws), Request{Op: "rooms"}, 1500*time.Millisecond)
 }
 
+// HandoverWait is how long a front end waits for an older daemon to exit
+// after asking it to: it leaves each room (bounded at 5 s) first.
+const HandoverWait = 10 * time.Second
+
+// handOver asks the running daemon to stop and waits until it has let go of
+// both its socket and its lock, so the daemon spawned next can take them.
+func handOver(ws hooks.Workspace) bool {
+	sock := hooks.DaemonSocketPath(ws)
+	_, _ = Send(sock, Request{Op: "stop"}, time.Second)
+	lockPath := filepath.Join(hooks.RuntimeDir(ws), "daemon.lock")
+	deadline := time.Now().Add(HandoverWait)
+	for time.Now().Before(deadline) {
+		if unlock, err := lock(lockPath); err == nil {
+			unlock()
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
 // SpawnWait is how long a `serve` waits for a daemon it just spawned. The
 // daemon binds its socket only after restoring the rooms of its state file,
 // and each restore is a join round trip plus a backfill against the server.
@@ -365,8 +403,25 @@ func EnsureRunning(ws hooks.Workspace, spawn func() error, log func(string)) boo
 	if os.Getenv("LANDFALL_DAEMON") == "0" {
 		return false
 	}
-	if Reachable(ws) {
+	_, rerr := reach(ws)
+	if rerr == nil {
 		return true
+	}
+	var ve *VersionError
+	if errors.As(rerr, &ve) {
+		if ve.Theirs > ve.Ours {
+			log(fmt.Sprintf("a newer room daemon (protocol %d) is running; running in-process (one cursor per process). Update landfall to share it.", ve.Theirs))
+			return false
+		}
+		// An older daemon would fold every harness on this machine back into
+		// one agent session until it idles out. Ask it to hand over: it saves
+		// its rooms and readers, leaves, and exits; the daemon spawned below
+		// restores them.
+		log(fmt.Sprintf("an older room daemon (protocol %d) is running; asking it to hand over to this version", ve.Theirs))
+		if !handOver(ws) {
+			log("the older room daemon did not exit in time; running in-process (one cursor per process)")
+			return false
+		}
 	}
 	if spawn == nil {
 		spawn = DefaultSpawn(ws)

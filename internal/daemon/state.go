@@ -34,7 +34,13 @@ type RoomState struct {
 	Config     client.Config      `json:"config"`
 	CwdAllowed bool               `json:"cwdAllowed"`
 	Readers    map[string]*Reader `json:"readers"`
-	SavedAt    time.Time          `json:"savedAt"`
+	// Seats are the room's other agent sessions (one per harness beyond the
+	// first, which is Config), rejoined after a restart under their labels.
+	Seats []client.Config `json:"seats,omitempty"`
+	// Links are hashes of the share links that led here (LinkHash): never the
+	// link itself, which carries a credential.
+	Links   []string  `json:"links,omitempty"`
+	SavedAt time.Time `json:"savedAt"`
 }
 
 // StatePath is <RuntimeDir>/daemon/state.json.

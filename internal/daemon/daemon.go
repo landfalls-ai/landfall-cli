@@ -74,7 +74,10 @@ func New(opts Options) *Daemon {
 	userOnEvent := d.opts.Deps.OnEvent
 	d.opts.Deps.OnEvent = func(room *Room, evt client.Event) {
 		d.ring(room, evt)
-		if userOnEvent != nil {
+		// The OS notification is for the room talking to the person; one of
+		// this machine's own agents writing is not that, whichever harness it
+		// runs in.
+		if userOnEvent != nil && !room.FromThisMachine(evt) {
 			userOnEvent(room, evt)
 		}
 	}
@@ -92,7 +95,9 @@ func (d *Daemon) ring(room *Room, evt client.Event) {
 			continue
 		}
 		untold := room.UntoldFor(rd.Name)
-		if len(untold) != 1 {
+		// The edge: this event is the one and only thing untold to this reader
+		// (its own harness's write is never in its untold set).
+		if len(untold) != 1 || untold[0].SeqOr(-1) != evt.SeqOr(-2) {
 			continue
 		}
 		d.mu.Lock()
@@ -169,6 +174,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.shutdown(true)
 			return nil
 		case <-ticker.C:
+			d.reapSeats()
 			if d.idle() {
 				d.opts.Log("no reader for " + d.opts.IdleGrace.String() + "; leaving rooms and exiting")
 				d.shutdown(false)
@@ -193,6 +199,23 @@ func (d *Daemon) idle() bool {
 		}
 	}
 	return true
+}
+
+// reapSeats leaves the agent session of a harness whose front ends have all
+// gone, while another harness still reads the room (Room.ReapSeats).
+func (d *Daemon) reapSeats() {
+	changed := false
+	for _, r := range d.rooms() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		for _, label := range r.ReapSeats(ctx, d.opts.IdleGrace) {
+			d.opts.Log(fmt.Sprintf("left %s as %q: no reader for %s", r.Config.IncidentID, label, d.opts.IdleGrace))
+			changed = true
+		}
+		cancel()
+	}
+	if changed {
+		d.save()
+	}
 }
 
 // shutdown leaves every room. keepRooms says whether they are written to

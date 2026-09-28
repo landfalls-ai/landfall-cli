@@ -67,6 +67,11 @@ type EdgeClient interface {
 // RedeemFunc turns a share link into an incident-scoped bridge config.
 type RedeemFunc func(ctx context.Context, shareURL string) (client.Config, error)
 
+// UpdatesFunc reads get_updates' delta: since the reader's own cursor, or since
+// an explicit seq. ok=false means "not available here", and the caller falls
+// back to this session's own cursor. usedSince is the seq the read started at.
+type UpdatesFunc func(ctx context.Context, since *int64) (delta *client.FrameDelta, usedSince int64, ok bool)
+
 // ClientFactory builds the client for a freshly redeemed config.
 type ClientFactory func(cfg client.Config) EdgeClient
 
@@ -120,6 +125,14 @@ type Session struct {
 	// the room daemon holds this reader's cursor and answers its delta
 	// (feature 20260922-local-room-daemon), so the local queue is not consulted.
 	flushOverride func(ctx context.Context) *client.FrameDelta
+	// updatesOverride, when set, answers get_updates from the room daemon's
+	// cursor for this harness session instead of this process's own, so the
+	// piggyback flush and get_updates share one cursor per harness.
+	updatesOverride UpdatesFunc
+	// advanceHook, when set, is told every position a read of this session's
+	// own delivered (the brief, the timeline, a join), so the daemon's cursor
+	// for this reader moves with the local one.
+	advanceHook func(int64)
 
 	redeem        RedeemFunc
 	clientFactory ClientFactory
@@ -166,6 +179,17 @@ func (s *Session) AgentLabel() string {
 	return s.agentLabel
 }
 
+// SetAgentLabel renames the agent for joins that have not happened yet (the
+// host named itself on MCP initialize). An empty label is ignored.
+func (s *Session) SetAgentLabel(label string) {
+	if label == "" {
+		return
+	}
+	s.mu.Lock()
+	s.agentLabel = label
+	s.mu.Unlock()
+}
+
 // Client is the current client, or nil before a join.
 func (s *Session) Client() EdgeClient {
 	s.mu.Lock()
@@ -197,6 +221,20 @@ func (s *Session) SetCursor(v int64) {
 
 // AdvanceCursorTo moves the cursor forward to `v`, never backwards.
 func (s *Session) AdvanceCursorTo(v int64) {
+	s.mu.Lock()
+	if v > s.cursor {
+		s.cursor = v
+	}
+	hook := s.advanceHook
+	s.mu.Unlock()
+	if hook != nil && v >= 0 {
+		hook(v)
+	}
+}
+
+// MirrorCursor moves only this session's own cursor forward to `v`: for a
+// position the daemon already recorded (a get_updates it answered).
+func (s *Session) MirrorCursor(v int64) {
 	s.mu.Lock()
 	if v > s.cursor {
 		s.cursor = v
@@ -296,13 +334,19 @@ func (s *Session) EnqueueEvent(ctx context.Context, evt client.Event) bool {
 // agent made itself has already delivered those.
 func (s *Session) AdvanceCursor(events []client.Event) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	moved := false
 	for _, e := range events {
 		if e.Seq != nil && *e.Seq > s.cursor {
 			s.cursor = *e.Seq
+			moved = true
 		}
 	}
 	s.prunePendingLocked(false)
+	hook, cur := s.advanceHook, s.cursor
+	s.mu.Unlock()
+	if hook != nil && moved {
+		hook(cur)
+	}
 }
 
 // ConsumeUpTo advances the cursor straight to `upTo` and drops everything the
@@ -556,7 +600,10 @@ func (s *Session) MarkDivergenceNotified(keys []string) {
 // JoinWarRoom redeems a share link, joins, resets every per-room piece of
 // state, and fires OnJoined so the host process can start presence/live-watch.
 func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Config, error) {
-	cfg, err := s.redeem(ctx, shareURL)
+	s.mu.Lock()
+	redeem := s.redeem
+	s.mu.Unlock()
+	cfg, err := redeem(ctx, shareURL)
 	if err != nil {
 		return client.Config{}, err
 	}
@@ -605,6 +652,44 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 		}
 	}
 	return cfg, nil
+}
+
+// Redeemer is how join_war_room turns a share link into a config.
+func (s *Session) Redeemer() RedeemFunc {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.redeem
+}
+
+// SetRedeemer replaces it (serve's daemon mode checks the daemon first).
+func (s *Session) SetRedeemer(fn RedeemFunc) {
+	if fn == nil {
+		return
+	}
+	s.mu.Lock()
+	s.redeem = fn
+	s.mu.Unlock()
+}
+
+// SetUpdatesOverride routes get_updates to the room daemon (see updatesOverride).
+func (s *Session) SetUpdatesOverride(fn UpdatesFunc) {
+	s.mu.Lock()
+	s.updatesOverride = fn
+	s.mu.Unlock()
+}
+
+// UpdatesOverride is the get_updates route, or nil for this session's own.
+func (s *Session) UpdatesOverride() UpdatesFunc {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.updatesOverride
+}
+
+// SetAdvanceHook is told every position this session's own reads delivered.
+func (s *Session) SetAdvanceHook(fn func(int64)) {
+	s.mu.Lock()
+	s.advanceHook = fn
+	s.mu.Unlock()
 }
 
 // SetFlushOverride routes FlushPending to the room daemon (see flushOverride).

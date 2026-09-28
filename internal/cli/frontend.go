@@ -29,11 +29,17 @@ type frontEnd struct {
 	socketPath string
 	log        func(string)
 
-	host     string // from the MCP initialize clientInfo, when the host sent one
+	mu       sync.Mutex
+	host     string        // from the MCP initialize clientInfo, when the host sent one
+	harness  hooks.Harness // the same, mapped to a key and a room label
 	roomKey  string
 	reader   string
 	attached bool
 	cfg      client.Config
+	// link is LinkHash of the share link this front end is joining with (set
+	// just before the redeem, sent on the next attach), so a sibling harness
+	// handed the same single-use link can join through the daemon.
+	link string
 	// lastEnsure rate-limits respawn attempts when the daemon has gone away.
 	lastEnsure time.Time
 }
@@ -60,22 +66,72 @@ func (f *frontEnd) readerName() string {
 func (f *frontEnd) onInitialize(ci mcp.ClientInfo) {
 	if ci.Name != "" {
 		f.host = ci.Name
+		f.harness = hooks.HarnessFromClientName(ci.Name)
 	}
+}
+
+// seatLabel is the label this harness's agent session joins the room under:
+// LANDFALL_AGENT_LABEL when the person set one, else the host's own name
+// ("Claude Code", "Codex"), else whatever the config already carries.
+func (f *frontEnd) seatLabel(cfg client.Config) string {
+	if env := os.Getenv("LANDFALL_AGENT_LABEL"); env != "" {
+		return env
+	}
+	if f.harness.Label != "" {
+		return f.harness.Label
+	}
+	if cfg.AgentLabel != "" {
+		return cfg.AgentLabel
+	}
+	return daemon.DefaultSeatLabel
+}
+
+// rememberLink notes the share link the next attach joins with.
+func (f *frontEnd) rememberLink(link string) {
+	f.mu.Lock()
+	f.link = daemon.LinkHash(link)
+	f.mu.Unlock()
+}
+
+// knownLink asks the daemon whether a share link already opened a room on
+// this machine. A share link is single-use: the first harness's redeem spent
+// it, so a second harness handed the same link joins with the config the
+// daemon already holds (its attach then joins its own seat).
+func (f *frontEnd) knownLink(link string) (*client.Config, bool) {
+	if !f.ensure() {
+		return nil, false
+	}
+	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "link", Link: daemon.LinkHash(link)}, time.Second)
+	if err != nil || res.Room == nil {
+		return nil, false
+	}
+	f.rememberLink(link)
+	return res.Room, true
 }
 
 // attach registers this process as a reader of cfg's room. The daemon joins
 // the room if the machine has not yet; either way we get the machine's one
 // agent instance id back and adopt it for our own HTTP client.
+//
+// The attach names this harness (its key, and its label on the room config):
+// the daemon joins the room separately for each harness, so the agent id that
+// comes back is this harness's own, never a sibling's.
 func (f *frontEnd) attach(cfg client.Config) (*daemon.Response, error) {
+	cfg.AgentLabel = f.seatLabel(cfg)
+	f.mu.Lock()
+	link := f.link
+	f.mu.Unlock()
 	res, err := daemon.Send(f.socketPath, daemon.Request{
 		Op:   "attach",
 		Room: &cfg,
+		Link: link,
 		Reader: &daemon.ReaderSpec{
 			Name: f.readerName(), Kind: string(daemon.KindAgent), Host: f.host,
 			WorkspaceKey: hooks.WorkspaceKey(f.ws.Dir()), Workspace: f.ws.Dir(),
+			Harness: f.harness.Key,
 		},
 		Fingerprints: computeFingerprints(f.ws.Dir()),
-	}, 5*time.Second)
+	}, daemon.AttachTimeout)
 	if err != nil {
 		return nil, err
 	}
@@ -138,11 +194,35 @@ func (f *frontEnd) delta(context.Context) *client.FrameDelta {
 	return res.Delta
 }
 
+// updates is get_updates in daemon mode: the same reader, the same cursor as
+// the flush above. ok=false (not attached, no daemon) sends get_updates back
+// to the process's own cursor.
+func (f *frontEnd) updates(_ context.Context, since *int64) (*client.FrameDelta, int64, bool) {
+	if !f.attached || !f.ensure() {
+		return nil, -1, false
+	}
+	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "delta", RoomKey: f.roomKey, ReaderName: f.reader, Since: since}, 5*time.Second)
+	if err != nil || res.Since == nil {
+		return nil, -1, false
+	}
+	return res.Delta, *res.Since, true
+}
+
+// seen tells the daemon a read of this front end's own (the brief, the
+// timeline, a join) showed the agent the room up to upTo.
+func (f *frontEnd) seen(upTo int64) {
+	if !f.attached {
+		return
+	}
+	_, _ = daemon.Send(f.socketPath, daemon.Request{Op: "seen", RoomKey: f.roomKey, ReaderName: f.reader, UpTo: &upTo}, time.Second)
+}
+
 // clientFactory wraps the real HTTP client so that Join attaches to the daemon
 // instead of joining the room a second time. The instance id the daemon holds
 // is adopted, so contributions and heartbeats from this process carry the
 // machine's one presence identity.
 func (f *frontEnd) clientFactory(cfg client.Config) session.EdgeClient {
+	cfg.AgentLabel = f.seatLabel(cfg)
 	return &attachingClient{Client: client.New(cfg, nil), fe: f, cfg: cfg}
 }
 
@@ -179,7 +259,7 @@ func (d *daemonSession) peek() *daemon.RoomView {
 	if !d.fe.ensure() {
 		return nil
 	}
-	res, err := daemon.Send(d.fe.socketPath, daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir())}, time.Second)
+	res, err := daemon.Send(d.fe.socketPath, daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir()), Harness: d.fe.harness.Key}, time.Second)
 	if err != nil {
 		return nil
 	}
@@ -218,7 +298,8 @@ func (d *daemonSession) consume(upTo int64) int64 {
 		return -1
 	}
 	res, err := daemon.Send(d.fe.socketPath, daemon.Request{
-		Op: "consume", RoomKey: d.fe.roomKey, ReaderName: daemon.TerminalReaderName(hooks.WorkspaceKey(d.fe.ws.Dir())), UpTo: &upTo,
+		Op: "consume", RoomKey: d.fe.roomKey, WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir()), Harness: d.fe.harness.Key, UpTo: &upTo,
+		ReaderName: daemon.TerminalReaderName(hooks.WorkspaceKey(d.fe.ws.Dir())),
 	}, time.Second)
 	if err != nil || res.Cursor == nil {
 		return -1

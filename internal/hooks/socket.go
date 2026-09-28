@@ -99,6 +99,10 @@ type Workspace struct {
 	Cwd string
 	// Env overrides the process environment. Nil means os.Getenv.
 	Env map[string]string
+	// Harness is the agent host this caller speaks for (harness.go): a hook
+	// sets it from DetectHookHarness so it reads and marks read only its own
+	// harness's terminal reader. Empty means "not known".
+	Harness string
 }
 
 // Dir is the workspace directory this Workspace refers to.
@@ -229,6 +233,11 @@ type SocketRequest struct {
 	WorkspaceKey string `json:"workspaceKey,omitempty"`
 	RoomKey      string `json:"roomKey,omitempty"`
 	ReaderName   string `json:"readerName,omitempty"`
+	// Harness is the asking hook's agent host (harness.go). The daemon uses it
+	// to pick the terminal reader; a per-pid socket whose own session speaks
+	// for a different harness answers as if it had no session, so one
+	// harness's hook never reads or consumes another harness's queue.
+	Harness string `json:"harness,omitempty"`
 }
 
 // StatusRequest, PeekRequest and ConsumeRequest are the three requests a caller
@@ -490,6 +499,19 @@ type HandleOptions struct {
 	PID int
 	// Consume performs the `consume` verb's cursor move. Nil is a no-op.
 	Consume ConsumeFunc
+	// Harness is this session's agent host (see StartOptions.Harness).
+	Harness func() string
+}
+
+// foreignHarness reports whether a request comes from a hook of a different
+// harness than the session this socket serves. Both sides must know theirs;
+// "unknown" on either side is never a mismatch.
+func (o HandleOptions) foreignHarness(req SocketRequest) bool {
+	if req.Harness == "" || o.Harness == nil {
+		return false
+	}
+	own := o.Harness()
+	return own != "" && own != req.Harness
 }
 
 func (o HandleOptions) pid() int {
@@ -725,6 +747,10 @@ type StartOptions struct {
 	// silently disables every lifecycle hook, and the line is how that is
 	// diagnosed.
 	Log func(string)
+	// Harness reports which agent host this session speaks for, once known
+	// (it arrives with MCP initialize, after the socket is bound). Nil or ""
+	// answers every hook, as before.
+	Harness func() string
 }
 
 func (o StartOptions) pid() int {
@@ -805,7 +831,7 @@ func StartHookSocket(ctx context.Context, s SocketSession, opts StartOptions) *B
 	b := &BoundSocket{SocketPath: socketPath, ln: ln}
 	// The accept loop is a goroutine, so nothing holds the process open on the
 	// socket's account — the Go equivalent of `server.unref()`.
-	go b.serve(ctx, s, HandleOptions{PID: pid, Consume: opts.Consume})
+	go b.serve(ctx, s, HandleOptions{PID: pid, Consume: opts.Consume, Harness: opts.Harness})
 	return b
 }
 
@@ -837,6 +863,13 @@ func serveConn(ctx context.Context, conn net.Conn, s SocketSession, opts HandleO
 	// answers with `unknown op: (none)`.
 	_ = json.Unmarshal([]byte(strings.TrimSpace(line)), &req)
 
+	// Another harness's hook asking in the same checkout: this session is not
+	// its session. Answered as a socket with no session behind it (nothing
+	// owed, no cursor moved), never as an error.
+	if opts.foreignHarness(req) {
+		s = nil
+		opts.Consume = nil
+	}
 	response := answerOrError(ctx, req, s, opts)
 	body, err := json.Marshal(response)
 	if err != nil {
@@ -951,6 +984,9 @@ func QueryHookSockets(req SocketRequest, ws Workspace, timeout time.Duration) []
 	sockets := ListHookSockets(ws)
 	if len(sockets) == 0 {
 		return nil
+	}
+	if req.Harness == "" {
+		req.Harness = ws.Harness
 	}
 	results := make([]*SocketResponse, len(sockets))
 	var wg sync.WaitGroup

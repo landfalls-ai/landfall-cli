@@ -559,6 +559,51 @@ func TestGetUpdatesRendersTheServerDeltaAndAdvancesTheCursor(t *testing.T) {
 	}
 }
 
+// In daemon mode get_updates reads the daemon's cursor for this harness
+// session (the same one the piggyback flush reads), not a second cursor of
+// this process's own; get_brief tells the daemon what it showed.
+func TestGetUpdatesInDaemonModeUsesTheDaemonsCursor(t *testing.T) {
+	c := &fakeClient{delta: &client.FrameDelta{}}
+	s := newSession(c)
+	var asked []*int64
+	to := int64(12)
+	s.SetUpdatesOverride(func(_ context.Context, since *int64) (*client.FrameDelta, int64, bool) {
+		asked = append(asked, since)
+		return &client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{{Seq: 12, Type: "claim.admitted", By: "pickjonathan", Class: "substantive", Summary: "#7 corroborated and admitted: TTL is 60s"}}}, 9, true
+	})
+	var seen []int64
+	s.SetAdvanceHook(func(v int64) { seen = append(seen, v) })
+	list := Build(s)
+
+	out := callTool(t, list, "get_updates", map[string]any{})
+	if !strings.Contains(out, "#12 claim.admitted [pickjonathan]") || !strings.Contains(out, "#7 corroborated and admitted") {
+		t.Fatalf("result = %q", out)
+	}
+	if len(asked) != 1 || asked[0] != nil {
+		t.Fatalf("with no sinceSeq the daemon's own cursor is used: %v", asked)
+	}
+	if s.Cursor() != 12 || len(seen) != 0 {
+		t.Fatalf("the local cursor mirrors the daemon's without echoing it back: cursor=%d seen=%v", s.Cursor(), seen)
+	}
+	callTool(t, list, "get_updates", map[string]any{"sinceSeq": float64(3)})
+	if len(asked) != 2 || asked[1] == nil || *asked[1] != 3 {
+		t.Fatalf("an explicit sinceSeq reaches the daemon: %v", asked)
+	}
+
+	s.SetUpdatesOverride(func(context.Context, *int64) (*client.FrameDelta, int64, bool) {
+		return &client.FrameDelta{ToVersion: &to}, 12, true
+	})
+	if out := callTool(t, list, "get_updates", map[string]any{}); !strings.Contains(out, "No new shared context since seq 12") {
+		t.Fatalf("result = %q", out)
+	}
+
+	c.frame = &client.ContextFrame{AsOfSeq: seq(20)}
+	callTool(t, list, "get_brief", map[string]any{})
+	if len(seen) == 0 || seen[len(seen)-1] != 20 {
+		t.Fatalf("get_brief must tell the daemon what it showed: %v", seen)
+	}
+}
+
 func TestGetBriefAdvancesTheCursorFromTheFramesOwnCursor(t *testing.T) {
 	c := &fakeClient{frame: &client.ContextFrame{AsOfSeq: seq(1)}}
 	s := newSession(c)

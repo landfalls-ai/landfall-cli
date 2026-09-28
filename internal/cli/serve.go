@@ -379,6 +379,9 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		if worker != nil {
 			worker.Start(stopCtx, cl, cfg)
 		}
+		if label == "" {
+			label = s.AgentLabel()
+		}
 		ui.Log(`joined incident %s as "%s" (instance %s).`, cfg.IncidentID, label, cl.AgentInstanceID())
 	}
 
@@ -400,26 +403,100 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 	var toolAccepter tools.Accepter = accepter
 	if fe != nil {
 		sess.SetFlushOverride(fe.delta)
+		sess.SetUpdatesOverride(fe.updates)
+		sess.SetAdvanceHook(fe.seen)
 		if ba, ok := accepter.(*bridge.Accepter); ok && ba != nil {
 			toolAccepter = newHoldingAccepter(ba, fe)
 		}
 	}
 
-	cfg, err := opts.Resolve(stopCtx, ui, link)
+	// A second harness on this machine handed the same share link: the link
+	// is single-use and the first harness already spent it, so in daemon mode
+	// the daemon is asked first whether that link already opened a room here.
+	// Only when it did not is the link redeemed (and remembered for the next
+	// harness).
+	resolve := opts.Resolve
+	if fe != nil {
+		redeem := sess.Redeemer()
+		sess.SetRedeemer(func(ctx context.Context, shareURL string) (client.Config, error) {
+			if cfg, ok := fe.knownLink(shareURL); ok {
+				ui.Log("this link already opened incident %s on this machine; joining through it.", cfg.IncidentID)
+				return *cfg, nil
+			}
+			fe.rememberLink(shareURL)
+			cfg, err := redeem(ctx, shareURL)
+			if err != nil {
+				fe.rememberLink("")
+			}
+			return cfg, err
+		})
+		resolve = func(ctx context.Context, ui *UI, link string) (*client.Config, error) {
+			if isShareLink(link) {
+				if cfg, ok := fe.knownLink(link); ok {
+					ui.Log("this link already opened incident %s on this machine; joining through it.", cfg.IncidentID)
+					cfg.AgentLabel = agentLabel()
+					return cfg, nil
+				}
+				fe.rememberLink(link)
+			}
+			cfg, err := opts.Resolve(ctx, ui, link)
+			if err != nil || cfg == nil {
+				fe.rememberLink("")
+			}
+			return cfg, err
+		}
+	}
+
+	cfg, err := resolve(stopCtx, ui, link)
 	if err != nil {
 		return err
 	}
-	if cfg != nil {
-		cl := opts.NewClient(*cfg)
+	// joinResolved is the startup join of a config resolved from --link or
+	// the environment.
+	joinResolved := func(cfg client.Config) error {
+		cl := opts.NewClient(cfg)
 		if _, err := cl.Join(stopCtx); err != nil {
 			return err
 		}
 		sess.SetClient(cl)
 		// Same path as the MCP join — see afterJoin's comment for why this is
 		// not inlined here any more.
-		afterJoin(sess, cl, *cfg, cfg.AgentLabel)
-	} else {
+		afterJoin(sess, cl, cfg, cl.Config().AgentLabel)
+		return nil
+	}
+	// In daemon mode the join waits for MCP initialize: the daemon gives each
+	// harness its own agent session in the room, labelled with the host's own
+	// name, and the host says its name only on initialize. The join then runs
+	// before initialize is answered, so no tool call can arrive ahead of it.
+	var deferredJoin func()
+	switch {
+	case cfg != nil && fe != nil:
+		pending := *cfg
+		var once sync.Once
+		deferredJoin = func() {
+			once.Do(func() {
+				if err := joinResolved(pending); err != nil {
+					ui.Log("could not join incident %s: %v. The agent can still call join_war_room.", pending.IncidentID, err)
+				}
+			})
+		}
+		ui.Log("incident %s resolved; joining when the agent host connects.", pending.IncidentID)
+	case cfg != nil:
+		if err := joinResolved(*cfg); err != nil {
+			return err
+		}
+	default:
 		ui.Log("not joined yet — the agent should call join_war_room with a Landfall share link.")
+	}
+
+	// Which agent host this process serves, once MCP initialize says so. The
+	// hook socket uses it to answer only its own harness's hooks.
+	var harnessMu sync.Mutex
+	harnessKey := ""
+	currentHarness := func() string {
+		harnessMu.Lock()
+		defer harnessMu.Unlock()
+		return harnessKey
 	}
 
 	// The local query socket (#225): lifecycle hooks are separate, short-lived
@@ -441,6 +518,7 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		Workspace: opts.Workspace,
 		Consume:   consume,
 		Log:       func(msg string) { ui.Log("%s", msg) },
+		Harness:   currentHarness,
 	})
 	if sock != nil {
 		ui.Log("hook query socket at %s", sock.SocketPath)
@@ -451,8 +529,22 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		Tools:      tools.BuildWithAccepter(sess, toolAccepter),
 		ServerInfo: &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
 		OnInitialize: func(ci mcp.ClientInfo) {
+			h := hooks.HarnessFromClientName(ci.Name)
+			harnessMu.Lock()
+			harnessKey = h.Key
+			harnessMu.Unlock()
+			// The agent narrates under its host's name ("Claude Code",
+			// "Codex") unless the person chose one with LANDFALL_AGENT_LABEL.
+			if os.Getenv("LANDFALL_AGENT_LABEL") == "" {
+				sess.SetAgentLabel(h.Label)
+			}
 			if fe != nil {
 				fe.onInitialize(ci)
+			}
+		},
+		OnHandshake: func() {
+			if deferredJoin != nil {
+				deferredJoin()
 			}
 		},
 		// Must match the surface actually registered — instructions naming

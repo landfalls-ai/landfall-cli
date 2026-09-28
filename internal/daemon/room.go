@@ -70,61 +70,319 @@ func (d Deps) now() time.Time {
 	return time.Now()
 }
 
+// DefaultSeatLabel is the label an agent session joins under when nothing
+// better is known (no LANDFALL_AGENT_LABEL, no MCP clientInfo).
+const DefaultSeatLabel = "edge-agent"
+
+// SeatLabel is the seat a config joins: its AgentLabel, or the default.
+func SeatLabel(cfg client.Config) string {
+	if cfg.AgentLabel != "" {
+		return cfg.AgentLabel
+	}
+	return DefaultSeatLabel
+}
+
+// Seat is one agent session this machine holds in a room: one /edge/join, one
+// server-issued instance id, one label, one presence. A room has one seat per
+// harness (2026-09-28): Claude Code and Codex in the same checkout used to
+// write under ONE session labelled "edge-agent", each dropped the other's
+// events as its own echo, and the room could not tell them apart.
+type Seat struct {
+	Label      string
+	InstanceID string
+	Config     client.Config
+
+	client session.EdgeClient
+	// attention is what the room is waiting on from THIS seat's agent identity
+	// (quarantined citations, awaited positions): the Stop hook's second reason
+	// to refuse (#252). Refreshed on demand by peek, marked stale by any event
+	// narrate.TouchesAttention names. Nil until fetched.
+	attention      *client.Attention
+	attentionStale bool
+	// idleSince is when this seat's last agent reader left (or when it was
+	// opened, if none ever attached); zero while any is attached.
+	idleSince time.Time
+}
+
 // Room is one incident this machine has joined, owned by the daemon.
 type Room struct {
 	mu sync.Mutex
 
-	Key             string
-	Config          client.Config
+	Key    string
+	Config client.Config
+	// AgentInstanceID is the PRIMARY seat's instance id (the first harness to
+	// join); every seat's id is in seats.
 	AgentInstanceID string
 	Connection      Connection
 	CwdAllowed      bool
 
+	// client is the primary seat's client, used for the room's shared reads
+	// (the frame, the backfill). Per-agent reads go through the seat's own.
 	client  session.EdgeClient
+	seats   map[string]*Seat
+	primary string
 	events  []client.Event
 	frame   *client.ContextFrame
 	frameAt time.Time
 	readers map[string]*Reader
+	// links are the share links (by LinkHash) that opened or joined this room
+	// on this machine. A share link is single-use; a second harness handed the
+	// same link joins through the room the daemon already holds instead of
+	// redeeming it again (which the server refuses).
+	links map[string]struct{}
 
 	lastReaderLeftAt time.Time
 	openedAt         time.Time
-	// attention is what the room is waiting on from this machine's agent
-	// identity (quarantined citations, awaited positions): the Stop hook's
-	// second reason to refuse (#252). Refreshed on demand by peek, marked
-	// stale by any event narrate.TouchesAttention names. Nil until fetched.
-	attention      *client.Attention
-	attentionStale bool
-	deps           Deps
-	cancel         context.CancelFunc
-	stopWatch      func()
-	subscribers    map[chan client.Event]struct{}
+	deps             Deps
+	cancel           context.CancelFunc
+	stopWatch        func()
+	subscribers      map[chan client.Event]struct{}
 }
 
-// OpenRoom joins the incident once for the whole machine and starts presence
-// and live watch. Readers attach afterwards.
+// OpenRoom joins the incident for the first harness on this machine and
+// starts presence and live watch. Readers attach afterwards; a second harness
+// gets its own seat through EnsureSeat.
 func OpenRoom(ctx context.Context, cfg client.Config, deps Deps) (*Room, error) {
 	if deps.NewClient == nil {
 		return nil, errors.New("daemon: Deps.NewClient is required")
 	}
+	seat, err := joinSeat(ctx, cfg, deps)
+	if err != nil {
+		return nil, err
+	}
+	seat.idleSince = deps.now()
+	r := &Room{
+		Key:             RoomKey(cfg),
+		Config:          cfg,
+		Connection:      Connecting,
+		client:          seat.client,
+		AgentInstanceID: seat.InstanceID,
+		seats:           map[string]*Seat{seat.Label: seat},
+		primary:         seat.Label,
+		readers:         map[string]*Reader{},
+		deps:            deps,
+		openedAt:        deps.now(),
+	}
+	r.start(ctx)
+	return r, nil
+}
+
+// joinSeat is one /edge/join under the config's label.
+func joinSeat(ctx context.Context, cfg client.Config, deps Deps) (*Seat, error) {
+	cfg.AgentLabel = SeatLabel(cfg)
 	cl := deps.NewClient(cfg)
 	res, err := cl.Join(ctx)
 	if err != nil {
 		return nil, err
 	}
-	r := &Room{
-		Key:        RoomKey(cfg),
-		Config:     cfg,
-		Connection: Connecting,
-		client:     cl,
-		readers:    map[string]*Reader{},
-		deps:       deps,
-		openedAt:   deps.now(),
-	}
+	seat := &Seat{Label: cfg.AgentLabel, Config: cfg, client: cl}
 	if res != nil {
-		r.AgentInstanceID = res.AgentInstanceID
+		seat.InstanceID = res.AgentInstanceID
 	}
-	r.start(ctx)
-	return r, nil
+	return seat, nil
+}
+
+// EnsureSeat returns the seat for cfg's label, joining the room under that
+// label first if this machine has no such seat yet. The join uses cfg's own
+// credential; a config that carries none (the front end could not resolve
+// one) borrows the room's, which is the same person's session.
+func (r *Room) EnsureSeat(ctx context.Context, cfg client.Config) (*Seat, error) {
+	label := SeatLabel(cfg)
+	r.mu.Lock()
+	if s, ok := r.seats[label]; ok {
+		r.mu.Unlock()
+		return s, nil
+	}
+	if cfg.Token == "" {
+		cfg.Token = r.Config.Token
+	}
+	if cfg.BaseURL == "" {
+		cfg.BaseURL = r.Config.BaseURL
+	}
+	if cfg.HumanActorID == "" {
+		cfg.HumanActorID = r.Config.HumanActorID
+	}
+	cfg.Slug, cfg.IncidentID = r.Config.Slug, r.Config.IncidentID
+	deps := r.deps
+	r.mu.Unlock()
+
+	seat, err := joinSeat(ctx, cfg, deps)
+	if err != nil {
+		return nil, err
+	}
+	seat.idleSince = deps.now()
+	r.mu.Lock()
+	if existing, ok := r.seats[label]; ok { // lost a race; keep the first
+		r.mu.Unlock()
+		_ = seat.client.Leave(ctx)
+		return existing, nil
+	}
+	r.seats[label] = seat
+	r.mu.Unlock()
+	deps.log(fmt.Sprintf("joined %s as %q (instance %s)", cfg.IncidentID, label, seat.InstanceID))
+	return seat, nil
+}
+
+func (r *Room) addLinkLocked(hash string) {
+	if hash == "" {
+		return
+	}
+	if r.links == nil {
+		r.links = map[string]struct{}{}
+	}
+	r.links[hash] = struct{}{}
+}
+
+// AddLink records that a share link (by LinkHash) belongs to this room.
+func (r *Room) AddLink(hash string) {
+	r.mu.Lock()
+	r.addLinkLocked(hash)
+	r.mu.Unlock()
+}
+
+// HasLink reports whether a share link (by LinkHash) belongs to this room.
+func (r *Room) HasLink(hash string) bool {
+	if hash == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.links[hash]
+	return ok
+}
+
+// Seats is a copy of the room's seats, primary first.
+func (r *Room) Seats() []Seat {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.seatsLocked()
+}
+
+func (r *Room) seatsLocked() []Seat {
+	out := make([]Seat, 0, len(r.seats))
+	if p, ok := r.seats[r.primary]; ok {
+		out = append(out, *p)
+	}
+	labels := make([]string, 0, len(r.seats))
+	for l := range r.seats {
+		if l != r.primary {
+			labels = append(labels, l)
+		}
+	}
+	sort.Strings(labels)
+	for _, l := range labels {
+		out = append(out, *r.seats[l])
+	}
+	return out
+}
+
+// seatForLocked is the seat a reader speaks for: its own, or the primary when
+// it names none (a panel, or a reader persisted before seats existed).
+func (r *Room) seatForLocked(rd *Reader) *Seat {
+	if rd != nil && rd.Seat != "" {
+		if s, ok := r.seats[rd.Seat]; ok {
+			return s
+		}
+	}
+	return r.seats[r.primary]
+}
+
+// ownIDsLocked are the instance ids whose writes are a reader's own echo: its
+// seat's for an agent or terminal reader, and every seat's on this machine for
+// a panel or push reader (which never saw the machine's own writes).
+func (r *Room) ownIDsLocked(rd *Reader) []string {
+	if rd != nil && (rd.Kind == KindAgent || rd.Kind == KindTerminal) {
+		if s := r.seatForLocked(rd); s != nil {
+			return []string{s.InstanceID}
+		}
+		return nil
+	}
+	ids := make([]string, 0, len(r.seats))
+	for _, s := range r.seats {
+		ids = append(ids, s.InstanceID)
+	}
+	return ids
+}
+
+// FromThisMachine reports whether an event was written by any of this
+// machine's seats in the room.
+func (r *Room) FromThisMachine(evt client.Event) bool {
+	id := realtime.EventInstanceID(evt)
+	if id == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.seats {
+		if s.InstanceID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// ReapSeats leaves every seat whose agent readers have all been gone for
+// longer than grace, as long as another seat in the room is still in use: a
+// harness that closed should not stay present in the room on the strength of
+// its sibling. When every seat is idle the room itself idles out (the daemon's
+// own rule), so nothing is reaped here. Returns the labels left.
+func (r *Room) ReapSeats(ctx context.Context, grace time.Duration) []string {
+	now := r.deps.now()
+	r.mu.Lock()
+	inUse := map[string]bool{}
+	for _, rd := range r.readers {
+		if rd.Connected && rd.Kind == KindAgent {
+			if s := r.seatForLocked(rd); s != nil {
+				inUse[s.Label] = true
+			}
+		}
+	}
+	if len(inUse) == 0 {
+		r.mu.Unlock()
+		return nil
+	}
+	var gone []*Seat
+	for label, s := range r.seats {
+		if inUse[label] {
+			s.idleSince = time.Time{}
+			continue
+		}
+		if s.idleSince.IsZero() {
+			s.idleSince = now
+			continue
+		}
+		if now.Sub(s.idleSince) >= grace {
+			gone = append(gone, s)
+			delete(r.seats, label)
+		}
+	}
+	if _, ok := r.seats[r.primary]; !ok {
+		r.promoteLocked()
+	}
+	r.mu.Unlock()
+	labels := make([]string, 0, len(gone))
+	for _, s := range gone {
+		_ = s.client.Leave(ctx)
+		labels = append(labels, s.Label)
+	}
+	sort.Strings(labels)
+	return labels
+}
+
+// promoteLocked makes the first remaining seat (by label) the primary.
+func (r *Room) promoteLocked() {
+	labels := make([]string, 0, len(r.seats))
+	for l := range r.seats {
+		labels = append(labels, l)
+	}
+	if len(labels) == 0 {
+		return
+	}
+	sort.Strings(labels)
+	p := r.seats[labels[0]]
+	// r.Config stays as opened (the room's identity and the watch's
+	// credential); Snapshot persists the primary seat's own config.
+	r.primary, r.client, r.AgentInstanceID = p.Label, p.client, p.InstanceID
 }
 
 // RestoreRoom rejoins a room from persisted state (the daemon restarted). The
@@ -144,8 +402,16 @@ func RestoreRoom(ctx context.Context, st RoomState, deps Deps) (*Room, error) {
 	if err != nil {
 		return nil, err
 	}
+	for _, sc := range st.Seats {
+		if _, serr := r.EnsureSeat(ctx, sc); serr != nil {
+			deps.log("could not rejoin " + st.Config.IncidentID + " as " + SeatLabel(sc) + ": " + serr.Error())
+		}
+	}
 	r.mu.Lock()
 	r.CwdAllowed = st.CwdAllowed
+	for _, h := range st.Links {
+		r.addLinkLocked(h)
+	}
 	lowest := int64(-1)
 	first := true
 	for name, rd := range st.Readers {
@@ -210,14 +476,27 @@ func (r *Room) start(ctx context.Context) {
 			case <-roomCtx.Done():
 				return
 			case <-t.C:
-				bctx, c := context.WithTimeout(context.Background(), interval)
-				_ = r.client.Heartbeat(bctx, "investigating")
-				c()
+				// One beat per seat: each harness's agent session is present in
+				// the room on its own account.
+				r.mu.Lock()
+				clients := make([]session.EdgeClient, 0, len(r.seats))
+				for _, s := range r.seats {
+					clients = append(clients, s.client)
+				}
+				r.mu.Unlock()
+				for _, cl := range clients {
+					bctx, c := context.WithTimeout(context.Background(), interval)
+					_ = cl.Heartbeat(bctx, "investigating")
+					c()
+				}
 			}
 		}
 	}()
 	if r.deps.Watch != nil {
-		r.stopWatch = r.deps.Watch(roomCtx, r.Config, func() string { return r.AgentInstanceID }, r.enqueue)
+		// No echo suppression at the socket: with a seat per harness, what is
+		// one harness's own write is a sibling harness's news. Each reader's
+		// untold set leaves out its own seat's writes instead (Untold).
+		r.stopWatch = r.deps.Watch(roomCtx, r.Config, func() string { return "" }, r.enqueue)
 		r.mu.Lock()
 		r.Connection = Live
 		r.mu.Unlock()
@@ -249,7 +528,7 @@ func (r *Room) enqueue(evt client.Event) {
 	}
 	r.Connection = Live
 	subs := make([]chan client.Event, 0, len(r.subscribers))
-	if !isPlumbing(evt.Type) {
+	if !isPlumbing(evt.Type) && !isOwn(evt, r.ownIDsLocked(nil)) {
 		for ch := range r.subscribers {
 			subs = append(subs, ch)
 		}
@@ -263,7 +542,9 @@ func (r *Room) enqueue(evt client.Event) {
 	}
 	if narrate.TouchesAttention(evt.Type) {
 		r.mu.Lock()
-		r.attentionStale = true
+		for _, st := range r.seats {
+			st.attentionStale = true
+		}
 		r.mu.Unlock()
 	}
 	if r.deps.OnEvent != nil {
@@ -278,7 +559,24 @@ func (r *Room) enqueue(evt client.Event) {
 // which is the recoverable direction.
 func (r *Room) Attention(ctx context.Context, budget time.Duration) *client.Attention {
 	r.mu.Lock()
-	stale, have := r.attentionStale, r.attention
+	label := r.primary
+	r.mu.Unlock()
+	return r.AttentionFor(ctx, label, budget)
+}
+
+// AttentionFor is Attention for one seat's agent identity: what the room waits
+// on from Claude Code is not what it waits on from Codex.
+func (r *Room) AttentionFor(ctx context.Context, label string, budget time.Duration) *client.Attention {
+	r.mu.Lock()
+	seat, ok := r.seats[label]
+	if !ok {
+		seat = r.seats[r.primary]
+	}
+	if seat == nil {
+		r.mu.Unlock()
+		return nil
+	}
+	stale, have, cl := seat.attentionStale, seat.attention, seat.client
 	r.mu.Unlock()
 	if have != nil && !stale {
 		return have
@@ -288,12 +586,12 @@ func (r *Room) Attention(ctx context.Context, budget time.Duration) *client.Atte
 	}
 	actx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	got, err := r.client.GetAttention(actx)
+	got, err := cl.GetAttention(actx)
 	if err != nil {
 		return have
 	}
 	r.mu.Lock()
-	r.attention, r.attentionStale = got, false
+	seat.attention, seat.attentionStale = got, false
 	r.mu.Unlock()
 	return got
 }
@@ -342,11 +640,22 @@ func (r *Room) Attach(rd Reader) *Reader {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	now := r.deps.now()
+	if rd.Kind == KindAgent {
+		if s := r.seatForLocked(&rd); s != nil {
+			s.idleSince = time.Time{}
+		}
+	}
 	if existing, ok := r.readers[rd.Name]; ok {
 		existing.Connected = true
 		existing.LastSeenAt = now
 		if rd.Host != "" {
 			existing.Host = rd.Host
+		}
+		if rd.Seat != "" {
+			existing.Seat = rd.Seat
+		}
+		if rd.Harness != "" {
+			existing.Harness = rd.Harness
 		}
 		return existing
 	}
@@ -363,9 +672,24 @@ func (r *Room) Attach(rd Reader) *Reader {
 func (r *Room) Detach(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if rd, ok := r.readers[name]; ok {
+	rd, ok := r.readers[name]
+	if ok {
 		rd.Connected = false
 		rd.LastSeenAt = r.deps.now()
+	}
+	if ok && rd.Kind == KindAgent {
+		if s := r.seatForLocked(rd); s != nil {
+			still := false
+			for _, other := range r.readers {
+				if other.Connected && other.Kind == KindAgent && r.seatForLocked(other) == s {
+					still = true
+					break
+				}
+			}
+			if !still {
+				s.idleSince = r.deps.now()
+			}
+		}
 	}
 	if r.connectedLocked() == 0 {
 		r.lastReaderLeftAt = r.deps.now()
@@ -444,7 +768,43 @@ func (r *Room) UntoldFor(name string) []client.Event {
 	if !ok {
 		return nil
 	}
-	return Untold(r.events, rd.Cursor)
+	return Untold(r.events, rd.Cursor, r.ownIDsLocked(rd)...)
+}
+
+// untoldForAll is the union of several readers' untold sets (seq-deduped,
+// addressed first), the lowest of their cursors, and the seat label whose
+// attention speaks for them (the first reader's).
+func (r *Room) untoldForAll(names []string) ([]client.Event, int64, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	cursor := int64(-1)
+	seat := r.primary
+	seen := map[int64]bool{}
+	var merged []client.Event
+	for i, name := range names {
+		rd, ok := r.readers[name]
+		if !ok {
+			continue
+		}
+		if i == 0 {
+			cursor = rd.Cursor
+			if s := r.seatForLocked(rd); s != nil {
+				seat = s.Label
+			}
+		} else if rd.Cursor < cursor {
+			cursor = rd.Cursor
+		}
+		for _, e := range Untold(r.events, rd.Cursor, r.ownIDsLocked(rd)...) {
+			if !seen[*e.Seq] {
+				seen[*e.Seq] = true
+				merged = append(merged, e)
+			}
+		}
+	}
+	if len(names) > 1 {
+		merged = Untold(merged, -1)
+	}
+	return merged, cursor, seat
 }
 
 // Advance moves a reader's cursor under the kind rule.
@@ -480,31 +840,46 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 }
 
 // Delta is an agent reader's own pull: the server's classified delta since
-// this reader's cursor, and the cursor moved to what was delivered. This is
-// what a front end renders onto a tool result in place of FlushPending.
-func (r *Room) Delta(ctx context.Context, name string) (*client.FrameDelta, error) {
+// this reader's cursor (or since `from`, when the agent asked for an explicit
+// sinceSeq), and the cursor moved to what was delivered. This is what a front
+// end renders onto a tool result in place of FlushPending, and what
+// get_updates reads in daemon mode, so the two share one cursor per harness
+// session. The read goes out under the reader's own seat, so the server
+// classifies it for that agent (its own writes are routine to it, a sibling
+// harness's are not). Returns the since the read used.
+func (r *Room) Delta(ctx context.Context, name string, from *int64) (*client.FrameDelta, int64, error) {
 	r.mu.Lock()
 	rd, ok := r.readers[name]
 	if !ok {
 		r.mu.Unlock()
-		return nil, errors.New("no reader " + name)
+		return nil, -1, errors.New("no reader " + name)
 	}
 	since := rd.Cursor
+	if from != nil {
+		since = *from
+	}
 	cl := r.client
+	if s := r.seatForLocked(rd); s != nil {
+		cl = s.client
+	}
 	r.mu.Unlock()
 	delta, err := cl.GetContextDelta(ctx, since)
 	if err != nil {
-		return nil, err
+		return nil, since, err
 	}
 	if delta != nil && delta.ToVersion != nil {
 		_, _ = r.Advance(name, KindAgent, *delta.ToVersion)
 	}
-	return delta, nil
+	return delta, since, nil
 }
 
-// Client is the room's one HTTP client (the front end's tools reuse its
-// instance id through SetAgentInstanceID on their own client).
-func (r *Room) Client() session.EdgeClient { return r.client }
+// Client is the primary seat's HTTP client (each front end's tools reuse its
+// own seat's instance id through SetAgentInstanceID on their own client).
+func (r *Room) Client() session.EdgeClient {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.client
+}
 
 // Close stops presence and live watch and leaves the room.
 func (r *Room) Close(ctx context.Context) {
@@ -514,7 +889,9 @@ func (r *Room) Close(ctx context.Context) {
 	if r.cancel != nil {
 		r.cancel()
 	}
-	_ = r.client.Leave(ctx)
+	for _, s := range r.Seats() {
+		_ = s.client.Leave(ctx)
+	}
 	r.mu.Lock()
 	r.Connection = Disconnected
 	r.mu.Unlock()
@@ -529,7 +906,22 @@ func (r *Room) Snapshot() RoomState {
 		cp := *rd
 		readers[name] = &cp
 	}
-	return RoomState{Config: r.Config, CwdAllowed: r.CwdAllowed, Readers: readers, SavedAt: r.deps.now()}
+	var seats []client.Config
+	for _, s := range r.seatsLocked() {
+		if s.Label != r.primary {
+			seats = append(seats, s.Config)
+		}
+	}
+	var links []string
+	for h := range r.links {
+		links = append(links, h)
+	}
+	sort.Strings(links)
+	cfg := r.Config
+	if p, ok := r.seats[r.primary]; ok {
+		cfg = p.Config
+	}
+	return RoomState{Config: cfg, CwdAllowed: r.CwdAllowed, Readers: readers, Seats: seats, Links: links, SavedAt: r.deps.now()}
 }
 
 // frameCursor is the frame's as-of seq as a cursor, -1 when absent — the same

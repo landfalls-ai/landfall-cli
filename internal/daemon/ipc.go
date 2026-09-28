@@ -24,6 +24,9 @@ const ProtocolVersion = 2
 // polls every 5 s; an answer must be well inside that.
 const RequestTimeout = 2 * time.Second
 
+// AttachTimeout bounds an attach, which may perform a /edge/join.
+const AttachTimeout = 15 * time.Second
+
 // Request is one line on the daemon socket.
 type Request struct {
 	Op string `json:"op"`
@@ -38,6 +41,15 @@ type Request struct {
 	ReaderName   string `json:"readerName,omitempty"`
 	WorkspaceKey string `json:"workspaceKey,omitempty"`
 	UpTo         *int64 `json:"upTo,omitempty"`
+	// Harness (peek, consume, status) is the asking hook's agent host: the
+	// terminal reader it speaks for is the one for this workspace AND harness.
+	Harness string `json:"harness,omitempty"`
+	// Since (delta) is an explicit sinceSeq from get_updates; absent means the
+	// reader's own cursor.
+	Since *int64 `json:"since,omitempty"`
+	// Link (attach, link) is LinkHash of the share link a front end joined
+	// with: attach records it on the room, `link` looks a room up by it.
+	Link string `json:"link,omitempty"`
 
 	// share
 	Text              string         `json:"text,omitempty"`
@@ -57,6 +69,9 @@ type ReaderSpec struct {
 	// Workspace is the directory itself, for the doorbell the daemon writes
 	// there (hooks watch a file under the workspace, not a key).
 	Workspace string `json:"workspace,omitempty"`
+	// Harness is the agent host's key (hooks.HarnessFromClientName). The
+	// attach's own room config carries the seat label (AgentLabel).
+	Harness string `json:"harness,omitempty"`
 }
 
 // Fingerprints is what the front end computed from its working directory
@@ -89,17 +104,25 @@ type Response struct {
 	Matched         []string             `json:"matched,omitempty"`
 	EntryID         string               `json:"entryId,omitempty"`
 	Redacted        bool                 `json:"redacted,omitempty"`
+	// Since (delta) is the seq the delta was read from.
+	Since *int64 `json:"since,omitempty"`
+	// Room (link) is the config a share link already opened on this machine,
+	// with no seat label: the asking front end adds its own.
+	Room *client.Config `json:"room,omitempty"`
 	// Allowed (match): the person has allowed working-directory content for the room.
 	Allowed bool `json:"allowed,omitempty"`
 }
 
 // RoomView is a room as `rooms`, `peek` and `status` describe it.
 type RoomView struct {
-	RoomKey      string     `json:"roomKey"`
-	IncidentID   string     `json:"incidentId"`
-	Slug         string     `json:"slug"`
-	Connection   Connection `json:"connection"`
-	Readers      []*Reader  `json:"readers,omitempty"`
+	RoomKey    string     `json:"roomKey"`
+	IncidentID string     `json:"incidentId"`
+	Slug       string     `json:"slug"`
+	Connection Connection `json:"connection"`
+	Readers    []*Reader  `json:"readers,omitempty"`
+	// Seats (rooms only) are this machine's agent sessions in the room, one
+	// per harness.
+	Seats        []SeatView `json:"seats,omitempty"`
 	Count        int        `json:"count"`
 	Held         int        `json:"held"`
 	VotesAwaited int        `json:"votesAwaited"`
@@ -113,6 +136,12 @@ type RoomView struct {
 	// Events is the untold set itself (peek only), so a front end's per-pid
 	// hook socket can answer protocol-1 hooks from the daemon's view.
 	Events []client.Event `json:"events,omitempty"`
+}
+
+// SeatView is one agent session as `rooms` lists it.
+type SeatView struct {
+	Label      string `json:"label"`
+	InstanceID string `json:"instanceId"`
 }
 
 // Handler answers requests; it is the daemon's brain and is pure enough to
@@ -142,16 +171,27 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if err != nil {
 			return fail("could not join the room: " + err.Error())
 		}
+		// One agent session per harness: the first attach under a new label
+		// performs its own /edge/join, so Claude Code and Codex in the same
+		// checkout are two participants in the room, not one.
+		seat, err := room.EnsureSeat(ctx, *req.Room)
+		if err != nil {
+			return fail("could not join the room as " + SeatLabel(*req.Room) + ": " + err.Error())
+		}
+		room.AddLink(req.Link)
 		// The frame first: a new reader starts at the room's current position
 		// (the frame's as-of seq), not at -1. At -1 its first delta would replay
 		// the whole incident and its untold set would count history as news.
 		frame, _ := room.Frame(ctx)
-		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace})
+		harness := req.Reader.Harness
+		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace, Harness: harness, Seat: seat.Label})
 		// An agent front end runs in the person's terminal: the person becomes a
 		// reader of this room at the same moment, at the same position, so what
-		// happens from here on is untold to THEM until a hook shows it.
+		// happens from here on is untold to THEM until a hook shows it. One such
+		// reader per workspace AND harness: a Codex hook marking the room read
+		// must not mark it read for the person's Claude Code session.
 		if kind == KindAgent && req.Reader.WorkspaceKey != "" {
-			room.Attach(Reader{Name: TerminalReaderName(req.Reader.WorkspaceKey), Kind: KindTerminal, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace})
+			room.Attach(Reader{Name: TerminalReaderNameFor(req.Reader.WorkspaceKey, harness), Kind: KindTerminal, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace, Harness: harness, Seat: seat.Label})
 		}
 		if req.Fingerprints != nil {
 			d.setFingerprints(room.Key+"|"+req.Reader.WorkspaceKey, req.Fingerprints)
@@ -159,7 +199,48 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		d.opts.Log(fmt.Sprintf("attached %s (%s) to %s at cursor %d; %d reader(s) connected", rd.Name, rd.Kind, room.Config.IncidentID, rd.Cursor, room.ConnectedReaders()))
 		d.save()
 		res := ok()
-		res.RoomKey, res.AgentInstanceID, res.Reader, res.Frame, res.Connection = room.Key, room.AgentInstanceID, rd, frame, room.Connection
+		res.RoomKey, res.AgentInstanceID, res.Reader, res.Frame, res.Connection = room.Key, seat.InstanceID, rd, frame, room.Connection
+		return res
+
+	case "link":
+		// A second harness handed a share link this machine already redeemed:
+		// the link is single-use, so answer with the room's own config and let
+		// the front end attach with it (its attach joins its own seat).
+		for _, room := range d.rooms() {
+			if room.HasLink(req.Link) {
+				room.mu.Lock()
+				cfg := room.Config
+				room.mu.Unlock()
+				cfg.AgentLabel = ""
+				res := ok()
+				res.RoomKey, res.Room = room.Key, &cfg
+				return res
+			}
+		}
+		return fail("no room on this machine was opened with that link")
+
+	case "seen":
+		// An agent reader was shown the room up to a point by a read of its
+		// own (get_brief, join_war_room, read_timeline): its cursor moves
+		// there, never backwards and never anyone else's.
+		room := d.room(req.RoomKey)
+		if room == nil {
+			return fail("no such room")
+		}
+		if req.UpTo == nil {
+			return fail("seen needs upTo")
+		}
+		rd, okr := room.Reader(req.ReaderName)
+		if !okr || rd.Kind != KindAgent {
+			return fail("seen is an agent reader's own")
+		}
+		cur, err := room.Advance(req.ReaderName, KindAgent, *req.UpTo)
+		if err != nil {
+			return fail(err.Error())
+		}
+		d.save()
+		res := ok()
+		res.Cursor = &cur
 		return res
 
 	case "detach":
@@ -194,13 +275,13 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if !okr || rd.Kind != KindAgent {
 			return fail("delta is an agent reader's own pull")
 		}
-		delta, err := room.Delta(ctx, req.ReaderName)
+		delta, since, err := room.Delta(ctx, req.ReaderName, req.Since)
 		if err != nil {
 			return fail("delta unavailable: " + err.Error())
 		}
 		d.save()
 		res := ok()
-		res.Delta, res.Connection = delta, room.Connection
+		res.Delta, res.Connection, res.Since = delta, room.Connection, &since
 		return res
 
 	case "peek":
@@ -214,18 +295,27 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		if req.UpTo == nil {
 			return fail("consume needs upTo")
 		}
-		rd, okr := room.Reader(req.ReaderName)
-		if !okr {
-			return fail("no reader " + req.ReaderName)
-		}
 		// A hook process speaks for the person: it may move the terminal
-		// reader only. Any other name is refused (research R3).
-		if rd.Kind != KindTerminal {
-			return fail(ErrWrongKind.Error())
+		// reader(s) its peek answered for, and nothing else (research R3).
+		names := terminalReadersFor(room, req)
+		if len(names) == 0 {
+			if req.ReaderName != "" {
+				if rd, okr := room.Reader(req.ReaderName); okr && rd.Kind != KindTerminal {
+					return fail(ErrWrongKind.Error())
+				}
+				return fail("no reader " + req.ReaderName)
+			}
+			return fail("no terminal reader for this workspace")
 		}
-		cur, err := room.Advance(req.ReaderName, KindTerminal, *req.UpTo)
-		if err != nil {
-			return fail(err.Error())
+		cur := int64(-1)
+		for i, name := range names {
+			c, err := room.Advance(name, KindTerminal, *req.UpTo)
+			if err != nil {
+				return fail(err.Error())
+			}
+			if i == 0 || c < cur {
+				cur = c
+			}
 		}
 		d.save()
 		res := ok()
@@ -233,14 +323,18 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		return res
 
 	case "status":
-		return d.status(req.WorkspaceKey)
+		return d.status(req.WorkspaceKey, req.Harness)
 
 	case "rooms":
 		res := ok()
 		for _, room := range d.rooms() {
+			var seats []SeatView
+			for _, s := range room.Seats() {
+				seats = append(seats, SeatView{Label: s.Label, InstanceID: s.InstanceID})
+			}
 			res.Rooms = append(res.Rooms, RoomView{
 				RoomKey: room.Key, IncidentID: room.Config.IncidentID, Slug: room.Config.Slug,
-				Connection: room.Connection, Readers: room.Readers(), MaxSeq: room.MaxSeq(),
+				Connection: room.Connection, Readers: room.Readers(), Seats: seats, MaxSeq: room.MaxSeq(),
 			})
 		}
 		return res
@@ -270,19 +364,15 @@ const peekAttentionBudget = 900 * time.Millisecond
 func (d *Daemon) peek(req Request) Response {
 	res := ok()
 	for _, room := range d.rooms() {
-		name := req.ReaderName
-		if name == "" {
-			name = TerminalReaderName(req.WorkspaceKey)
-		}
 		// Only rooms this workspace actually reads. The terminal reader is
 		// created when an agent from that workspace attaches (Handle "attach"),
 		// never here: a hook or status line asking about a checkout must not
 		// enrol that checkout into every room the machine has open.
-		rd, okr := room.Reader(name)
-		if !okr {
+		names := terminalReadersFor(room, req)
+		if len(names) == 0 {
 			continue
 		}
-		untold := room.UntoldFor(name)
+		untold, cursor, seat := room.untoldForAll(names)
 		digest := make([]string, 0, len(untold))
 		for _, e := range untold {
 			line := narrate.FormatEventLine(e)
@@ -293,16 +383,70 @@ func (d *Daemon) peek(req Request) Response {
 		}
 		res.Rooms = append(res.Rooms, RoomView{
 			RoomKey: room.Key, IncidentID: room.Config.IncidentID, Slug: room.Config.Slug, Connection: room.Connection,
-			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: rd.Cursor, Digest: digest, Events: untold,
-			Attention: room.Attention(context.Background(), peekAttentionBudget),
+			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: cursor, Digest: digest, Events: untold,
+			Attention: room.AttentionFor(context.Background(), seat, peekAttentionBudget),
 		})
 	}
 	return res
 }
 
+// terminalReadersFor is which terminal reader(s) of a room a hook's request
+// speaks for:
+//
+//   - a reader named outright, if the room has it (a hook of an older build
+//     names the harness-less reader; one that no longer exists falls through
+//     to the workspace rule below);
+//   - with a harness: that harness's reader in this workspace, else the
+//     workspace's harness-less reader (a front end that could not name its
+//     host), else none: another harness's reader is never this hook's;
+//   - with no harness: the harness-less reader, else every terminal reader of
+//     the workspace together. A hook that cannot tell which host ran it
+//     over-reports, as hooks always have; that is the recoverable direction.
+func terminalReadersFor(room *Room, req Request) []string {
+	// A hook names the harness-less reader alongside its harness so a daemon
+	// of an older build still understands it; here the harness decides.
+	if req.Harness != "" && req.WorkspaceKey != "" && req.ReaderName == TerminalReaderName(req.WorkspaceKey) {
+		req.ReaderName = ""
+	}
+	if req.ReaderName != "" {
+		if rd, ok := room.Reader(req.ReaderName); ok {
+			if rd.Kind != KindTerminal {
+				return nil
+			}
+			return []string{req.ReaderName}
+		}
+		if req.WorkspaceKey == "" || req.ReaderName != TerminalReaderName(req.WorkspaceKey) {
+			return nil
+		}
+	}
+	if req.WorkspaceKey == "" {
+		return nil
+	}
+	legacy := TerminalReaderName(req.WorkspaceKey)
+	if req.Harness != "" {
+		if _, ok := room.Reader(TerminalReaderNameFor(req.WorkspaceKey, req.Harness)); ok {
+			return []string{TerminalReaderNameFor(req.WorkspaceKey, req.Harness)}
+		}
+		if _, ok := room.Reader(legacy); ok {
+			return []string{legacy}
+		}
+		return nil
+	}
+	if _, ok := room.Reader(legacy); ok {
+		return []string{legacy}
+	}
+	var names []string
+	for _, rd := range room.Readers() {
+		if rd.Kind == KindTerminal && rd.WorkspaceKey == req.WorkspaceKey {
+			names = append(names, rd.Name)
+		}
+	}
+	return names
+}
+
 // status is the status line's one call.
-func (d *Daemon) status(workspaceKey string) Response {
-	res := d.peek(Request{Op: "peek", WorkspaceKey: workspaceKey})
+func (d *Daemon) status(workspaceKey, harness string) Response {
+	res := d.peek(Request{Op: "peek", WorkspaceKey: workspaceKey, Harness: harness})
 	if !res.OK {
 		return res
 	}
@@ -357,6 +501,11 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 		d.subscribe(ctx, conn, req)
 		return
 	} else {
+		// An attach may join the room over the network (once per harness);
+		// the two-second budget is for the status line's reads, not that.
+		if req.Op == "attach" {
+			_ = conn.SetDeadline(time.Now().Add(AttachTimeout))
+		}
 		res = d.handler.Handle(ctx, req)
 	}
 	body, _ := json.Marshal(res)

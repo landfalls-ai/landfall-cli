@@ -82,6 +82,9 @@ func newRoomsCommand(ui *UI) *cobra.Command {
 		}
 		for _, r := range res.Rooms {
 			ui.Outf("%s/%s  %s\n", r.Slug, r.IncidentID, r.Connection)
+			for _, s := range r.Seats {
+				ui.Outf("  agent session %-26q instance %s\n", s.Label, s.InstanceID)
+			}
 			for _, rd := range r.Readers {
 				state := "detached"
 				if rd.Connected {

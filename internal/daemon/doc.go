@@ -12,6 +12,20 @@
 // zero and whose "anything new in the room?" was answered "nothing since seq 52"
 // (landfall #2253). One process, one cursor, two consumers.
 //
+// ONE AGENT SESSION PER HARNESS (2026-09-28). A room holds one SEAT per agent
+// host on this machine: Claude Code and Codex in the same checkout are two
+// /edge/join calls, two instance ids, two labels ("Claude Code", "Codex", from
+// MCP clientInfo; LANDFALL_AGENT_LABEL still wins) and two presences, where
+// they used to be one "edge-agent". Echo suppression is per seat: a reader
+// never counts its own seat's writes, and always counts a sibling harness's.
+// The person's terminal reader is per workspace AND harness
+// (terminal:<workspaceKey>:<harness>), so one host's hook marking the room
+// read does not mark it read for the other. A share link is single-use: the
+// daemon remembers (a hash of) the link that opened a room, and a second host
+// handed the same link joins through that room with the session the link
+// already gave this machine. A seat whose host has gone is left after the
+// idle grace while a sibling still reads the room.
+//
 // READER KINDS AND WHO MAY MOVE WHICH CURSOR (data-model.md):
 //
 //	agent     — an MCP front end. Its cursor moves on its own tool-result flush

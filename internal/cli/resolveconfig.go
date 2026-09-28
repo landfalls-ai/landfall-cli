@@ -77,6 +77,16 @@ func parseIncidentURL(raw string) *incidentTarget {
 	return &incidentTarget{slug: m[1], incidentID: m[2]}
 }
 
+// isShareLink reports whether a link carries its own credential (a ticket, or
+// the short /j/<code> form): the single-use kind resolveConfig redeems.
+func isShareLink(link string) bool {
+	if link == "" {
+		return false
+	}
+	_, isShort := client.ParseShortLink(link)
+	return isShort || ticketQuery.MatchString(link)
+}
+
 // resolveConfig resolves a joinable config, in priority order:
 //
 //  1. a share link WITH a ticket → redeem it (guest / non-member path, 021);

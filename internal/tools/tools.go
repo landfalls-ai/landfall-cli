@@ -526,9 +526,28 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 }
 
 func (b *bridge) getUpdates(ctx context.Context, args map[string]any, _ string, cl session.EdgeClient) (string, error) {
-	since := b.sess.Cursor()
+	var explicit *int64
 	if n, ok := jsNumber(args["sinceSeq"]); ok {
-		since = int64(n)
+		v := int64(n)
+		explicit = &v
+	}
+	// In daemon mode the cursor is the daemon's, one per harness session, the
+	// same one the piggyback flush reads: a second cursor in this process
+	// would make get_updates and the flush disagree about what was shown.
+	if fn := b.sess.UpdatesOverride(); fn != nil {
+		if delta, usedSince, ok := fn(ctx, explicit); ok {
+			if delta != nil && delta.ToVersion != nil {
+				b.sess.MirrorCursor(*delta.ToVersion)
+			}
+			if rendered := narrate.RenderDelta(delta); rendered != "" {
+				return rendered, nil
+			}
+			return fmt.Sprintf("No new shared context since seq %d.", usedSince), nil
+		}
+	}
+	since := b.sess.Cursor()
+	if explicit != nil {
+		since = *explicit
 	}
 	delta, err := cl.GetContextDelta(ctx, since)
 	if err != nil {

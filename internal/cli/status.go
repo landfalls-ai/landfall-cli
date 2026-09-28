@@ -144,7 +144,7 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 	// the person's own untold count. A daemon that is not running, or has no
 	// room for this workspace, falls through to the per-pid sockets a
 	// fallback-mode serve still binds.
-	if res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "status", WorkspaceKey: hooks.WorkspaceKey(ws.Dir())}, hooks.SocketTimeout); err == nil && res.Line != "" {
+	if res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "status", WorkspaceKey: hooks.WorkspaceKey(ws.Dir()), Harness: ws.Harness}, hooks.SocketTimeout); err == nil && res.Line != "" {
 		line := res.Line
 		// Holds live in this checkout's spool (the worker's), not in the daemon:
 		// count them here so the person sees "· N held" where they are working.
@@ -174,7 +174,9 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 // Workspace every time.
 func newStatusCommand(ui *UI) *cobra.Command {
 	c := newCommand(ui, "status", func(*cobra.Command, []string) error {
-		RunStatus(ui, hooks.Workspace{})
+		// The status line is drawn by one host (Claude Code sets CLAUDECODE
+		// for it), so it counts what that harness's person-reader was not told.
+		RunStatus(ui, hooks.Workspace{Harness: hooks.DetectHookHarness("", "", os.Getenv)})
 		return nil
 	})
 	c.DisableFlagParsing = true

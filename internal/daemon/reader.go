@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sort"
 	"strings"
@@ -33,15 +35,21 @@ func ParseKind(s string) (Kind, error) {
 
 // Reader is a named consumer of one room with its own cursor.
 type Reader struct {
-	Name         string    `json:"name"`
-	Kind         Kind      `json:"kind"`
-	Host         string    `json:"host"`
-	WorkspaceKey string    `json:"workspaceKey"`
-	Workspace    string    `json:"workspace,omitempty"`
-	Cursor       int64     `json:"cursor"`
-	AttachedAt   time.Time `json:"attachedAt"`
-	LastSeenAt   time.Time `json:"lastSeenAt"`
-	Connected    bool      `json:"connected"`
+	Name         string `json:"name"`
+	Kind         Kind   `json:"kind"`
+	Host         string `json:"host"`
+	WorkspaceKey string `json:"workspaceKey"`
+	Workspace    string `json:"workspace,omitempty"`
+	// Harness is the agent host this reader belongs to (hooks.Harness key);
+	// Seat is the label of that harness's agent session in the room. A
+	// terminal reader carries both, so the person's view in Claude Code and
+	// in Codex are two readers with two cursors.
+	Harness    string    `json:"harness,omitempty"`
+	Seat       string    `json:"seat,omitempty"`
+	Cursor     int64     `json:"cursor"`
+	AttachedAt time.Time `json:"attachedAt"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+	Connected  bool      `json:"connected"`
 }
 
 // SilentReaderTTL is how long a reader that detached (or vanished) keeps its
@@ -53,6 +61,23 @@ const SilentReaderTTL = time.Hour
 // name is defined once, in internal/hooks, because a hook process builds it
 // without this package.
 func TerminalReaderName(workspaceKey string) string { return hooks.TerminalReaderName(workspaceKey) }
+
+// TerminalReaderNameFor is the person's reader at a checkout in one harness
+// (hooks.TerminalReaderNameFor); no harness is TerminalReaderName.
+func TerminalReaderNameFor(workspaceKey, harness string) string {
+	return hooks.TerminalReaderNameFor(workspaceKey, harness)
+}
+
+// LinkHash is how the daemon remembers a share link without writing down the
+// credential it carries: a truncated sha256 of the trimmed link text.
+func LinkHash(link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(link))
+	return hex.EncodeToString(sum[:16])
+}
 
 // Untold is what this reader has not been shown: events past its cursor that
 // are investigator news (realtime.IsNews, the allow-list mirroring the

@@ -47,6 +47,12 @@ type Options struct {
 	// without reading its params at all; the room daemon names each reader by
 	// host (claude-code, cursor, codex), which is what this hands over.
 	OnInitialize func(ClientInfo)
+	// OnHandshake, when set, runs on every `initialize` after OnInitialize,
+	// whether or not the client described itself, and BEFORE the answer is
+	// written. `serve` in daemon mode joins its room here: the join needs the
+	// host's name for the room's label, and doing it before answering means no
+	// tool call can arrive ahead of it.
+	OnHandshake func()
 	// Instructions carries the fixed standing guidance the MCP client folds
 	// into the model's context on connect. The key is OMITTED entirely when
 	// empty — never emitted as null or "".
@@ -159,6 +165,9 @@ func HandleMessage(ctx context.Context, msg *Request, opts Options) *Response {
 			if json.Unmarshal(msg.Params, &p) == nil {
 				opts.OnInitialize(p.ClientInfo)
 			}
+		}
+		if opts.OnHandshake != nil {
+			opts.OnHandshake()
 		}
 		info := ServerInfo{Name: "landfall", Version: "0.1.0"}
 		if opts.ServerInfo != nil {

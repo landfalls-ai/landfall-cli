@@ -305,7 +305,9 @@ your status line and your prompt digest count what *you* have not been shown.
 `landfall status` (the Claude Code status line) names the room the way the web app does, by
 its display id, `🔴 Acme 42 · 2 new · 1 vote awaited`, or by its title (`🔴 landfall:
 Checkout 5xx spike`) when the server has not sent one. It never shows the incident's internal
-id. Until your agent has read the room's brief once, it says `🔴 landfall`.
+id. Until your agent has read the room's brief once, it says `🔴 landfall`. `1 vote awaited`
+counts the staged claims the room is asking your agent to take a position on. Through v0.8.13
+the daemon's status line never showed it; only a fallback-mode `serve` did.
 
 ```
 landfall rooms              # which rooms this machine has open, and who is reading each

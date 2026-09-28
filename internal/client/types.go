@@ -113,6 +113,10 @@ type Brief struct {
 
 // Incident is the frame's incident header.
 type Incident struct {
+	// DisplayID is the incident's human id, "{organization name} {number}"
+	// ("Acme 42"), the one the web app shows. Absent from a server that does
+	// not send it; the title is the fallback wherever a person reads the name.
+	DisplayID   string `json:"displayId,omitempty"`
 	Title       string `json:"title"`
 	Severity    string `json:"severity"`
 	Status      string `json:"status"`

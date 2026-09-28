@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 )
 
 // StateVersion is bumped on an incompatible change to the file's shape.
@@ -39,8 +40,11 @@ type RoomState struct {
 	Seats []client.Config `json:"seats,omitempty"`
 	// Links are hashes of the share links that led here (LinkHash): never the
 	// link itself, which carries a credential.
-	Links   []string  `json:"links,omitempty"`
-	SavedAt time.Time `json:"savedAt"`
+	Links []string `json:"links,omitempty"`
+	// Name is what the person knows the room as, so a restarted daemon's
+	// status line names it before the next frame read.
+	Name    *narrate.RoomName `json:"name,omitempty"`
+	SavedAt time.Time         `json:"savedAt"`
 }
 
 // StatePath is <RuntimeDir>/daemon/state.json.

@@ -26,6 +26,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 	"github.com/landfalls-ai/landfall-cli/internal/spool"
 	"github.com/spf13/cobra"
 )
@@ -109,10 +110,8 @@ func FormatStatusLine(status *hooks.SocketResponse) string {
 	if status == nil {
 		return ""
 	}
-	head := "🔴 landfall"
-	if status.IncidentID != "" {
-		head += " #" + status.IncidentID
-	}
+	// Named by what the person knows the room as, never its UUID.
+	head := narrate.RoomName{DisplayID: status.IncidentDisplayID, Title: status.IncidentTitle}.StatusHead()
 	parts := []string{head}
 	if status.Pending != 0 {
 		parts = append(parts, strconv.Itoa(status.Pending)+" new")

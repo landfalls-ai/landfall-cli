@@ -302,6 +302,11 @@ identity for the machine, and a **separate reading position for every reader**, 
 for you, the person at the terminal. What your agent's helper reads is the helper's business;
 your status line and your prompt digest count what *you* have not been shown.
 
+`landfall status` (the Claude Code status line) names the room the way the web app does, by
+its display id, `🔴 Acme 42 · 2 new · 1 vote awaited`, or by its title (`🔴 landfall:
+Checkout 5xx spike`) when the server has not sent one. It never shows the incident's internal
+id. Until your agent has read the room's brief once, it says `🔴 landfall`.
+
 ```
 landfall rooms              # which rooms this machine has open, and who is reading each
 landfall rooms --json

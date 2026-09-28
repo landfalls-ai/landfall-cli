@@ -205,7 +205,7 @@ func TestOneRoomTwoReadersTwoCursors(t *testing.T) {
 
 	// Status line reads the person's count, not the machinery.
 	s := h.Handle(ctx, Request{Op: "status", WorkspaceKey: "ws"})
-	if !s.OK || s.Line == "" || s.Line != "🔴 landfall #inc-1 · 1 new" {
+	if !s.OK || s.Line == "" || s.Line != "🔴 landfall · 1 new" {
 		t.Fatalf("status line = %q", s.Line)
 	}
 

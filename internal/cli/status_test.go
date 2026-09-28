@@ -55,23 +55,46 @@ func plantDeadSocket(t *testing.T, ws hooks.Workspace) string {
 }
 
 func status(incidentID string, pending, votes int) hooks.SocketResponse {
-	return hooks.SocketResponse{OK: true, IncidentID: incidentID, Pending: pending, VotesAwaited: votes}
+	return hooks.SocketResponse{OK: true, IncidentID: incidentID, IncidentDisplayID: "Acme 42", Pending: pending, VotesAwaited: votes}
 }
 
 // -------------------------------------------------------------- FormatStatusLine
 
 func TestFormatStatusLineRendersIncidentAndCountsOmittingZeroSegments(t *testing.T) {
 	s := status("inc-1", 3, 1)
-	if got := FormatStatusLine(&s); got != "🔴 landfall #inc-1 · 3 new · 1 vote awaited" {
+	if got := FormatStatusLine(&s); got != "🔴 Acme 42 · 3 new · 1 vote awaited" {
 		t.Fatalf("got %q", got)
 	}
 	z := status("inc-1", 0, 0)
-	if got := FormatStatusLine(&z); got != "🔴 landfall #inc-1" {
+	if got := FormatStatusLine(&z); got != "🔴 Acme 42" {
 		t.Fatalf("got %q", got)
 	}
 	p := status("inc-1", 1, 2)
-	if got := FormatStatusLine(&p); got != "🔴 landfall #inc-1 · 1 new · 2 votes awaited" {
+	if got := FormatStatusLine(&p); got != "🔴 Acme 42 · 1 new · 2 votes awaited" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestFormatStatusLineNeverShowsTheIncidentUUID: the room is named by its
+// display id, else its title, else not at all; the UUID is nobody's name for it.
+func TestFormatStatusLineNeverShowsTheIncidentUUID(t *testing.T) {
+	const uuid = "8a0c2f4e-1b7d-4c55-9f3a-2d6e8b1c0a77"
+	for _, tc := range []struct {
+		displayID, title, want string
+	}{
+		{"Landfall 163", "Checkout 5xx spike", "🔴 Landfall 163 · 2 new"},
+		{"", "Checkout 5xx spike", "🔴 landfall: Checkout 5xx spike · 2 new"},
+		{"", "", "🔴 landfall · 2 new"},
+		{"", "A title long enough that it would push everything else off the status line", "🔴 landfall: A title long enough that it would push… · 2 new"},
+	} {
+		s := hooks.SocketResponse{OK: true, IncidentID: uuid, IncidentDisplayID: tc.displayID, IncidentTitle: tc.title, Pending: 2}
+		got := FormatStatusLine(&s)
+		if got != tc.want {
+			t.Errorf("got %q, want %q", got, tc.want)
+		}
+		if strings.Contains(got, uuid) {
+			t.Errorf("the UUID is on the status line: %q", got)
+		}
 	}
 }
 
@@ -91,7 +114,7 @@ func TestFormatStatusLineRendersTheDivergenceSegmentWhenPresent(t *testing.T) {
 func TestFormatStatusLineIgnoresANonDivergingAnswer(t *testing.T) {
 	s := status("inc-1", 0, 0)
 	s.Divergence = &client.Divergence{Diverging: false}
-	if got := FormatStatusLine(&s); got != "🔴 landfall #inc-1" {
+	if got := FormatStatusLine(&s); got != "🔴 Acme 42" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -217,7 +240,7 @@ func TestRunStatusWritesExactlyOneLineWhenThereIsSomethingToSay(t *testing.T) {
 	if code := RunStatus(ui, ws); code != 0 {
 		t.Fatalf("exit code %d, want 0", code)
 	}
-	if !strings.Contains(out.String(), "inc-1") {
+	if out.String() != "🔴 Acme 42" {
 		t.Fatalf("got %q", out.String())
 	}
 	if strings.Contains(out.String(), "\n") {
@@ -263,5 +286,24 @@ func TestRunStatusCountsSharesTheRoomRefused(t *testing.T) {
 	}
 	if got := spoolSuffix(ws, []string{"inc-2"}, time.Now()); got != " · 1 share refused" {
 		t.Fatalf("one refusal = %q", got)
+	}
+}
+
+// TestTheStatusLineNamesTheRoomOverARealSocket: end to end through serve's
+// own socket, the name a frame read gave the session is what the line shows.
+func TestTheStatusLineNamesTheRoomOverARealSocket(t *testing.T) {
+	ws := withWorkspace(t)
+	s := session.New(session.Options{
+		Client: client.New(client.Config{IncidentID: "8a0c2f4e-1b7d-4c55-9f3a-2d6e8b1c0a77", Slug: "acme"}, nil),
+	})
+	s.NoteFrame(&client.ContextFrame{Incident: client.Incident{DisplayID: "Acme 7", Title: "Checkout 5xx"}})
+	bound := hooks.StartHookSocket(context.Background(), s, hooks.StartOptions{Workspace: ws, PID: 2})
+	if bound == nil {
+		t.Fatal("socket bind is expected to succeed in this environment")
+	}
+	defer func() { _ = bound.Close() }()
+
+	if got := FormatStatusLine(QueryStatus(ws)); got != "🔴 Acme 7" {
+		t.Fatalf("got %q", got)
 	}
 }

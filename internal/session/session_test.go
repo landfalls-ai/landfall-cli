@@ -621,6 +621,33 @@ func TestJoiningADifferentWarRoomForgetsThePreviousRoomsQuestions(t *testing.T) 
 	}
 }
 
+// TestTheRoomNameIsKeptFromFramesAndForgottenOnRejoin: the status line names
+// the room the session is in, never the one it left.
+func TestTheRoomNameIsKeptFromFramesAndForgottenOnRejoin(t *testing.T) {
+	clientA, clientB := newStub("a-1"), newStub("a-2")
+	s := New(Options{
+		Client: clientA,
+		Redeem: func(context.Context, string) (client.Config, error) {
+			return client.Config{Slug: "acme", IncidentID: "inc-2"}, nil
+		},
+		ClientFactory: func(client.Config) EdgeClient { return clientB },
+	})
+	if !s.RoomName().IsZero() {
+		t.Fatal("no frame read yet, so no name")
+	}
+	s.NoteFrame(&client.ContextFrame{Incident: client.Incident{DisplayID: "Acme 41", Title: "Checkout"}})
+	s.NoteFrame(&client.ContextFrame{}) // a degraded answer keeps the name
+	if got := s.RoomName(); got.DisplayID != "Acme 41" || got.Title != "Checkout" {
+		t.Fatalf("name = %+v", got)
+	}
+	if _, err := s.JoinWarRoom(context.Background(), "http://api.test/share/xyz"); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	if !s.RoomName().IsZero() {
+		t.Fatalf("the previous room's name survived a rejoin: %+v", s.RoomName())
+	}
+}
+
 // The case the test above does not reach: a genuine unresolved read spanning
 // the switch. `claimSeq` is a PER-INCIDENT counter, so incident A's claim #48
 // rendered into a result the agent reads as incident B is not a cosmetic

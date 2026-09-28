@@ -88,7 +88,18 @@ func newRoomsCommand(ui *UI) *cobra.Command {
 			return nil
 		}
 		for _, r := range res.Rooms {
-			ui.Outf("%s/%s  %s\n", r.Slug, r.IncidentID, r.Connection)
+			// The name the person knows the room by comes first; the id stays
+			// on the line because this listing is where someone debugging a
+			// machine looks for it.
+			name := r.DisplayID
+			if name == "" {
+				name = r.Title
+			}
+			if name != "" {
+				ui.Outf("%s  (%s/%s)  %s\n", name, r.Slug, r.IncidentID, r.Connection)
+			} else {
+				ui.Outf("%s/%s  %s\n", r.Slug, r.IncidentID, r.Connection)
+			}
 			for _, s := range r.Seats {
 				ui.Outf("  agent session %-26q instance %s\n", s.Label, s.InstanceID)
 			}

@@ -529,6 +529,7 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 		// ignores: the session cursor starts at -1 and only ever moves forward,
 		// so "no cursor in this frame" needs no guard of its own here.
 		b.sess.AdvanceCursorTo(narrate.FrameCursor(frame))
+		b.sess.NoteFrame(frame)
 		briefLine = "\n\n" + narrate.RenderFrame(frame)
 	}
 	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. "+
@@ -581,6 +582,7 @@ func (b *bridge) getBrief(ctx context.Context, _ map[string]any, _ string, cl se
 		return "", err
 	}
 	b.sess.AdvanceCursorTo(narrate.FrameCursor(frame))
+	b.sess.NoteFrame(frame)
 	return narrate.RenderFrame(frame), nil
 }
 
@@ -878,6 +880,7 @@ func (b *bridge) describeWidgetTypes(ctx context.Context, _ map[string]any, _ st
 	if err != nil {
 		return "", err
 	}
+	b.sess.NoteFrame(frame)
 	if len(frame.WidgetCatalog) == 0 {
 		return "This server sent no widget catalog; the widget types it accepts are: " + joinAny(widgetTypes) + ". " + widgetShapes, nil
 	}

@@ -13,6 +13,7 @@ import (
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
 	"github.com/landfalls-ai/landfall-cli/internal/tools"
 )
@@ -369,6 +370,7 @@ func (d *daemonSession) Cursor() int64 {
 	return -1
 }
 func (d *daemonSession) Client() session.EdgeClient     { return d.sess.Client() }
+func (d *daemonSession) RoomName() narrate.RoomName     { return d.sess.RoomName() }
 func (d *daemonSession) Attention() *client.Attention   { return d.sess.Attention() }
 func (d *daemonSession) Divergence() *client.Divergence { return d.sess.Divergence() }
 

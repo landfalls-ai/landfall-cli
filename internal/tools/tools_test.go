@@ -1089,3 +1089,15 @@ func TestProposeActionIsSuggestOnly(t *testing.T) {
 		t.Errorf("description = %q", desc)
 	}
 }
+
+// TestAFrameReadNamesTheRoomForTheStatusLine: get_brief (and join, and
+// describe_widget_types) keep the room's display id and title on the session,
+// which is what the per-process status socket answers with.
+func TestAFrameReadNamesTheRoomForTheStatusLine(t *testing.T) {
+	c := &fakeClient{frame: &client.ContextFrame{Incident: client.Incident{DisplayID: "Acme 42", Title: "Checkout 5xx"}}}
+	s := newSession(c)
+	callTool(t, Build(s), "get_brief", map[string]any{})
+	if got := s.RoomName(); got.DisplayID != "Acme 42" || got.Title != "Checkout 5xx" {
+		t.Fatalf("session name = %+v", got)
+	}
+}

@@ -141,6 +141,88 @@ func TestALongLogLineIsCutAndFolded(t *testing.T) {
 	if n := len([]rune(line)); n > 320 {
 		t.Errorf("one log line rendered as %d runes", n)
 	}
+	if !strings.HasSuffix(got, "\n1 line was cut at 300 characters; pass raw: true to read it in full.") {
+		t.Errorf("a cut line must be said, with how to read it in full:\n%s", got)
+	}
+}
+
+// A line cut to fit reads as the whole message unless the view says it was
+// cut. Two CloudWatch events of about 1.2 KB each, the end of each one (the
+// exception a stack trace ends with) past the cut.
+func TestCutLinesAreCountedAndSaidSo(t *testing.T) {
+	trace := func(i int) string {
+		return fmt.Sprintf("ERROR checkout request %d failed\n", i) +
+			strings.Repeat("\tat com.example.checkout.PaymentClient.authorize(PaymentClient.java:212)\n", 16) +
+			"Caused by: java.net.SocketTimeoutException: Read timed out"
+	}
+	result := roundTrip(t, map[string]any{"source": "cloudwatch", "operation": "filterLogEvents", "raw": map[string]any{
+		"events": []any{
+			map[string]any{"timestamp": signalsBase.UnixMilli(), "message": trace(1)},
+			map[string]any{"timestamp": signalsBase.Add(time.Second).UnixMilli(), "message": trace(2)},
+			map[string]any{"timestamp": signalsBase.Add(2 * time.Second).UnixMilli(), "message": "short and whole"},
+		},
+	}})
+	if n := len(trace(1)); n < 1100 {
+		t.Fatalf("fixture line is only %d bytes", n)
+	}
+	got := RenderSignalRead("", "", result, SignalReadOptions{})
+	if strings.Contains(got, "SocketTimeoutException") {
+		t.Fatalf("the fixture's tail should be past the cut:\n%s", got)
+	}
+	if !strings.HasSuffix(got, "\n14:00:02Z short and whole\n2 lines were cut at 300 characters; pass raw: true to read them in full.") {
+		t.Errorf("got:\n%s", got)
+	}
+	// raw: true is where the rest is, and it is really there.
+	if raw := RenderSignalRead("", "", result, SignalReadOptions{Raw: true}); !strings.Contains(raw, "SocketTimeoutException") {
+		t.Errorf("raw: true does not carry the cut tail")
+	}
+
+	// Beside a trim note and a page token, the cut note keeps its own line,
+	// and the token stays last.
+	long := cloudwatchLogRead(t, 60, map[string]any{"nextToken": "tok-2"})
+	events := long["raw"].(map[string]any)["events"].([]any)
+	events[0].(map[string]any)["message"] = strings.Repeat("y", 400)
+	got = RenderSignalRead("", "", long, SignalReadOptions{})
+	tail := got[strings.Index(got, "Trimmed:"):]
+	lines := strings.Split(tail, "\n")
+	if len(lines) != 3 || !strings.HasPrefix(lines[1], "1 line was cut at 300 characters") ||
+		!strings.HasPrefix(lines[2], "The source has another page") {
+		t.Errorf("tail:\n%s", tail)
+	}
+}
+
+func TestEveryViewSaysWhenItCutALine(t *testing.T) {
+	text := roundTrip(t, map[string]any{"source": "mcp-server", "operation": "search_runbooks",
+		"raw": map[string]any{"content": []any{map[string]any{"type": "text", "text": "short\n" + strings.Repeat("z", 500)}}}})
+	if got := RenderSignalRead("", "", text, SignalReadOptions{}); !strings.HasSuffix(got,
+		"\n1 line was cut at 300 characters; pass raw: true to read it in full.") {
+		t.Errorf("text view:\n%s", got)
+	}
+
+	list := roundTrip(t, map[string]any{"source": "remote", "operation": "topology", "raw": map[string]any{
+		"services": []any{map[string]any{"svc": strings.Repeat("a", 400)}, map[string]any{"svc": "payments"}},
+		"note":     strings.Repeat("b", 400),
+	}})
+	if got := RenderSignalRead("", "", list, SignalReadOptions{}); !strings.HasSuffix(got,
+		"\n2 lines were cut at 300 characters; pass raw: true to read them in full.") {
+		t.Errorf("list view:\n%s", got)
+	}
+
+	series := roundTrip(t, map[string]any{"source": "cloudwatch", "operation": "getMetricStatistics", "raw": map[string]any{
+		"Label":      strings.Repeat("n", 200),
+		"Datapoints": []any{map[string]any{"Timestamp": "2026-09-28T14:00:00Z", "Average": 1.5}},
+	}})
+	if got := RenderSignalRead("", "", series, SignalReadOptions{}); !strings.HasSuffix(got,
+		"\n1 series name was cut at 160 characters; pass raw: true to read it in full.") {
+		t.Errorf("series view:\n%s", got)
+	}
+
+	// Nothing cut, nothing said.
+	for _, whole := range []map[string]any{cloudwatchLogRead(t, 150, nil), cloudwatchLogRead(t, 3, nil)} {
+		if got := RenderSignalRead("", "", whole, SignalReadOptions{}); strings.Contains(got, "was cut") || strings.Contains(got, "were cut") {
+			t.Errorf("a read with no cut line claims one:\n%s", got)
+		}
+	}
 }
 
 func TestAReadSpanningDaysDatesEachLine(t *testing.T) {

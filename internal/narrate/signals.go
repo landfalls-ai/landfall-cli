@@ -46,7 +46,10 @@ const (
 	SignalRawMaxBytes = 64 * 1024
 
 	// signalLineMax bounds one rendered line (a log message, a list item).
+	// A line cut to fit is counted and the view says so (see lineCuts).
 	signalLineMax = 300
+	// signalNameMax bounds one series name.
+	signalNameMax = 160
 	// signalSeriesMax bounds how many series get a summary line.
 	signalSeriesMax = 50
 	// signalObjectMax bounds a payload with no list in it, rendered as JSON.
@@ -475,15 +478,16 @@ func renderLogs(head string, entries []logLine, total, n int, token *pageTokenIn
 	}
 	sb.WriteString(".\n")
 
+	var cut lineCuts
 	headN, tailN := split(len(entries), n)
 	for _, e := range entries[:headN] {
-		sb.WriteString(clock(e.t, multiDay) + " " + oneLine(e.line, signalLineMax) + "\n")
+		sb.WriteString(clock(e.t, multiDay) + " " + cut.line(e.line, signalLineMax) + "\n")
 	}
 	hidden := len(entries) - headN - tailN
 	if hidden > 0 {
 		fmt.Fprintf(&sb, "… %s not shown …\n", plural(hidden, "event", "events"))
 		for _, e := range entries[len(entries)-tailN:] {
-			sb.WriteString(clock(e.t, multiDay) + " " + oneLine(e.line, signalLineMax) + "\n")
+			sb.WriteString(clock(e.t, multiDay) + " " + cut.line(e.line, signalLineMax) + "\n")
 		}
 	}
 
@@ -502,6 +506,7 @@ func renderLogs(head string, entries []logLine, total, n int, token *pageTokenIn
 		fmt.Fprintf(&sb, "%s in the answer could not be read as log lines; pass raw: true to see them.",
 			plural(skipped, "item", "items"))
 	}
+	writeNote(&sb, cut.note("line", "lines", signalLineMax))
 	writeToken(&sb, token)
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -778,8 +783,9 @@ func renderSeries(head string, series []seriesView, n int) string {
 		per = 0
 	}
 	listed, withheld := 0, false
+	var cut lineCuts
 	for _, s := range shown {
-		name := oneLine(s.label, 160)
+		name := cut.line(s.label, signalNameMax)
 		if s.unit != "" {
 			name += " (" + s.unit + ")"
 		}
@@ -822,6 +828,7 @@ func renderSeries(head string, series []seriesView, n int) string {
 		fmt.Fprintf(&sb, "Trimmed: showing %d of %s. To see more, narrow the time window, query fewer series, use a longer period (step) in params, "+
 			"or raise maxLines (up to %d).", listed, plural(totalPoints, "point", "points"), SignalLinesMax)
 	}
+	writeNote(&sb, cut.note("series name", "series names", signalNameMax))
 	return strings.TrimRight(sb.String(), "\n")
 }
 
@@ -855,18 +862,20 @@ func renderText(head, text string, n int) string {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s: %s of text.\n", head, plural(len(lines), "line", "lines"))
+	var cut lineCuts
 	headN, tailN := split(len(lines), n)
 	for _, l := range lines[:headN] {
-		sb.WriteString(truncateN(l, signalLineMax) + "\n")
+		sb.WriteString(cut.text(l, signalLineMax) + "\n")
 	}
 	if hidden := len(lines) - headN - tailN; hidden > 0 {
 		fmt.Fprintf(&sb, "… %s not shown …\n", plural(hidden, "line", "lines"))
 		for _, l := range lines[len(lines)-tailN:] {
-			sb.WriteString(truncateN(l, signalLineMax) + "\n")
+			sb.WriteString(cut.text(l, signalLineMax) + "\n")
 		}
 		fmt.Fprintf(&sb, "Trimmed: showing %d of %d lines. To see more, narrow the request in params, or raise maxLines (up to %d).",
 			headN+tailN, len(lines), SignalLinesMax)
 	}
+	writeNote(&sb, cut.note("line", "lines", signalLineMax))
 	return strings.TrimRight(sb.String(), "\n")
 }
 
@@ -895,8 +904,9 @@ func renderGeneric(head string, payload any, n int) string {
 	if len(shown) > n {
 		shown = shown[:n]
 	}
+	var cut lineCuts
 	for _, it := range shown {
-		sb.WriteString(oneLine(scalarText(it), signalLineMax) + "\n")
+		sb.WriteString(cut.line(scalarText(it), signalLineMax) + "\n")
 	}
 
 	// The other top-level fields, briefly: they often say what the list is
@@ -920,13 +930,14 @@ func renderGeneric(head string, payload any, n int) string {
 				fmt.Fprintf(&sb, "%s: %s\n", k, plural(len(arr), "item", "items"))
 				continue
 			}
-			fmt.Fprintf(&sb, "%s: %s\n", k, oneLine(scalarText(v), 200))
+			fmt.Fprintf(&sb, "%s: %s\n", k, cut.line(scalarText(v), signalLineMax))
 		}
 	}
 	if more := len(list) - len(shown); more > 0 {
 		fmt.Fprintf(&sb, "Trimmed: showing %d of %s. To see more, narrow the request in params, raise maxLines (up to %d), "+
 			"or pass raw: true for the source's own answer (up to %s).", len(shown), plural(len(list), "item", "items"), SignalLinesMax, kb(SignalRawMaxBytes))
 	}
+	writeNote(&sb, cut.note("line", "lines", signalLineMax))
 	writeToken(&sb, token)
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -993,6 +1004,57 @@ func writeToken(sb *strings.Builder, token *pageTokenInfo) {
 		return
 	}
 	fmt.Fprintf(sb, "The source has another page: repeat the call with params.%s set to %s.", token.key, quoteText(token.value))
+}
+
+// --- cut lines ------------------------------------------------------------------
+
+// lineCuts counts the lines a view cut to fit, so the view can say so. A line
+// cut without notice reads as the whole message, and the end of a message is
+// often the part that matters: a stack trace's exception, the last fields of a
+// JSON log body.
+type lineCuts struct{ n int }
+
+// line is s folded onto one line and cut to max runes, counted when cut.
+func (c *lineCuts) line(s string, max int) string {
+	flat := strings.Join(strings.Fields(s), " ")
+	if utf8.RuneCountInString(flat) <= max {
+		return flat
+	}
+	c.n++
+	return oneLine(flat, max)
+}
+
+// text is s as written, cut to max runes, counted when cut.
+func (c *lineCuts) text(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	c.n++
+	return truncateN(s, max)
+}
+
+// note is what the view says about its cuts, "" when it made none.
+func (c *lineCuts) note(one, many string, max int) string {
+	switch c.n {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("1 %s was cut at %d characters; pass raw: true to read it in full.", one, max)
+	default:
+		return fmt.Sprintf("%s were cut at %d characters; pass raw: true to read them in full.", plural(c.n, one, many), max)
+	}
+}
+
+// writeNote puts a note on a line of its own after what sb already holds.
+func writeNote(sb *strings.Builder, note string) {
+	if note == "" {
+		return
+	}
+	s := strings.TrimRight(sb.String(), "\n")
+	sb.Reset()
+	sb.WriteString(s)
+	sb.WriteString("\n")
+	sb.WriteString(note)
 }
 
 // --- raw ------------------------------------------------------------------------

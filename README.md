@@ -538,7 +538,10 @@ event count, the time range and up to 40 lines as `HH:MM:SSZ message` (the first
 last half when there are more). A metric read is each series' name, point count, min, max and
 last value, then its points within the same budget. Anything else shows its main list, one item
 per line. It always says when it trimmed and how to get more: a narrower time window or filter
-in `params`, `maxLines` (up to 200), or the next page's token when the source has one.
+in `params`, `maxLines` (up to 200), or the next page's token when the source has one. A single
+line longer than 300 characters is cut to fit, and the answer says how many were cut and that
+`raw: true` has them in full (`2 lines were cut at 300 characters; pass raw: true to read them
+in full.`), so the end of a long message, often the part that matters, is never lost unseen.
 
 ```
 cloudwatch filterLogEvents: 1,284 log events, 2026-09-28 14:02:11Z to 14:31:40Z, across 3 streams.

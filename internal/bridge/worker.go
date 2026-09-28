@@ -37,6 +37,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -101,6 +102,10 @@ type Worker struct {
 	// produce a line every 5 seconds for as long as it stays unanswered, which
 	// buries everything else in the terminal.
 	lastSurfaced string
+	// expiryLogged keeps "the room session has expired" to one stderr line per
+	// run: every sweep after expiry meets it again until the person rejoins,
+	// and the rejoin starts a new run.
+	expiryLogged bool
 }
 
 func (w *Worker) interval() time.Duration {
@@ -130,6 +135,7 @@ func (w *Worker) Start(ctx context.Context, pub Publisher, cfg client.Config) {
 	runCtx, cancel := context.WithCancel(ctx)
 	w.mu.Lock()
 	w.cancel = cancel
+	w.expiryLogged = false
 	w.mu.Unlock()
 
 	go w.run(runCtx, pub, cfg)
@@ -216,7 +222,6 @@ func (w *Worker) absorb(ctx context.Context, pub Publisher, incidentID string) {
 }
 
 // drain publishes queued hand-offs, oldest first.
-// drain publishes queued hand-offs, oldest first.
 //
 // Each pending entry gets ONE attempt per sweep, and a failure moves on to the
 // next rather than ending the pass. That matters: an entry the server will
@@ -229,6 +234,11 @@ func (w *Worker) absorb(ctx context.Context, pub Publisher, incidentID string) {
 // is unreachable (where stopping is right, and falls out naturally here since
 // every entry fails once and the sweep ends) and a single bad entry (where
 // stopping starves the innocent ones behind it).
+//
+// The one answer that does end the pass is an expired session (401): it is
+// about the session, not the entry, so every entry behind it would draw the
+// same answer. They stay queued, untouched, and the next sweep tries the
+// oldest again, which is one request per sweep until the person rejoins.
 func (w *Worker) drain(ctx context.Context, pub Publisher, incidentID string) {
 	pending, err := w.spool.Pending(incidentID)
 	if err != nil {
@@ -242,19 +252,33 @@ func (w *Worker) drain(ctx context.Context, pub Publisher, incidentID string) {
 		if entry.State != spool.Queued {
 			continue
 		}
-		w.publish(ctx, pub, entry)
+		if w.publish(ctx, pub, entry) == sessionExpired {
+			return
+		}
 	}
 }
 
-// publish sends one entry and records the outcome. Returns false when the pass
-// should stop.
-func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) bool {
+// outcome is what one publish attempt came to.
+type outcome int
+
+const (
+	landed outcome = iota
+	// notLanded: requeued for a later sweep, refused for good, or not
+	// attempted at all. The pass moves on to the next entry.
+	notLanded
+	// sessionExpired: the room answered 401. The entry is requeued with the
+	// expiry mark and the pass ends (see drain).
+	sessionExpired
+)
+
+// publish sends one entry and records the outcome.
+func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) outcome {
 	// Claim BEFORE the network call. A crash after this point is recognizable
 	// afterwards as "outcome unknown" rather than looking like it never ran —
 	// which is what lets reconciliation avoid a duplicate.
 	if err := w.spool.Claim(e.IncidentID, e.ID); err != nil {
 		w.log("bridge: could not claim %s (%v)", e.ID, err)
-		return false
+		return notLanded
 	}
 
 	kind := kindFor(e)
@@ -299,18 +323,51 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 		body["title"] = e.Widget.Title
 		body["data"] = e.Widget.Data
 	}
-	// A claim goes to its own endpoint. Staging is transcription of what the
-	// responder wrote, not evaluation of it — see vetting.go on why the worker
-	// never casts a vote.
+	// A claim goes to its own endpoint, in that endpoint's own shape. Staging
+	// is transcription of what the responder wrote, not evaluation of it (see
+	// vetting.go on why the worker never casts a vote).
 	publish := func() error { return pub.Contribute(ctx, string(kind), body) }
 	if stageableClaim(kind) {
-		publish = func() error { return pub.StageClaim(ctx, body) }
+		publish = func() error { return pub.StageClaim(ctx, claimBody(e)) }
 	}
 	if err := publish(); err != nil {
+		// An expired session is not the entry's fault and not final: the
+		// edge session token lives 8 hours and this CLI cannot renew it. The
+		// entry waits, marked, and lands when the person rejoins with a new
+		// link (that join starts this worker again over the same queue).
+		if client.SessionExpired(err) {
+			if xerr := w.spool.Expire(e.IncidentID, e.ID, err.Error()); xerr != nil {
+				w.log("bridge: could not record the expired session for %s (%v)", e.ID, xerr)
+			}
+			w.mu.Lock()
+			first := !w.expiryLogged
+			w.expiryLogged = true
+			w.mu.Unlock()
+			if first {
+				w.log("bridge: the room session has expired; shares wait on this machine and go out when you rejoin with a new link from the room")
+			}
+			return sessionExpired
+		}
+		// A refusal is final: the room will answer the same hand-off the same
+		// way however often it is asked, so it is recorded with the room's
+		// status and reason and told to the agent (share_with_room's refusal
+		// line) rather than retried every sweep for the rest of the session.
+		if refusal, ok := client.Refusal(err); ok {
+			reason := refusal.Reason
+			if reason == "" {
+				reason = fmt.Sprintf("the room answered HTTP %d", refusal.Status)
+			}
+			if rerr := w.spool.Refuse(e.IncidentID, e.ID, refusal.Status, reason); rerr != nil {
+				w.log("bridge: could not record the refusal of %s (%v)", e.ID, rerr)
+				return notLanded
+			}
+			w.log("bridge: the room refused a hand-off (%s); it will not be retried, and your agent is told on its next room tool call", reason)
+			return notLanded
+		}
 		if ferr := w.spool.Fail(e.IncidentID, e.ID, err); ferr != nil {
 			w.log("bridge: could not record failure for %s (%v)", e.ID, ferr)
 		}
-		return false
+		return notLanded
 	}
 
 	if err := w.spool.Ack(e.IncidentID, e.ID); err != nil {
@@ -319,7 +376,7 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 		// rather than a republish.
 		w.log("bridge: published %s but could not ack it locally (%v)", e.ID, err)
 	}
-	return true
+	return landed
 }
 
 // reconcile resolves entries whose outcome was lost to a crash (D9).
@@ -382,6 +439,25 @@ func (w *Worker) Abandon(incidentID string) {
 	}
 }
 
+// claimBody is what POST /claims reads: the claim's `statement` (the server
+// answers 400 "statement required" without one, which is what every claim this
+// bridge staged got until 2026-09-28: the body it sent was the contribution
+// shape, `text` and all). The class is left out on purpose: the server infers
+// an absent class conservatively from the statement, never lower than the
+// text supports, which is the right call for a hand-off nobody classed.
+//
+// reuseIfStaged makes a republish idempotent. Reconciliation after a crash
+// cannot recognise a staged claim in the mirror (it records `text`, and a
+// claim carries `statement`), so an entry whose first publish landed is
+// republished; with this flag the server answers with the claim already
+// staged under the same author and statement instead of staging a second.
+func claimBody(e *spool.Entry) map[string]any {
+	return map[string]any{
+		"statement":     e.Text,
+		"reuseIfStaged": true,
+	}
+}
+
 // kindFor decides how an entry publishes. The caller's own word
 // (share_with_room's `kind`) wins over the classifier's guess from the text:
 // the agent said what this is, in the schema itself. An unknown value falls
@@ -396,6 +472,25 @@ func kindFor(e *spool.Entry) Kind {
 	}
 	if e.Widget != nil {
 		kind = KindWidget
+	}
+	// A widget with nothing to plot goes in as words. The room refuses a
+	// widget without its type and data, so a "chart:" marker in the text (or
+	// a kind of "widget" from an older caller with no payload) filed as one
+	// would only ever be refused. It is classified again with the widget
+	// markers ignored, which is exactly what the text would have been without
+	// the marker: substantive text is a finding and goes behind the admission
+	// gate. Filing it as a note instead would put a finding in every agent's
+	// context ungated because it happened to say "table:".
+	// share_with_room itself now refuses kind "widget" without `widget`.
+	if kind == KindWidget && e.Widget == nil {
+		kind = classifyAsWords(e.Text)
+	}
+	// A claim the agent says came out of a failed tool call goes in as a
+	// finding. The claims endpoint has no field for that self-report, so a
+	// staged claim would lose it; a finding carries it (as the room's
+	// tool-error mark) and is staged for vetting by the server all the same.
+	if kind == KindClaim && e.SourceQueryFailed {
+		kind = KindFinding
 	}
 	return kind
 }

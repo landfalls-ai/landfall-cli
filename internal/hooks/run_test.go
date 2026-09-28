@@ -27,10 +27,11 @@ func TestHookEventsAreTheFourEventsInRegistrationOrder(t *testing.T) {
 func TestEventsForHost(t *testing.T) {
 	// file-changed is Claude Code only: it is the one host with a file-watch
 	// hook. pre-tool-use is not registered for Cursor — an entry nothing yet
-	// honors is worse than no entry.
+	// honors is worse than no entry. user-prompt-submit is Codex's too since
+	// 2026-09-28: it is how the news a Stop notice announces reaches the agent.
 	cases := map[string][]string{
 		"claude-code": {"stop", "file-changed", "user-prompt-submit", "pre-tool-use"},
-		"codex":       {"stop", "pre-tool-use"},
+		"codex":       {"stop", "user-prompt-submit", "pre-tool-use"},
 		"cursor":      {"stop"},
 		"unknown":     {},
 	}
@@ -232,6 +233,29 @@ func TestShellCommandOfReadsBothKeySpellings(t *testing.T) {
 	camel := ParseEventPayload(`{"toolName":"shell","toolInput":{"cmd":"aws s3 ls"}}`)
 	if got := ShellCommandOf(camel); got != "aws s3 ls" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// The pre-tool-use hook can ask the person a question on their terminal (a
+// confirmed production match). It must never do that for Landfall's own room
+// tools: those are MCP tools, which neither host's shell matcher ("Bash") nor
+// ShellCommandOf's anchored shell-tool pattern admits — under every spelling a
+// host uses for an MCP tool, and even when the tool's arguments carry a field
+// named "command".
+func TestShellCommandOfNeverMatchesLandfallMCPTools(t *testing.T) {
+	for _, name := range []string{
+		"mcp__landfall__query_signals",
+		"mcp__landfall__share_with_room",
+		"mcp__landfall__propose_action",
+		"landfall__query_signals",
+		"landfall.query_signals",
+		"mcp:landfall/get_updates",
+		"query_signals",
+	} {
+		payload := `{"tool_name":"` + name + `","tool_input":{"command":"kubectl --context=prod get pods","query":"x"}}`
+		if got := ShellCommandOf(ParseEventPayload(payload)); got != "" {
+			t.Fatalf("%s must never be read as a shell command, got %q", name, got)
+		}
 	}
 }
 

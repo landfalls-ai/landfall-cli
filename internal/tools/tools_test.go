@@ -253,7 +253,7 @@ func TestToolDescriptionsStateThatAVoteIsVisibilityOnlyAndNeedsAHumanQuorum(t *t
 	if !strings.Contains(EdgeAgentInstructions, "POSITION, never a decision") {
 		t.Error("the standing instructions must carry the same rule")
 	}
-	for _, want := range []string{"get_brief", "propose-only", "never mid-turn, unprompted", "realtime"} {
+	for _, want := range []string{"get_brief", "suggest-only", "never mid-turn, unprompted", "realtime"} {
 		if !strings.Contains(EdgeAgentInstructions, want) {
 			t.Errorf("EdgeAgentInstructions is missing %q", want)
 		}
@@ -569,14 +569,14 @@ func TestGetUpdatesInDaemonModeUsesTheDaemonsCursor(t *testing.T) {
 	to := int64(12)
 	s.SetUpdatesOverride(func(_ context.Context, since *int64) (*client.FrameDelta, int64, bool) {
 		asked = append(asked, since)
-		return &client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{{Seq: 12, Type: "claim.admitted", By: "pickjonathan", Class: "substantive", Summary: "#7 corroborated and admitted: TTL is 60s"}}}, 9, true
+		return &client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{{Seq: 12, Type: "claim.admitted", By: "Maya", Class: "substantive", Summary: "#7 corroborated and admitted: TTL is 60s"}}}, 9, true
 	})
 	var seen []int64
 	s.SetAdvanceHook(func(v int64) { seen = append(seen, v) })
 	list := Build(s)
 
 	out := callTool(t, list, "get_updates", map[string]any{})
-	if !strings.Contains(out, "#12 claim.admitted [pickjonathan]") || !strings.Contains(out, "#7 corroborated and admitted") {
+	if !strings.Contains(out, "#12 claim.admitted [Maya]") || !strings.Contains(out, "#7 corroborated and admitted") {
 		t.Fatalf("result = %q", out)
 	}
 	if len(asked) != 1 || asked[0] != nil {
@@ -617,7 +617,7 @@ func TestGetBriefDoesNotSwallowNewsInDaemonMode(t *testing.T) {
 	c := &fakeClient{delta: &client.FrameDelta{}}
 	s := newSession(c)
 	cursor := int64(10)
-	news := client.DeltaItem{Seq: 11, Type: "chat.message", By: "pickjonathan", Class: "addressed", Summary: "@codex can you check the ALB?"}
+	news := client.DeltaItem{Seq: 11, Type: "chat.message", By: "Maya", Class: "addressed", Summary: "@codex can you check the ALB?"}
 	s.SetAdvanceHook(func(v int64) {
 		if v > cursor {
 			cursor = v
@@ -698,8 +698,11 @@ func TestGetSignalCatalogRendersTheCatalogAndNeverContributes(t *testing.T) {
 	list := Build(newSession(c))
 	out := callTool(t, list, "get_signal_catalog", map[string]any{})
 
-	if !strings.Contains(out, `"source": "cloudwatch"`) {
+	if !strings.Contains(out, "1 telemetry source connected.") || !strings.Contains(out, "cloudwatch · metrics") {
 		t.Errorf("result = %q", out)
+	}
+	if strings.Contains(out, `"source"`) {
+		t.Errorf("the catalog is still a JSON dump: %q", out)
 	}
 	if len(c.recorded("contribute")) != 0 {
 		t.Errorf("get_signal_catalog must never post a contribution, got %v", c.recorded("contribute"))
@@ -713,7 +716,7 @@ func TestGetSignalCatalogDegradesToEmptyRatherThanErroring(t *testing.T) {
 	c := &fakeClient{}
 	list := Build(newSession(c))
 	out := callTool(t, list, "get_signal_catalog", map[string]any{})
-	if strings.TrimSpace(out) != "[]" {
+	if !strings.HasPrefix(out, "No telemetry sources are connected") {
 		t.Errorf("result = %q, want an empty catalog", out)
 	}
 }
@@ -962,6 +965,28 @@ func TestDescribeWidgetTypesReturnsTheServersCatalog(t *testing.T) {
 	}
 }
 
+// TestDescribeWidgetTypesListsOnlyWhatAnAgentCanPost: the frame carries the
+// whole catalog, codeFinding included; an agent is shown only the types the
+// room takes from it.
+func TestDescribeWidgetTypesListsOnlyWhatAnAgentCanPost(t *testing.T) {
+	fc := &fakeClient{frame: &client.ContextFrame{WidgetCatalog: []client.WidgetCatalogEntry{
+		{Type: "chart", Label: "Chart", Purpose: "a trend", DataShape: "{ series: [...] }"},
+		{Type: "codeFinding", Label: "Code finding", Purpose: "the line at fault", DataShape: "{ codeRef, snippet }"},
+	}}}
+	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
+	if !strings.Contains(out, `"chart"`) {
+		t.Fatalf("a postable type is missing: %s", out)
+	}
+	if strings.Contains(out, "codeFinding") {
+		t.Fatalf("codeFinding is offered to an agent that cannot post it: %s", out)
+	}
+	for _, text := range []string{EdgeAgentInstructions, find(t, Build(newSession(fc)), "describe_widget_types").Description} {
+		if strings.Contains(strings.ToLower(text), "code finding") {
+			t.Errorf("the agent is still told it can post a code finding: %q", text)
+		}
+	}
+}
+
 func TestDescribeWidgetTypesFallsBackToTheEnumOnAnOlderServer(t *testing.T) {
 	fc := &fakeClient{frame: &client.ContextFrame{}}
 	out := callTool(t, Build(newSession(fc)), "describe_widget_types", map[string]any{})
@@ -1064,5 +1089,40 @@ func TestReadTimelineIsPureJSONEvenWhenAVoteIsPending(t *testing.T) {
 	next := callTool(t, Build(s), "get_brief", map[string]any{})
 	if !strings.Contains(next, "⚠ vote requested: claim #48") {
 		t.Fatalf("the pending vote must reach the agent on the next narrated result:\n%s", next)
+	}
+}
+
+// TestProposeActionIsSuggestOnly: Landfall approves and executes nothing
+// (suggest-only remediation). The reply and the description must not tell the
+// agent a remediation is awaiting an approval that will make it happen.
+func TestProposeActionIsSuggestOnly(t *testing.T) {
+	c := &fakeClient{}
+	list := Build(newSession(c))
+	out := callTool(t, list, "propose_action", map[string]any{"description": "roll back web-edge to task def :46"})
+	if !strings.HasPrefix(out, "Suggestion shared with the room. A person applies it outside Landfall and records it as applied.") {
+		t.Fatalf("reply = %q", out)
+	}
+	desc := find(t, list, "propose_action").Description
+	for _, text := range []string{out, desc} {
+		for _, stale := range []string{"approv", "awaiting", "execute"} {
+			if strings.Contains(strings.ToLower(text), stale) {
+				t.Errorf("%q still says %q", text, stale)
+			}
+		}
+	}
+	if !strings.Contains(desc, "outside Landfall") {
+		t.Errorf("description = %q", desc)
+	}
+}
+
+// TestAFrameReadNamesTheRoomForTheStatusLine: get_brief (and join, and
+// describe_widget_types) keep the room's display id and title on the session,
+// which is what the per-process status socket answers with.
+func TestAFrameReadNamesTheRoomForTheStatusLine(t *testing.T) {
+	c := &fakeClient{frame: &client.ContextFrame{Incident: client.Incident{DisplayID: "Acme 42", Title: "Checkout 5xx"}}}
+	s := newSession(c)
+	callTool(t, Build(s), "get_brief", map[string]any{})
+	if got := s.RoomName(); got.DisplayID != "Acme 42" || got.Title != "Checkout 5xx" {
+		t.Fatalf("session name = %+v", got)
 	}
 }

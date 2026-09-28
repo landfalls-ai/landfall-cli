@@ -8,7 +8,11 @@
 //
 //	EXIT2 (Claude Code, Codex)
 //	  exit 2 with the message on stderr; the host feeds stderr back to the
-//	  model. stdout is the host's own structured channel and must stay empty.
+//	  model. stdout is the host's own structured channel and stays empty on
+//	  that path. Since 2026-09-28 that refusal is OPT-IN: the default Stop
+//	  answer is exit 0 with `{"systemMessage": ...}` on stdout, a notice for
+//	  the person that never continues the agent (RenderStopNotice,
+//	  stopnotice.go).
 //
 //	CURSOR_JSON (Cursor)
 //	  exit 0 ALWAYS, with exactly one JSON object on stdout and nothing else.
@@ -131,6 +135,37 @@ func RenderStopVerdict(protocol string, block bool, reason string) Verdict {
 		return Verdict{ExitCode: 2, Text: reason + "\n", Channel: ChannelStderr}
 	}
 	return Verdict{ExitCode: 0, Text: "", Channel: ChannelStderr}
+}
+
+// noticeVerdict is the Stop notice the exit2 hosts read on stdout: a message
+// for the PERSON, and nothing else — no `decision`, so the host lets the agent
+// stop. Codex validates this object against a schema with
+// additionalProperties:false, so no other key may ride along.
+type noticeVerdict struct {
+	SystemMessage string `json:"systemMessage"`
+}
+
+// RenderStopNotice renders the inform-mode Stop answer (stopnotice.go): the
+// agent is ALWAYS allowed to stop, and the person is told what the room holds.
+//
+// Under EXIT2 this is the one Stop output that writes to stdout: exit 0 with
+// `{"systemMessage": notice}`, which Claude Code and Codex both show the user
+// and neither feeds to the model as a reason to continue. An empty notice is
+// silence, exactly the allow path.
+//
+// Under CURSOR_JSON it is always `{}`: Cursor's stop can only answer with a
+// followup_message, which starts another agent turn, which is what inform
+// exists not to do.
+func RenderStopNotice(protocol, notice string) Verdict {
+	if protocol == CURSOR_JSON || notice == "" {
+		return RenderStopVerdict(protocol, false, "")
+	}
+	encoded, err := json.Marshal(noticeVerdict{SystemMessage: notice})
+	if err != nil {
+		// Unreachable for a string field; silence is the safe allow.
+		return RenderStopVerdict(protocol, false, "")
+	}
+	return Verdict{ExitCode: 0, Text: string(encoded) + "\n", Channel: ChannelStdout}
 }
 
 // RenderNoOp is what a hook with no behaviour yet should print. Silence for

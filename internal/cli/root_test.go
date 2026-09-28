@@ -111,6 +111,34 @@ func TestParseArgs(t *testing.T) {
 	}
 }
 
+func TestWantsVersion(t *testing.T) {
+	for _, argv := range [][]string{{"--version"}, {"-v"}, {"version"}, {"--version", "extra"}} {
+		if !wantsVersion(argv) {
+			t.Errorf("wantsVersion(%q) = false, want true", argv)
+		}
+	}
+	for _, argv := range [][]string{nil, {"serve"}, {"note", "-v"}, {"serve", "--version"}, {"-V"}, {"https://x.test/j/abc"}} {
+		if wantsVersion(argv) {
+			t.Errorf("wantsVersion(%q) = true, want false", argv)
+		}
+	}
+}
+
+// TestRunPrintsTheVersionOnStdout: the version is machine-readable output,
+// so it goes to stdout, and it is the stamped one.
+func TestRunPrintsTheVersionOnStdout(t *testing.T) {
+	original := buildVersion
+	defer func() { buildVersion = original }()
+	SetVersion("v1.2.3")
+	var out, errOut strings.Builder
+	if code := run(&UI{Out: &out, Err: &errOut}, []string{"--version"}, func(string) string { return "" }); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if out.String() != "landfall v1.2.3\n" || errOut.Len() != 0 {
+		t.Fatalf("stdout %q stderr %q", out.String(), errOut.String())
+	}
+}
+
 func TestWantsHelp(t *testing.T) {
 	yes := [][]string{
 		{"--help"},

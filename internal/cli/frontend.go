@@ -13,6 +13,7 @@ import (
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
 	"github.com/landfalls-ai/landfall-cli/internal/tools"
 )
@@ -369,6 +370,7 @@ func (d *daemonSession) Cursor() int64 {
 	return -1
 }
 func (d *daemonSession) Client() session.EdgeClient     { return d.sess.Client() }
+func (d *daemonSession) RoomName() narrate.RoomName     { return d.sess.RoomName() }
 func (d *daemonSession) Attention() *client.Attention   { return d.sess.Attention() }
 func (d *daemonSession) Divergence() *client.Divergence { return d.sess.Divergence() }
 
@@ -423,6 +425,18 @@ func (h *holdingAccepter) Accept(incidentID, agentInstanceID, text string, refs 
 	h.mu.Unlock()
 	h.fe.log("held " + id + ": names the working directory (" + strings.Join(res.Matched, ", ") + "); `landfall allow-cwd` releases it")
 	return id, redacted, nil
+}
+
+// TakeRefusals implements tools.RefusalReporter by asking the spool, which
+// this process's worker writes refusals into.
+func (h *holdingAccepter) TakeRefusals(incidentID string) []tools.Refusal {
+	return h.inner.TakeRefusals(incidentID)
+}
+
+// SessionExpired implements tools.SessionReporter by asking the spool, which
+// this process's worker marks when the room answers 401.
+func (h *holdingAccepter) SessionExpired(incidentID string) (int, bool) {
+	return h.inner.SessionExpired(incidentID)
 }
 
 // HeldReason implements tools.HeldReporter.

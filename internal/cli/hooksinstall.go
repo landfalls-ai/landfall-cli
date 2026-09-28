@@ -37,8 +37,12 @@ import (
 type hookFlags struct {
 	dryRun    bool
 	uninstall bool
-	host      string
-	only      []string
+	// block is `landfall hooks stop --block`: the opt-in to the pre-2026-09-28
+	// refusal (hooks.ResolveStopMode). Written by a person into their own
+	// registered command, never by the installer.
+	block bool
+	host  string
+	only  []string
 	// rest is argv with every recognized flag (and its value) removed, so
 	// rest[0] is the subcommand.
 	rest []string
@@ -74,6 +78,7 @@ func parseHookFlags(argv []string) hookFlags {
 	f := hookFlags{}
 	f.dryRun = takeFlag("--dry-run")
 	f.uninstall = takeFlag("--uninstall")
+	f.block = takeFlag("--block")
 	f.host = takeValue("--host")
 	for i, a := range args {
 		if a != "--only" {
@@ -206,6 +211,15 @@ func RunHooksInstall(_ context.Context, argv []string, deps HooksDeps) InstallRe
 		})
 	}
 
+	// `--block` belongs to the hook invocation, not to the installer: the
+	// installer always writes the inform default, so an entry it wrote never
+	// interrupts anyone. Say so rather than accept the flag and ignore it.
+	if f.block {
+		deps.Log("note: --block is not an install option. The Stop hook only informs by default; to opt in to " +
+			"blocking, set " + hooks.StopModeEnv + "=block in the host's environment, or change the registered " +
+			"command to `landfall hooks stop --block`.")
+	}
+
 	// The same warning `landfall install` raises, for the same reason: a hook
 	// whose command does not resolve fires on every turn and fails on every turn.
 	if !f.dryRun && hasStatus(outcomes, "configured") && !deps.IsOnPath("landfall") {
@@ -264,7 +278,7 @@ func RunHooksUninstall(_ context.Context, argv []string, deps HooksDeps) Install
 func hooksUsage() string {
 	return "usage: landfall hooks <install|uninstall|policy|" +
 		strings.Join(hooks.HookEventIDs(), "|") +
-		"> [--only <ids>] [--dry-run] [--uninstall] [--host <id>]"
+		"> [--only <ids>] [--dry-run] [--uninstall] [--host <id>] [--block]"
 }
 
 // hooksEventDispatch is a TEMPORARY SEAM for the tracks that own the hook

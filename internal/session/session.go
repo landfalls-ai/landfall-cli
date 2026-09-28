@@ -110,6 +110,9 @@ type Session struct {
 	pending        []client.Event
 	pendingDropped int
 	agentLabel     string
+	// name is what the person knows the joined room as (display id, title),
+	// from the last frame this session read; the status line shows it.
+	name narrate.RoomName
 
 	// Vote requests / divergence nudges already announced in-band, so the same
 	// claim is not re-appended to every tool result for the rest of the
@@ -203,6 +206,26 @@ func (s *Session) SetClient(c EdgeClient) {
 	s.mu.Lock()
 	s.client = c
 	s.mu.Unlock()
+}
+
+// NoteFrame keeps what a frame read says the room is called. A frame with no
+// name (a degraded answer) leaves the last one in place.
+func (s *Session) NoteFrame(f *client.ContextFrame) {
+	n := narrate.RoomNameOf(f)
+	if n.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	s.name = n
+	s.mu.Unlock()
+}
+
+// RoomName is what the person knows the joined room as; zero until a frame
+// has been read in this room.
+func (s *Session) RoomName() narrate.RoomName {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
 }
 
 // Cursor is the durable delivery cursor; it starts at -1.
@@ -631,6 +654,7 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 	s.pendingDropped = 0
 	s.attentionNotified = map[string]bool{}
 	s.divergenceNotified = map[string]bool{}
+	s.name = narrate.RoomName{}
 	s.mu.Unlock()
 
 	if prev != nil && prev != next {

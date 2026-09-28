@@ -276,11 +276,15 @@ type StatusResponse struct {
 	PID int  `json:"pid"`
 
 	IncidentID string `json:"incidentId"`
-	Slug       string `json:"slug"`
-	Connected  bool   `json:"connected"`
-	Cursor     int64  `json:"cursor"`
-	Pending    int    `json:"pending"`
-	Dropped    int    `json:"dropped"`
+	// IncidentDisplayID and IncidentTitle name the room for a person (the
+	// status line); additive, an older reader ignores them.
+	IncidentDisplayID string `json:"incidentDisplayId,omitempty"`
+	IncidentTitle     string `json:"incidentTitle,omitempty"`
+	Slug              string `json:"slug"`
+	Connected         bool   `json:"connected"`
+	Cursor            int64  `json:"cursor"`
+	Pending           int    `json:"pending"`
+	Dropped           int    `json:"dropped"`
 
 	// Feature 20260812-010632 (US5/T047): `landfall status`'s own consumer (a
 	// Claude Code statusline command, run on the host's normal render cadence).
@@ -354,14 +358,16 @@ type SocketResponse struct {
 	PID   int    `json:"pid,omitempty"`
 	Error string `json:"error,omitempty"`
 
-	IncidentID   string             `json:"incidentId,omitempty"`
-	Slug         string             `json:"slug,omitempty"`
-	Connected    bool               `json:"connected,omitempty"`
-	Cursor       *int64             `json:"cursor,omitempty"`
-	Pending      int                `json:"pending,omitempty"`
-	Dropped      int                `json:"dropped,omitempty"`
-	VotesAwaited int                `json:"votesAwaited,omitempty"`
-	Divergence   *client.Divergence `json:"divergence,omitempty"`
+	IncidentID        string             `json:"incidentId,omitempty"`
+	IncidentDisplayID string             `json:"incidentDisplayId,omitempty"`
+	IncidentTitle     string             `json:"incidentTitle,omitempty"`
+	Slug              string             `json:"slug,omitempty"`
+	Connected         bool               `json:"connected,omitempty"`
+	Cursor            *int64             `json:"cursor,omitempty"`
+	Pending           int                `json:"pending,omitempty"`
+	Dropped           int                `json:"dropped,omitempty"`
+	VotesAwaited      int                `json:"votesAwaited,omitempty"`
+	Divergence        *client.Divergence `json:"divergence,omitempty"`
 
 	Count     *int              `json:"count,omitempty"`
 	MaxSeq    *int64            `json:"maxSeq,omitempty"`
@@ -470,6 +476,13 @@ type SocketSession interface {
 	Divergence() *client.Divergence
 }
 
+// roomNamer is an OPTIONAL capability: what the person knows the joined room
+// as (session.Session keeps it from the frames it reads). A session without it
+// answers no name, and the status line says "landfall" alone.
+type roomNamer interface {
+	RoomName() narrate.RoomName
+}
+
 // humanQueue is the OPTIONAL queue-as-the-person-was-told-it. See
 // (*session.Session).PendingForHuman; a fake session without it is answered
 // from the model's queue.
@@ -561,18 +574,24 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 	switch req.verb() {
 	case "status":
 		incidentID, slug, connected := room(s)
+		var name narrate.RoomName
+		if rn, ok := s.(roomNamer); ok {
+			name = rn.RoomName()
+		}
 		return StatusResponse{
-			OK:           true,
-			V:            SocketProtocolVersion,
-			PID:          pid,
-			IncidentID:   incidentID,
-			Slug:         slug,
-			Connected:    connected,
-			Cursor:       sessionCursor(s),
-			Pending:      untold,
-			Dropped:      sessionDropped(s),
-			VotesAwaited: votesAwaited(s),
-			Divergence:   sessionDivergence(s),
+			OK:                true,
+			V:                 SocketProtocolVersion,
+			PID:               pid,
+			IncidentID:        incidentID,
+			IncidentDisplayID: name.DisplayID,
+			IncidentTitle:     name.Title,
+			Slug:              slug,
+			Connected:         connected,
+			Cursor:            sessionCursor(s),
+			Pending:           untold,
+			Dropped:           sessionDropped(s),
+			VotesAwaited:      votesAwaited(s),
+			Divergence:        sessionDivergence(s),
 		}
 
 	case "peek":

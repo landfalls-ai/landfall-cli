@@ -12,6 +12,7 @@ import (
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
 	"github.com/spf13/cobra"
 )
@@ -88,7 +89,21 @@ func newRoomsCommand(ui *UI) *cobra.Command {
 			return nil
 		}
 		for _, r := range res.Rooms {
-			ui.Outf("%s/%s  %s\n", r.Slug, r.IncidentID, r.Connection)
+			// The name the person knows the room by comes first; the id stays
+			// on the line because this listing is where someone debugging a
+			// machine looks for it.
+			// Cleaned here too: the daemon answering is another process, and
+			// a title is the server's words printed straight to the terminal.
+			clean := narrate.RoomName{DisplayID: r.DisplayID, Title: r.Title}.Clean()
+			name := clean.DisplayID
+			if name == "" {
+				name = clean.Title
+			}
+			if name != "" {
+				ui.Outf("%s  (%s/%s)  %s\n", name, r.Slug, r.IncidentID, r.Connection)
+			} else {
+				ui.Outf("%s/%s  %s\n", r.Slug, r.IncidentID, r.Connection)
+			}
 			for _, s := range r.Seats {
 				ui.Outf("  agent session %-26q instance %s\n", s.Label, s.InstanceID)
 			}

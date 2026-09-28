@@ -94,7 +94,7 @@ func TestIsInvestigatorNewsIgnoresSystemNoiseAnAllowListNeverHeardOf(t *testing.
 }
 
 func TestAChatMessageIsNewsOnlyWhenAPersonWroteIt(t *testing.T) {
-	human := client.Event{Type: "chat.message", ActorType: "human", Payload: map[string]any{"text": "the TTL is 60s", "displayName": "pickjonathan"}}
+	human := client.Event{Type: "chat.message", ActorType: "human", Payload: map[string]any{"text": "the TTL is 60s", "displayName": "Maya"}}
 	if !IsNews(human) {
 		t.Fatal("a person's chat message is news")
 	}

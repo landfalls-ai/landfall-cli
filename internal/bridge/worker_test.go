@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,18 +49,26 @@ func (f *fakePub) Contribute(_ context.Context, kind string, body map[string]any
 		return f.failWith
 	}
 	if !serverContributionKinds[kind] {
-		return fmt.Errorf("/edge/contributions -> HTTP 400: unknown contribution kind %q", kind)
+		return &client.HTTPError{Path: "/edge/contributions", Status: 400, Reason: fmt.Sprintf("unknown contribution kind %q", kind)}
 	}
 	f.published = append(f.published, body)
 	return nil
 }
 
-// StageClaim is the claims endpoint — separate from contributions.
+// StageClaim is the claims endpoint, separate from contributions and with
+// its own body: the server's AdmissionService.stage reads `statement` and
+// answers 400 "statement required" without one. The fake refuses the same
+// way. It used to accept any body, which is how every claim the bridge ever
+// staged went out as `{text: ...}` and was refused by the real server while
+// this fake said it had been staged.
 func (f *fakePub) StageClaim(_ context.Context, body map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failWith != nil {
 		return f.failWith
+	}
+	if st, _ := body["statement"].(string); strings.TrimSpace(st) == "" {
+		return &client.HTTPError{Path: "/claims", Status: 400, Reason: "statement required"}
 	}
 	f.staged = append(f.staged, body)
 	return nil
@@ -471,5 +480,59 @@ func TestAnExplicitKindFromTheCallerWinsOverTheClassifier(t *testing.T) {
 	e.Widget = &spool.WidgetPayload{WidgetType: "stat", Title: "t", Data: map[string]any{}}
 	if got := kindFor(e); got != KindWidget {
 		t.Fatalf("a structured widget payload still wins, got %q", got)
+	}
+}
+
+// TestAWidgetWithNothingToPlotGoesInAsWords: the room refuses a widget with
+// no type or data, so a marker or a bare kind must not file as one. It files
+// as whatever the words are without the marker, never as a note by default.
+func TestAWidgetWithNothingToPlotGoesInAsWords(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		e    *spool.Entry
+		want Kind
+	}{
+		{"a marker on a short aside is a note", &spool.Entry{Text: "chart: p99 please"}, KindNote},
+		{"a bare kind on a short aside is a note", &spool.Entry{Text: "error rate by minute", Kind: "widget"}, KindNote},
+		{"a marker on a finding is a finding", &spool.Entry{Text: "chart: error rate by minute since 14:00"}, KindFinding},
+		{"a bare kind on a finding is a finding", &spool.Entry{Text: "checkout 5xx errors since the 14:02 deploy", Kind: "widget"}, KindFinding},
+		{"a bare kind on a claim is a claim", &spool.Entry{Text: "the root cause is the origin rollback at 14:20", Kind: "widget"}, KindClaim},
+		{"a marker on a reply is a note", &spool.Entry{Text: "@bob table: 5xx errors since the 14:02 deploy"}, KindNote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := kindFor(tc.e); got != tc.want {
+				t.Fatalf("kindFor(%q, kind %q) = %q, want %q", tc.e.Text, tc.e.Kind, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestAMarkerDoesNotTakeAFindingPastTheGate: a note is the one kind that skips
+// the admission gate and reaches every agent's context at once. Substantive
+// text that happens to carry "table:" must still go in as a finding, gated,
+// exactly as it would without the marker.
+func TestAMarkerDoesNotTakeAFindingPastTheGate(t *testing.T) {
+	const text = "users table: 5xx errors since the 14:02 deploy"
+	if Classify(text) != KindWidget {
+		t.Fatal("precondition: the marker classifies as a widget")
+	}
+	if Classify("users 5xx errors since the 14:02 deploy") != KindFinding {
+		t.Fatal("precondition: without the marker the text is a finding")
+	}
+
+	sp, mi, _ := rig(t)
+	if _, err := sp.Accept("inc-1", "agent-1", text, nil); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	pub := &kindRecorder{fakePub: fakePub{instanceID: "agent-1"}}
+	w := New(sp, mi, nil)
+	w.Interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx, pub, client.Config{IncidentID: "inc-1"})
+	defer w.Stop()
+	waitFor(t, func() bool { return pub.count() == 1 }, "the hand-off to publish")
+	if got := pub.kindAt(0); got != "finding" {
+		t.Fatalf("published as %q, want finding (behind the admission gate)", got)
 	}
 }

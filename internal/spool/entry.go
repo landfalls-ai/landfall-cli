@@ -37,17 +37,24 @@ import "time"
 //	       │
 //	       ▼
 //	 [Publishing] ── transient failure ──► [Queued] (attempts++)
-//	       │
+//	       │ ├────── session expired (401) ──► [Queued] (marked SessionExpired)
+//	       │ └────── the room refused it (4xx) ──► [Refused]
 //	    success
 //	       │
 //	       ▼
 //	 [Published] ──► compacted out on Ack
 //
-// There is deliberately NO terminal Failed state. A permanently failing entry
-// stays Queued with a rising attempt count and a visible LastError, because
-// silently discarding a responder's finding is the worst outcome available to
-// this package. Overflow (FR-012) is the only path that ever drops, and it
-// counts what it dropped.
+// A transient failure (the room unreachable, a timeout, a 5xx, the room's rate
+// limit, a write that lost a race with other writers) requeues: the same
+// hand-off will likely land later. So does an expired session (a 401), with a
+// mark saying so: the hand-off lands once the person rejoins with a new link.
+// A REFUSAL does not. The room answered 400 "statement required" to every claim this bridge
+// ever staged, and the entry was retried every five seconds for the rest of
+// the session while the agent had been told "shared" (found 2026-09-28). An
+// entry the room refuses is therefore Refused: kept, never retried, and told
+// to the agent on its next room tool result and to the person on the status
+// line, so whoever can fix it knows to. Nothing is discarded silently: the
+// entry and the room's reason stay in the file.
 type State string
 
 const (
@@ -55,6 +62,10 @@ const (
 	Publishing State = "publishing"
 	Published  State = "published"
 	Abandoned  State = "abandoned"
+	// Refused is terminal: the room answered this hand-off with a 4xx that
+	// asking again, unchanged, will only get again (see client.Refusal). The
+	// worker never retries it; Refusal records the room's reason.
+	Refused State = "refused"
 	// Held is a hand-off the room daemon stopped because it names the person's
 	// working directory (feature 20260922-local-room-daemon, FR-008). It is
 	// not queued, so the worker never publishes it; it leaves this state only
@@ -103,8 +114,8 @@ type Entry struct {
 	// Widget carries the structured values for a widget hand-off, when the
 	// caller supplied them explicitly (widgetType/title/data), rather than
 	// leaving the worker to infer one from free text. Nil for every other
-	// kind, and nil for a widget hand-off with no structured payload — see
-	// classify.go on why that case still produces a widget, just an empty one.
+	// kind, and nil for a widget hand-off with no structured payload, which
+	// the worker publishes as a note (internal/bridge's kindFor).
 	Widget *WidgetPayload `json:"widget,omitempty"`
 
 	State    State `json:"state"`
@@ -120,6 +131,28 @@ type Entry struct {
 	// believed they shared is not what the room will see, and finding that out
 	// later, from the timeline, would be worse.
 	Redacted bool `json:"redacted,omitempty"`
+
+	// Refusal is the room's own reason for refusing this hand-off, set when
+	// State == Refused ("statement required", the widget contract error).
+	Refusal string `json:"refusal,omitempty"`
+	// RefusalStatus is the HTTP status the refusal came with. It decides what
+	// the agent is told to do: a 400 names something in the hand-off it can
+	// fix; a 403, 404 or a closed engagement's 409 will answer a corrected
+	// share the same way. Zero on an entry refused before this was recorded.
+	RefusalStatus int `json:"refusal_status,omitempty"`
+	// RefusedAt is when the room refused it. The status line counts recent
+	// refusals only (RefusedWindow), so an old one does not linger there.
+	RefusedAt *time.Time `json:"refused_at,omitempty"`
+	// Reported records that the agent was told about the refusal, on a room
+	// tool result. Each refusal is told once.
+	Reported bool `json:"reported,omitempty"`
+
+	// SessionExpired records that this entry's latest attempt was answered
+	// HTTP 401: the room session that sent it had expired. The entry stays
+	// Queued (nothing is wrong with it) and goes out once the person rejoins
+	// with a new link; until then the status line and the agent say why it
+	// has not landed. Cleared by the next attempt that meets anything else.
+	SessionExpired bool `json:"session_expired,omitempty"`
 
 	// SourceQueryFailed is the caller's OWN self-report, at hand-off time,
 	// that this text/widget was produced after one of its own tool calls

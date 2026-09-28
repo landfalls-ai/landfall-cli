@@ -137,6 +137,37 @@ func TestHooks_UsageLineNamesEverySubcommandAndEveryEvent(t *testing.T) {
 	}
 }
 
+func TestHooks_UsageLineNamesTheBlockOptIn(t *testing.T) {
+	if !strings.Contains(hooksUsage(), "[--block]") {
+		t.Fatalf("got %q", hooksUsage())
+	}
+}
+
+// The installer always writes the inform default; `--block` is an opt-in a
+// person writes into their own registered command. Accepting it on install and
+// silently ignoring it would leave somebody believing they had opted in.
+func TestHooksInstall_BlockIsNotAnInstallOptionAndSaysSo(t *testing.T) {
+	home := installSandbox(t)
+	settings := claudeSettings(t, home)
+	var logged []string
+	deps := hooksDeps()
+	deps.Log = func(format string, args ...any) { logged = append(logged, format) }
+
+	r := RunHooksInstall(context.Background(), []string{"install", "--only", "claude-code", "--block"}, deps)
+	if r.ExitCode != 0 {
+		t.Fatalf("exit %d", r.ExitCode)
+	}
+	if len(logged) != 1 || !strings.Contains(logged[0], "--block is not an install option") ||
+		!strings.Contains(logged[0], "LANDFALL_STOP_HOOK=block") {
+		t.Fatalf("got %v", logged)
+	}
+	// And what was written is the bare, inform-by-default command.
+	if !strings.Contains(readFileText(t, settings), `"landfall hooks stop"`) ||
+		strings.Contains(readFileText(t, settings), "--block") {
+		t.Fatalf("got %s", readFileText(t, settings))
+	}
+}
+
 // --- idempotency and non-destructiveness --------------------------------
 
 func TestHooksInstall_RunTwiceTheSecondIsAlreadyInstalledAndTheFileIsByteIdentical(t *testing.T) {

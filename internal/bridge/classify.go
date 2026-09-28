@@ -32,7 +32,16 @@ const (
 // records what was said without asserting it as an established finding or
 // staking a position the room might vote on. Guessing UP from ambiguity would
 // put words in the responder's mouth.
-func Classify(text string) Kind {
+func Classify(text string) Kind { return classify(text, true) }
+
+// classifyAsWords is Classify with the widget markers ignored: what the text
+// is when it cannot be a widget because nothing came with it to plot. A
+// "users table: 5xx errors since the 14:02 deploy" is a finding, and files
+// as one (behind the admission gate) rather than as an ungated note just
+// because it said "table:".
+func classifyAsWords(text string) Kind { return classify(text, false) }
+
+func classify(text string, widgets bool) Kind {
 	t := strings.ToLower(strings.TrimSpace(text))
 	if t == "" {
 		return KindNote
@@ -59,11 +68,14 @@ func Classify(text string) Kind {
 	}
 
 	// A widget is data the room can plot. Requires an explicit request: the
-	// hand-off carries free text, not the structured values a widget needs, so
-	// anything less than an explicit ask would produce an empty chart.
-	for _, marker := range widgetMarkers {
-		if strings.Contains(t, marker) {
-			return KindWidget
+	// hand-off carries free text, not the structured values a widget needs.
+	// Without a structured payload the worker classifies it again as words
+	// (kindFor, classifyAsWords): the room refuses a widget with nothing in it.
+	if widgets {
+		for _, marker := range widgetMarkers {
+			if strings.Contains(t, marker) {
+				return KindWidget
+			}
 		}
 	}
 

@@ -5,8 +5,10 @@
 // `file-changed` + `user-prompt-submit`, and #233 `pre-tool-use`. Each speaks on
 // a different channel, because each host event allows a different one:
 //
-//	stop          exit 2 + stderr — a REFUSAL every host understands. The agent
-//	              is concluding, and the point is that it may not yet.
+//	stop          exit 0 + `{"systemMessage": ...}` on stdout — a NOTICE for
+//	              the person that the room has news, never a new agent turn
+//	              (stopnotice.go). The old exit 2 + stderr REFUSAL is opt-in
+//	              only: LANDFALL_STOP_HOOK=block or `hooks stop --block`.
 //	file-changed  exit 0, stderr only — a WAKE. The host discards this event's
 //	              output entirely, so it stages the digest and nudges the human,
 //	              and consumes nothing.
@@ -58,8 +60,9 @@ type HookResult struct {
 	// ExitCode is the process exit code.
 	ExitCode int
 	// Stdout is the host's structured channel — written ONLY by a protocol that
-	// parses it (Cursor's JSON, `user-prompt-submit`'s injection object). Must
-	// stay empty under exit2.
+	// parses it (Cursor's JSON, `user-prompt-submit`'s injection object, the
+	// Stop notice's `{"systemMessage": ...}`). Never free text: under exit2 the
+	// host reads it as JSON or not at all.
 	Stdout string
 	// Stderr is everything meant for the model or the human.
 	Stderr string
@@ -103,6 +106,11 @@ type HookDeps struct {
 	// invoked by a host wants; the entrypoint passes its own so the streams stay
 	// injectable, and tests pass a recorder.
 	Emit func(text, channel string)
+	// StopMode is which Stop behaviour the invocation asked for: StopModeBlock
+	// only when the person opted in (`--block`, LANDFALL_STOP_HOOK=block — see
+	// ResolveStopMode); anything else, including "", is the inform default.
+	// Read by the stop handler alone.
+	StopMode string
 }
 
 // emit is Emit, with a nil-safe default that writes to the real process

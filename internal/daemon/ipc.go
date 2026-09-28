@@ -152,8 +152,12 @@ type Response struct {
 
 // RoomView is a room as `rooms`, `peek` and `status` describe it.
 type RoomView struct {
-	RoomKey    string     `json:"roomKey"`
-	IncidentID string     `json:"incidentId"`
+	RoomKey    string `json:"roomKey"`
+	IncidentID string `json:"incidentId"`
+	// DisplayID and Title are what the person knows the room as: the status
+	// line shows these, never IncidentID.
+	DisplayID  string     `json:"displayId,omitempty"`
+	Title      string     `json:"title,omitempty"`
 	Slug       string     `json:"slug"`
 	Connection Connection `json:"connection"`
 	Readers    []*Reader  `json:"readers,omitempty"`
@@ -368,9 +372,10 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			for _, s := range room.Seats() {
 				seats = append(seats, SeatView{Label: s.Label, InstanceID: s.InstanceID})
 			}
+			name := room.Name()
 			res.Rooms = append(res.Rooms, RoomView{
-				RoomKey: room.Key, IncidentID: room.Config.IncidentID, Slug: room.Config.Slug,
-				Connection: room.Connection, Readers: room.Readers(), Seats: seats, MaxSeq: room.MaxSeq(),
+				RoomKey: room.Key, IncidentID: room.Config.IncidentID, DisplayID: name.DisplayID, Title: name.Title,
+				Slug: room.Config.Slug, Connection: room.Connection, Readers: room.Readers(), Seats: seats, MaxSeq: room.MaxSeq(),
 			})
 		}
 		return res
@@ -417,8 +422,10 @@ func (d *Daemon) peek(req Request) Response {
 			}
 			digest = append(digest, line)
 		}
+		name := room.Name()
 		res.Rooms = append(res.Rooms, RoomView{
-			RoomKey: room.Key, IncidentID: room.Config.IncidentID, Slug: room.Config.Slug, Connection: room.Connection,
+			RoomKey: room.Key, IncidentID: room.Config.IncidentID, DisplayID: name.DisplayID, Title: name.Title,
+			Slug: room.Config.Slug, Connection: room.Connection,
 			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: cursor, Digest: digest, Events: untold,
 			Attention: room.AttentionFor(context.Background(), seat, peekAttentionBudget),
 		})
@@ -494,14 +501,15 @@ func (d *Daemon) status(workspaceKey, harness string) Response {
 }
 
 // FormatStatusLine renders the status line for the rooms a workspace reads.
-// "" when there is nothing to say (no room open here).
+// "" when there is nothing to say (no room open here). A room is named by its
+// display id or title (narrate.RoomName), never by its UUID.
 func FormatStatusLine(rooms []RoomView) string {
 	if len(rooms) == 0 {
 		return ""
 	}
 	parts := make([]string, 0, len(rooms))
 	for _, r := range rooms {
-		seg := "🔴 landfall #" + r.IncidentID
+		seg := narrate.RoomName{DisplayID: r.DisplayID, Title: r.Title}.StatusHead()
 		if r.Count > 0 {
 			seg += fmt.Sprintf(" · %d new", r.Count)
 		}

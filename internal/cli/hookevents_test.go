@@ -120,20 +120,111 @@ func withHookWorkspace(t *testing.T) hooks.Workspace {
 	return hooks.Workspace{Cwd: cwd, Env: map[string]string{"XDG_RUNTIME_DIR": root}}
 }
 
-// --- stop, exit2 -------------------------------------------------------------
+// --- stop, inform (the default since 2026-09-28) ---------------------------
 
-func TestHooksStopBlocksTheRealCommandWhenRoomContextIsOwed(t *testing.T) {
+// defaultStopEnv makes the invocation's environment say nothing about the Stop
+// mode, whatever the developer running the tests has exported.
+func defaultStopEnv(t *testing.T) { t.Setenv(hooks.StopModeEnv, "") }
+
+func TestHooksStopByDefaultTellsThePersonOnStdoutAndNeverBlocks(t *testing.T) {
+	defaultStopEnv(t)
 	ws := withHookWorkspace(t)
 	s, _ := hookSession(t, ws, 5150, 2)
 
 	out, errOut := captureStreams(t, "{}")
 	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
 
+	if code != 0 {
+		t.Fatalf("the default Stop must never refuse: exit %d", code)
+	}
+	if errOut.String() != "" {
+		t.Fatalf("stderr is what a host feeds the MODEL on a refusal; the notice is for the person: %q", errOut.String())
+	}
+	var notice map[string]any
+	if err := json.Unmarshal(out.Bytes(), &notice); err != nil {
+		t.Fatalf("stdout must be one JSON object, got %q: %v", out.String(), err)
+	}
+	want := "Landfall: 2 updates in the room (2 findings from Ana). They reach your agent with your next message."
+	if len(notice) != 1 || notice["systemMessage"] != want {
+		t.Fatalf("got %v, want only systemMessage %q", notice, want)
+	}
+
+	// Nothing consumed: the agent has not seen these, so they are still owed —
+	// and the next Stop says so again rather than going quiet on a lie.
+	if len(s.Pending()) != 2 {
+		t.Fatalf("pending %d", len(s.Pending()))
+	}
+	out, _ = captureStreams(t, "{}")
+	code = exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
+	if code != 0 || !strings.Contains(out.String(), want) {
+		t.Fatalf("exit %d, stdout %q", code, out.String())
+	}
+}
+
+func TestHooksStopNoticeThenUserPromptSubmitDeliversThenStopIsSilent(t *testing.T) {
+	defaultStopEnv(t)
+	ws := withHookWorkspace(t)
+	s, _ := hookSession(t, ws, 5153, 1)
+
+	out, _ := captureStreams(t, "{}")
+	if code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"})); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "It reaches your agent with your next message.") {
+		t.Fatalf("stdout %q", out.String())
+	}
+
+	// The person's next message: the update goes to the agent as context.
+	out, _ = captureStreams(t, `{"hook_event_name":"UserPromptSubmit","prompt":"check the origin"}`)
+	if code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "user-prompt-submit", []string{"user-prompt-submit"})); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if !strings.Contains(out.String(), "#1 edge.finding [Ana]") || !strings.Contains(out.String(), `"additionalContext"`) {
+		t.Fatalf("stdout %q", out.String())
+	}
+	if len(s.Pending()) != 0 {
+		t.Fatalf("delivered, so consumed: pending %d", len(s.Pending()))
+	}
+
+	// That turn ends. Nothing new, nothing said.
+	out, errOut := captureStreams(t, "{}")
+	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
+	if code != 0 || out.String() != "" || errOut.String() != "" {
+		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errOut.String())
+	}
+}
+
+func TestHooksStopUnderCursorByDefaultIsTheEmptyObjectAndConsumesNothing(t *testing.T) {
+	defaultStopEnv(t)
+	ws := withHookWorkspace(t)
+	s, _ := hookSession(t, ws, 6103, 2)
+
+	out, errOut := captureStreams(t, "{}")
+	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop", "--host", "cursor"}))
+	if code != 0 || errOut.String() != "" || strings.TrimSpace(out.String()) != "{}" {
+		t.Fatalf("a followup_message would start a turn nobody asked for: exit %d, stdout %q, stderr %q",
+			code, out.String(), errOut.String())
+	}
+	if len(s.Pending()) != 2 {
+		t.Fatalf("pending %d", len(s.Pending()))
+	}
+}
+
+// --- stop, block (opt-in only) -----------------------------------------------
+
+func TestHooksStopBlockFlagRefusesTheRealCommandWhenRoomContextIsOwed(t *testing.T) {
+	defaultStopEnv(t)
+	ws := withHookWorkspace(t)
+	s, _ := hookSession(t, ws, 5152, 2)
+
+	out, errOut := captureStreams(t, "{}")
+	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop", "--block"}))
+
 	if code != 2 {
 		t.Fatalf("exit %d", code)
 	}
 	if out.String() != "" {
-		t.Fatalf("stdout is the host's channel — the hook must not write to it: %q", out.String())
+		t.Fatalf("stdout is the host's channel — the refusal must not write to it: %q", out.String())
 	}
 	for _, want := range []string{"Do not conclude yet — 2 update(s)", "#1 edge.finding [Ana]"} {
 		if !strings.Contains(errOut.String(), want) {
@@ -150,13 +241,29 @@ func TestHooksStopBlocksTheRealCommandWhenRoomContextIsOwed(t *testing.T) {
 		t.Fatalf("pending %d", len(s.Pending()))
 	}
 	out, errOut = captureStreams(t, "{}")
-	code = exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
+	code = exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop", "--block"}))
 	if code != 0 || out.String() != "" || errOut.String() != "" {
 		t.Fatalf("exit %d, stdout %q, stderr %q", code, out.String(), errOut.String())
 	}
 }
 
+func TestHooksStopEnvOptInBlocksTheBareRegisteredCommand(t *testing.T) {
+	t.Setenv(hooks.StopModeEnv, "block")
+	ws := withHookWorkspace(t)
+	hookSession(t, ws, 6101, 1)
+
+	out, errOut := captureStreams(t, "{}")
+	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
+	if code != 2 || out.String() != "" {
+		t.Fatalf("exit %d, stdout %q", code, out.String())
+	}
+	if !strings.Contains(errOut.String(), "Do not conclude yet") {
+		t.Fatalf("stderr %q", errOut.String())
+	}
+}
+
 func TestHooksStopWithTheLoopGuardSetNeverBlocksEvenWithContextOwed(t *testing.T) {
+	t.Setenv(hooks.StopModeEnv, "block")
 	ws := withHookWorkspace(t)
 	s, _ := hookSession(t, ws, 5151, 3)
 
@@ -172,6 +279,7 @@ func TestHooksStopWithTheLoopGuardSetNeverBlocksEvenWithContextOwed(t *testing.T
 }
 
 func TestHooksStopExitsZeroWithNoStdinAtAll(t *testing.T) {
+	defaultStopEnv(t)
 	withHookWorkspace(t)
 	out, _ := captureStreams(t, "")
 	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
@@ -180,9 +288,8 @@ func TestHooksStopExitsZeroWithNoStdinAtAll(t *testing.T) {
 	}
 }
 
-// --- stop, cursor-json -------------------------------------------------------
-
-func TestHooksStopHostCursorWritesJSONToStdoutAndExitsZero(t *testing.T) {
+func TestHooksStopHostCursorBlockOptInWritesAFollowupAndExitsZero(t *testing.T) {
+	t.Setenv(hooks.StopModeEnv, "block")
 	ws := withHookWorkspace(t)
 	s, _ := hookSession(t, ws, 6100, 2)
 
@@ -220,29 +327,24 @@ func TestHooksStopHostCursorWritesJSONToStdoutAndExitsZero(t *testing.T) {
 	}
 }
 
-func TestTheExit2HostsAreUntouchedByTheFlagExisting(t *testing.T) {
-	ws := withHookWorkspace(t)
-	hookSession(t, ws, 6101, 1)
-
-	out, errOut := captureStreams(t, "{}")
-	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", []string{"stop"}))
-	if code != 2 || out.String() != "" {
-		t.Fatalf("exit %d, stdout %q", code, out.String())
-	}
-	if !strings.Contains(errOut.String(), "Do not conclude yet") {
-		t.Fatalf("stderr %q", errOut.String())
-	}
-}
-
 func TestAnUnknownHostAnswersOnTheConventionTwoOfThreeHostsShare(t *testing.T) {
+	defaultStopEnv(t)
 	ws := withHookWorkspace(t)
 	hookSession(t, ws, 6102, 1)
-
-	_, errOut := captureStreams(t, "{}")
 	argv := []string{"stop", "--host", "not-a-host"}
+
+	// Inform: the exit2 hosts' notice object, not Cursor's.
+	out, _ := captureStreams(t, "{}")
 	code := exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", argv))
+	if code != 0 || !strings.HasPrefix(out.String(), `{"systemMessage":`) {
+		t.Fatalf("an unrecognized --host must not be fatal: exit %d, stdout %q", code, out.String())
+	}
+
+	// Block, opted in: exit 2 + stderr.
+	_, errOut := captureStreams(t, "{}")
+	code = exitCodeOf(t, runHookEventCommand(context.Background(), hookUI(), "stop", append(argv, "--block")))
 	if code != 2 {
-		t.Fatalf("an unrecognized --host must not be fatal, and must not silently allow: %d", code)
+		t.Fatalf("an unrecognized --host must not silently allow an opted-in block: %d", code)
 	}
 	if !strings.Contains(errOut.String(), "Do not conclude yet") {
 		t.Fatalf("stderr %q", errOut.String())

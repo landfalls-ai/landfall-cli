@@ -140,6 +140,11 @@ type Room struct {
 	events  []client.Event
 	frame   *client.ContextFrame
 	frameAt time.Time
+	// name is what the person knows the room as (its display id, its title),
+	// kept from the last frame read, never expired with it: a name does not go
+	// stale in 30 seconds, and the status line must not fall back to nothing
+	// between reads.
+	name    narrate.RoomName
 	readers map[string]*Reader
 	// links are the share links (by LinkHash) that opened or joined this room
 	// on this machine. A share link is single-use; a second harness handed the
@@ -467,6 +472,11 @@ func RestoreRoom(ctx context.Context, st RoomState, deps Deps) (*Room, error) {
 	}
 	r.mu.Lock()
 	r.CwdAllowed = st.CwdAllowed
+	if st.Name != nil {
+		// Cleaned again: the state file is a file, and what it says is printed
+		// to the person's terminal.
+		r.name = st.Name.Clean()
+	}
 	for _, h := range st.Links {
 		r.addLinkLocked(h)
 	}
@@ -901,8 +911,19 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 	r.mu.Lock()
 	r.frame = f
 	r.frameAt = r.deps.now()
+	if n := narrate.RoomNameOf(f); !n.IsZero() {
+		r.name = n
+	}
 	r.mu.Unlock()
 	return f, nil
+}
+
+// Name is what the person knows the room as, from the last frame read (or
+// the state file, after a restart). Zero until one has been read.
+func (r *Room) Name() narrate.RoomName {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.name
 }
 
 // Delta is an agent reader's own pull: the server's classified delta since
@@ -990,7 +1011,12 @@ func (r *Room) Snapshot() RoomState {
 	if p, ok := r.seats[r.primary]; ok {
 		cfg = p.Config
 	}
-	return RoomState{Config: cfg, CwdAllowed: r.CwdAllowed, Readers: readers, Seats: seats, Links: links, SavedAt: r.deps.now()}
+	var name *narrate.RoomName
+	if !r.name.IsZero() {
+		n := r.name
+		name = &n
+	}
+	return RoomState{Config: cfg, CwdAllowed: r.CwdAllowed, Readers: readers, Seats: seats, Links: links, Name: name, SavedAt: r.deps.now()}
 }
 
 // frameCursor is the frame's as-of seq as a cursor, -1 when absent — the same

@@ -290,15 +290,136 @@ func (s *Spool) Ack(incidentID, id string) error {
 	return s.mark(incidentID, id, func(e *Entry) { e.State = Published })
 }
 
-// Fail returns an entry to the queue and records why, for backoff.
+// Fail returns an entry to the queue and records why, for backoff. The latest
+// attempt met something other than an expired session, so an earlier expiry
+// mark is cleared.
 func (s *Spool) Fail(incidentID, id string, cause error) error {
 	return s.mark(incidentID, id, func(e *Entry) {
 		e.State = Queued
 		e.Attempts++
+		e.SessionExpired = false
 		if cause != nil {
 			e.LastError = cause.Error()
 		}
 	})
+}
+
+// Expire returns an entry to the queue because the room said the session
+// that sent it has expired (HTTP 401). Nothing is wrong with the entry: it
+// waits here, marked, until the person rejoins with a new link and a worker
+// over the new session publishes it. The mark is what the status line and
+// the agent's next room tool result read to say so.
+func (s *Spool) Expire(incidentID, id, reason string) error {
+	return s.mark(incidentID, id, func(e *Entry) {
+		e.State = Queued
+		e.Attempts++
+		e.SessionExpired = true
+		e.LastError = reason
+	})
+}
+
+// AwaitingSession reports whether a room's queue is waiting on a new session:
+// some queued entry's latest attempt met an expired one. waiting is how many
+// hand-offs are still owed to the room (queued or mid-publish), all of which
+// go out once the person rejoins.
+func (s *Spool) AwaitingSession(incidentID string) (expired bool, waiting int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.load(incidentID)
+	if err != nil {
+		return false, 0, err
+	}
+	for _, e := range entries {
+		switch e.State {
+		case Queued, Publishing:
+			waiting++
+			if e.SessionExpired {
+				expired = true
+			}
+		}
+	}
+	return expired, waiting, nil
+}
+
+// RefusedWindow is how long a refusal counts on the status line. Long enough
+// for a person who glances up now and then to see it; short enough that one
+// refusal early in an incident does not sit on their status line all day.
+const RefusedWindow = time.Hour
+
+// Refuse records that the room refused an entry outright (a 4xx): the entry
+// becomes Refused, which the worker never retries, and keeps the room's HTTP
+// status and reason so the agent and the person can be told what happened
+// and whether a corrected share could land.
+func (s *Spool) Refuse(incidentID, id string, status int, reason string) error {
+	now := time.Now().UTC()
+	return s.mark(incidentID, id, func(e *Entry) {
+		e.State = Refused
+		e.Attempts++
+		e.SessionExpired = false
+		e.Refusal = reason
+		e.RefusalStatus = status
+		e.LastError = reason
+		e.RefusedAt = &now
+	})
+}
+
+// Refusals lists a room's refused entries, oldest first.
+func (s *Spool) Refusals(incidentID string) ([]*Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.load(incidentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Entry, 0)
+	for _, e := range entries {
+		if e.State == Refused {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// RecentRefusals counts a room's refusals within RefusedWindow of now: what
+// the status line shows.
+func (s *Spool) RecentRefusals(incidentID string, now time.Time) (int, error) {
+	refused, err := s.Refusals(incidentID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range refused {
+		if e.RefusedAt != nil && now.Sub(*e.RefusedAt) < RefusedWindow {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TakeUnreported returns the refusals the agent has not been told about yet
+// and marks them told, so each one reaches a tool result exactly once. The
+// mark is written before the caller renders anything: a refusal told twice is
+// noise, one never told is the silent failure this state exists to end, and a
+// crash between the two is the only way to lose one.
+func (s *Spool) TakeUnreported(incidentID string) ([]*Entry, error) {
+	s.mu.Lock()
+	entries, err := s.load(incidentID)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	var out []*Entry
+	for _, e := range entries {
+		if e.State != Refused || e.Reported {
+			continue
+		}
+		if err := s.mark(incidentID, e.ID, func(x *Entry) { x.Reported = true }); err != nil {
+			return out, err
+		}
+		e.Reported = true
+		out = append(out, e)
+	}
+	return out, nil
 }
 
 // Abandon marks every unpublished entry for a room the responder has left, and

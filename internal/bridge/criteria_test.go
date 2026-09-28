@@ -2,7 +2,6 @@ package bridge
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -14,14 +13,24 @@ import (
 // entry, not a broken room.
 type rejectOne struct {
 	fakePub
-	bad string
+	bad      string
+	badTries int
 }
 
 func (r *rejectOne) Contribute(ctx context.Context, kind string, body map[string]any) error {
 	if t, _ := body["text"].(string); t == r.bad {
-		return errors.New("/edge/contributions -> HTTP 400: permanently rejected")
+		r.mu.Lock()
+		r.badTries++
+		r.mu.Unlock()
+		return &client.HTTPError{Path: "/edge/contributions", Status: 400, Reason: "permanently rejected"}
 	}
 	return r.fakePub.Contribute(ctx, kind, body)
+}
+
+func (r *rejectOne) tries() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.badTries
 }
 
 // TestOneBadEntryDoesNotStarveTheQueue is a regression test for a bug a LIVE
@@ -64,20 +73,26 @@ func TestOneBadEntryDoesNotStarveTheQueue(t *testing.T) {
 		t.Fatal("the rejected entry was published")
 	}
 
-	// And the bad one must still be retained, not silently dropped — a
-	// responder's finding is never discarded just because the server said no.
+	// And the bad one must be retained as REFUSED, with the room's reason:
+	// never silently dropped, and never retried every sweep for the rest of
+	// the session (a 400 is the room's answer, not a hiccup).
+	waitFor(t, func() bool {
+		refused, _ := sp.Refusals("inc-1")
+		return len(refused) == 1
+	}, "the refused entry to be recorded")
+	refused, _ := sp.Refusals("inc-1")
+	if refused[0].Text != poison || refused[0].Refusal != "permanently rejected" {
+		t.Errorf("refusal = %+v, want the poison entry with the room's reason", refused[0])
+	}
 	pending, _ := sp.Pending("inc-1")
-	found := false
 	for _, e := range pending {
 		if e.Text == poison {
-			found = true
-			if e.Attempts == 0 {
-				t.Error("the failing entry was never attempted")
-			}
+			t.Error("a refused entry is still queued for retry")
 		}
 	}
-	if !found {
-		t.Error("the failing entry was dropped instead of retained for retry")
+	time.Sleep(60 * time.Millisecond) // several more sweeps
+	if n := pub.tries(); n != 1 {
+		t.Errorf("the refused entry was sent %d times; a refusal must never be retried", n)
 	}
 }
 

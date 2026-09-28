@@ -19,7 +19,7 @@ order for every release; everything after happens on its own within a few minute
    ```
    There is no `package.json` version to bump for the Go binary itself — `main.version`
    (what `landfall serve`'s MCP `serverInfo.version` reports, and what `landfall --version`
-   would show if that flag existed) comes from the git tag via goreleaser's `{{.Version}}`
+   prints) comes from the git tag via goreleaser's `{{.Version}}`
    templating and `-ldflags -X main.version=...`, not from a file anyone edits by hand. (If
    `package.json` still exists at release time — e.g. during the Node/Go coexistence window —
    its own `version` field is a separate, cosmetic concern unrelated to what actually ships.)

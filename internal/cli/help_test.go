@@ -111,3 +111,32 @@ func TestHelpIsMatchedAnywhereInArgv(t *testing.T) {
 		}
 	}
 }
+
+// TestVersionSpellingsPrintTheVersionAndExitZero: `landfall --version` used
+// to fall through to serve and hang on an MCP handshake, the same trap the
+// help spellings above were caught in.
+func TestVersionSpellingsPrintTheVersionAndExitZero(t *testing.T) {
+	for _, spelling := range []string{"--version", "-v", "version"} {
+		t.Run(spelling, func(t *testing.T) {
+			stdout, exitCode := run(t, spelling)
+			if exitCode != 0 {
+				t.Errorf("landfall %s exited %d, want 0", spelling, exitCode)
+			}
+			// An unstamped test build reports "dev", which is true of it.
+			if stdout != "landfall dev\n" {
+				t.Errorf("landfall %s stdout = %q, want %q", spelling, stdout, "landfall dev\n")
+			}
+		})
+	}
+}
+
+// TestVersionIsOnlyTheFirstArgument: a -v further along belongs to the
+// command it follows, never to the version check. `status` is the command
+// used because it only ever reads: this spawns the real binary with the
+// developer's own environment, where a writing command could reach a room.
+func TestVersionIsOnlyTheFirstArgument(t *testing.T) {
+	stdout, exitCode := run(t, "status", "-v")
+	if exitCode != 0 || regexp.MustCompile(`landfall dev`).MatchString(stdout) {
+		t.Errorf("landfall status -v = %q (exit %d), want status's own answer", stdout, exitCode)
+	}
+}

@@ -18,14 +18,16 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/landfalls-ai/landfall-cli/internal/spool"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
+	"github.com/landfalls-ai/landfall-cli/internal/spool"
 	"github.com/spf13/cobra"
 )
 
@@ -108,10 +110,8 @@ func FormatStatusLine(status *hooks.SocketResponse) string {
 	if status == nil {
 		return ""
 	}
-	head := "🔴 landfall"
-	if status.IncidentID != "" {
-		head += " #" + status.IncidentID
-	}
+	// Named by what the person knows the room as, never its UUID.
+	head := narrate.RoomName{DisplayID: status.IncidentDisplayID, Title: status.IncidentTitle}.StatusHead()
 	parts := []string{head}
 	if status.Pending != 0 {
 		parts = append(parts, strconv.Itoa(status.Pending)+" new")
@@ -145,28 +145,70 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 	// room for this workspace, falls through to the per-pid sockets a
 	// fallback-mode serve still binds.
 	if res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "status", WorkspaceKey: hooks.WorkspaceKey(ws.Dir()), Harness: ws.Harness}, hooks.SocketTimeout); err == nil && res.Line != "" {
-		line := res.Line
-		// Holds live in this checkout's spool (the worker's), not in the daemon:
-		// count them here so the person sees "· N held" where they are working.
-		if sp, serr := spool.Open(ws.Getenv, hooks.WorkspaceKey(ws.Dir())); serr == nil {
-			held := 0
-			for _, r := range res.Rooms {
-				if items, herr := sp.Held(r.IncidentID); herr == nil {
-					held += len(items)
-				}
-			}
-			if held > 0 {
-				line += fmt.Sprintf(" · %d held", held)
-			}
+		ids := make([]string, 0, len(res.Rooms))
+		for _, r := range res.Rooms {
+			ids = append(ids, r.IncidentID)
 		}
-		_, _ = ui.Out.Write([]byte(line))
+		_, _ = ui.Out.Write([]byte(res.Line + spoolSuffix(ws, ids, time.Now())))
 		return 0
 	}
-	line := FormatStatusLine(QueryStatus(ws))
+	status := QueryStatus(ws)
+	line := FormatStatusLine(status)
 	if line != "" {
-		_, _ = ui.Out.Write([]byte(line))
+		_, _ = ui.Out.Write([]byte(line + spoolSuffix(ws, []string{status.IncidentID}, time.Now())))
 	}
 	return 0
+}
+
+// spoolSuffix is what only this checkout's spool (the worker's, not the
+// daemon's) knows about the rooms on the line: a room session that has
+// expired (the room answered 401, so shares wait here until the person
+// rejoins with a new link), hand-offs held by the working-directory rule, and
+// hand-offs the room refused within spool.RefusedWindow. Counted here so the
+// person sees them where they are working; "" when there is nothing to add or
+// no spool to read.
+func spoolSuffix(ws hooks.Workspace, incidentIDs []string, now time.Time) string {
+	sp, err := spool.Open(ws.Getenv, hooks.WorkspaceKey(ws.Dir()))
+	if err != nil {
+		return ""
+	}
+	held, refused := 0, 0
+	expired, waiting := false, 0
+	for _, id := range incidentIDs {
+		if id == "" {
+			continue
+		}
+		if gone, n, xerr := sp.AwaitingSession(id); xerr == nil && gone {
+			expired = true
+			waiting += n
+		}
+		if items, herr := sp.Held(id); herr == nil {
+			held += len(items)
+		}
+		if n, rerr := sp.RecentRefusals(id, now); rerr == nil {
+			refused += n
+		}
+	}
+	out := ""
+	// First, because it is the one thing only the person can fix and it stops
+	// everything else from reaching the room.
+	if expired {
+		shares := fmt.Sprintf("%d shares waiting", waiting)
+		if waiting == 1 {
+			shares = "1 share waiting"
+		}
+		out += " · session expired, " + shares + ": rejoin with a new link"
+	}
+	if held > 0 {
+		out += fmt.Sprintf(" · %d held", held)
+	}
+	switch {
+	case refused == 1:
+		out += " · 1 share refused"
+	case refused > 1:
+		out += fmt.Sprintf(" · %d shares refused", refused)
+	}
+	return out
 }
 
 // newStatusCommand wires RunStatus into the command tree. No flags, no

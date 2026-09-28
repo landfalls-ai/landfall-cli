@@ -247,6 +247,9 @@ func RenderFrame(frame *client.ContextFrame) string {
 		title = "(untitled incident)"
 	}
 	headParts := []string{title}
+	if id := oneLine(Printable(frame.Incident.DisplayID), nameMax); id != "" {
+		headParts = []string{id, title}
+	}
 	if frame.Incident.Severity != "" {
 		headParts = append(headParts, frame.Incident.Severity)
 	}

@@ -42,20 +42,26 @@ var artifactExtTypes = map[string]string{
 	".markdown": "text/markdown", ".json": "application/json",
 }
 
-// widgetTypes is every canvas widget type the server's catalog renders
-// (monorepo feature 20260904-130050, extended by 20260921-140000). The server
-// validates a shared widget's data against the type's closed contract and refuses a
-// mismatch with the shape error; `describe_widget_types` returns the catalog with what
-// each is for and the shape it expects.
+// widgetTypes is every canvas widget type the room accepts FROM AN EDGE AGENT: the
+// server's EDGE_WIDGET_TYPES (its edge-consolidation library), which is
+// dataOnlyTypes() of the widget catalog (monorepo feature 20260904-130050, extended by
+// 20260921-140000).
+// The server validates a shared widget's data against the type's closed contract and
+// refuses a mismatch with the shape error; `describe_widget_types` returns the catalog
+// with what each is for and the shape it expects.
+//
+// NOT the whole catalog. `codeFinding` is in the catalog but is not data-only: the
+// room builds that card itself from a finding that carries a code reference, and its
+// edge route answers 400 "unknown widget type" to one posted directly. It was listed
+// here until 2026-09-28, so share_with_room answered "shared" and post_widget "added"
+// for a widget the room always refused. ValidateWidget refuses it with its own reason.
 //
 // KEPT IN THE SAME ORDER AS THE SERVER'S LIST, and that is not decoration. This list
 // drifted once already: `events` and `graph` shipped server-side on 2026-09-21 and this
 // stayed at seven long enough that the comment claiming it was in sync was simply
-// false. Nothing catches it -- the monorepo's drift test is one-directional, asserting
-// only that everything here EXISTS there, so a short list passes silently and the cost
-// is an agent that cannot share a type the server would have accepted. When the server
-// gains a type, add it here in the same two-repo rhythm as every other CLI follow-up.
-var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "codeFinding", "events", "graph"}
+// false. When the server's edge list gains a type, add it here in the same two-repo
+// rhythm as every other CLI follow-up.
+var widgetTypes = []any{"stat", "chart", "table", "logView", "timeline", "geo", "events", "graph"}
 
 const widgetShapes = "Shapes: stat {value:number, unit?, delta?, deltaLabel?, trend?:\"up\"|\"down\"|\"flat\", tone?, baseline?, spark?:number[]}; " +
 	"chart {series:[{label, unit?, points:[{t:ISO-8601, v:number}]}], thresholds?:[{value,label?,tone?}], markers?:[{t,label,kind?}]}; " +
@@ -107,11 +113,12 @@ How to work:
   (durable cursor — only what is new since you last looked).
 - Publish concise results as you go: post_finding for findings, propose_action for
   remediations, post_widget to add a widget (stat, chart, table, logView, timeline, a geo
-  world map keyed by region, or a code finding) to your own sub-investigation dashboard;
-  describe_widget_types lists what each type is for. Every tool call also narrates your
-  presence to the room.
-- Remediations are propose-only: propose_action records a proposal for a human to
-  approve and execute. You never execute changes yourself.
+  world map keyed by region, an events audit trail, or a graph of how things connect) to
+  your own sub-investigation dashboard; describe_widget_types lists what each type is for.
+  Every tool call also narrates your presence to the room.
+- Remediations are suggest-only: propose_action records a suggestion; a person applies
+  it outside Landfall and records it as applied. You never make the change yourself,
+  and Landfall never makes it either.
 - Use upload_artifact to share a file you produced (report, chart, PDF, CSV) — it is
   shown safely to the room and never executed. Keep source code and secrets local
   unless the user chooses to share them. read_artifact reads what teammates shared
@@ -143,7 +150,7 @@ func Build(sess *session.Session) []mcp.Tool { return BuildWithAccepter(sess, ni
 // hand-off and drop it — an agent told "shared" about something that went
 // nowhere is worse than an agent that never had the verb.
 func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
-	b := &bridge{sess: sess}
+	b := &bridge{sess: sess, acc: acc}
 
 	obj := func(props map[string]any, required ...string) map[string]any {
 		schema := map[string]any{"type": "object", "properties": props}
@@ -237,9 +244,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 				"title":      strProp(""),
 				"data":       map[string]any{"type": "object"},
 			}, "widgetType", "title", "data"),
-			Handler: b.narrated("post_widget", func(_ context.Context, args map[string]any, _ string, _ session.EdgeClient) (string, error) {
+			Handler: checkWidget(b.narrated("post_widget", func(_ context.Context, args map[string]any, _ string, _ session.EdgeClient) (string, error) {
 				return "Widget " + quote(str(args, "title")) + " added to your sub-investigation dashboard.", nil
-			}),
+			})),
 		},
 		{
 			Name: "upload_artifact",
@@ -297,10 +304,12 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			Handler: b.narrated("read_artifact", b.readArtifact),
 		},
 		{
-			Name:        "propose_action",
-			Description: "Propose a remediation (propose-only; a human approves — you cannot execute).",
+			Name: "propose_action",
+			Description: "Suggest a remediation to the room: what to change, and in dryRunPreview what it would do. " +
+				"Suggest-only: a person decides whether to apply it, applies it outside Landfall and records it as applied. " +
+				"Neither you nor Landfall makes the change.",
 			InputSchema: obj(map[string]any{"description": strProp(""), "dryRunPreview": strProp("")}, "description"),
-			Handler:     b.narrated("propose_action", constant("Remediation proposed — awaiting human approval.")),
+			Handler:     b.narrated("propose_action", constant("Suggestion shared with the room. A person applies it outside Landfall and records it as applied.")),
 		},
 
 		// ---- vetting + claims (features 029/034 from the edge) -------------
@@ -408,7 +417,7 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 	list = append(list, mcp.Tool{
 		Name: "describe_widget_types",
 		Description: "Describe the canvas widget types you can share (stat, chart, table, logView, timeline, geo world map, " +
-			"code finding): what each is for, what it is best for, and the data shape the room renders. Read this before " +
+			"events, graph): what each is for, what it is best for, and the data shape the room renders. Read this before " +
 			"choosing a widgetType. Static reference data from the server's catalog.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}},
 		Handler:     b.narrated("describe_widget_types", b.describeWidgetTypes),
@@ -442,9 +451,11 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		list = append(list, mcp.Tool{
 			Name: "share_with_room",
 			Description: "Share something you found with the war room. Returns immediately — " +
-				"the room is updated in the background. You do not need to classify it, wait for it, or follow up. " +
-				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed — " +
-				"a bare \"widget:\"/\"chart:\" marker in `text` alone still files as a widget, but with nothing to plot.",
+				"the room is updated in the background. You do not need to classify it, wait for it, or follow up; " +
+				"if the room refuses it, your next room tool result says why. " +
+				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed. " +
+				"It is checked against the room's shape for that type before anything is queued, and a mismatch comes back " +
+				"in this result with what to fix. Without `widget`, the text is shared as words, never as an empty widget.",
 			InputSchema: obj(map[string]any{
 				"text": strProp("What you found, in your own words."),
 				"refs": map[string]any{
@@ -524,6 +535,7 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 		// ignores: the session cursor starts at -1 and only ever moves forward,
 		// so "no cursor in this frame" needs no guard of its own here.
 		b.sess.AdvanceCursorTo(narrate.FrameCursor(frame))
+		b.sess.NoteFrame(frame)
 		briefLine = "\n\n" + narrate.RenderFrame(frame)
 	}
 	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. "+
@@ -576,6 +588,7 @@ func (b *bridge) getBrief(ctx context.Context, _ map[string]any, _ string, cl se
 		return "", err
 	}
 	b.sess.AdvanceCursorTo(narrate.FrameCursor(frame))
+	b.sess.NoteFrame(frame)
 	return narrate.RenderFrame(frame), nil
 }
 
@@ -605,25 +618,19 @@ func (b *bridge) searchContext(ctx context.Context, args map[string]any, _ strin
 }
 
 // getSignalCatalog and querySignals (20260906-204144-data-source-sdk /
-// landfall-cli#12) are a straight passthrough, like search_context: the
-// credential proxy and the shape of a source's advertised operations are
-// entirely server- and plugin-owned, so there is nothing for this CLI to
-// interpret beyond rendering what came back. A failure is reported as a
-// normal (non-error) result — same discipline as flagContext/stageClaim —
-// so the wrapper's flush/vote/nudge epilogue still runs.
+// landfall-cli#12) read through routes whose shapes are server- and
+// plugin-owned. The catalog is rendered as a compact list an agent reads
+// (narrate.RenderSignalCatalog: source, connection, account, each operation
+// with what it reads, its parameters and its time window); a query's answer
+// is the provider's raw envelope, passed through. A failure is reported as a
+// normal (non-error) result, same discipline as flagContext/stageClaim, so
+// the wrapper's flush/vote/nudge epilogue still runs.
 func (b *bridge) getSignalCatalog(ctx context.Context, _ map[string]any, _ string, cl session.EdgeClient) (string, error) {
 	catalog, err := cl.GetSignalCatalog(ctx)
 	if err != nil {
 		return fmt.Sprintf("The signal catalog is unavailable right now: %v", err), nil
 	}
-	if catalog == nil {
-		catalog = []client.SignalCatalogEntry{}
-	}
-	encoded, err := json.MarshalIndent(catalog, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
+	return narrate.RenderSignalCatalog(catalog), nil
 }
 
 func (b *bridge) querySignals(ctx context.Context, args map[string]any, _ string, cl session.EdgeClient) (string, error) {
@@ -873,10 +880,20 @@ func (b *bridge) describeWidgetTypes(ctx context.Context, _ map[string]any, _ st
 	if err != nil {
 		return "", err
 	}
-	if len(frame.WidgetCatalog) == 0 {
+	b.sess.NoteFrame(frame)
+	// Only the types an agent can post. The frame carries the whole catalog,
+	// codeFinding included, which the room builds itself and refuses from an
+	// agent; listing it here invited a widget that could never land.
+	catalog := make([]client.WidgetCatalogEntry, 0, len(frame.WidgetCatalog))
+	for _, e := range frame.WidgetCatalog {
+		if postable(e.Type) {
+			catalog = append(catalog, e)
+		}
+	}
+	if len(catalog) == 0 {
 		return "This server sent no widget catalog; the widget types it accepts are: " + joinAny(widgetTypes) + ". " + widgetShapes, nil
 	}
-	out, err := json.MarshalIndent(map[string]any{"types": frame.WidgetCatalog}, "", "  ")
+	out, err := json.MarshalIndent(map[string]any{"types": catalog}, "", "  ")
 	if err != nil {
 		return "", err
 	}

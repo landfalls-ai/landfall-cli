@@ -5,15 +5,20 @@
 //
 // Four events (`EDGE_PUSH_ARCHITECTURE.md` §5/§10.1, §6):
 //
-//	stop          — refuse a silent conclusion while room events newer than the
-//	                session's last consumed seq exist (#225)
+//	stop          — tell the PERSON that room news arrived while their agent was
+//	                working (since 2026-09-28; stopnotice.go). Never a new agent
+//	                turn: the refusal of #225 is opt-in only, via
+//	                LANDFALL_STOP_HOOK=block or `landfall hooks stop --block`
 //	file-changed  — wake on the doorbell marker and STAGE a digest of room
 //	                events for an idle session (#227). Claude Code only: it is
 //	                the one host with a file-watch hook. Cannot deliver — the
 //	                host discards this event's output.
 //	user-prompt-submit
-//	              — DELIVER that staged digest as `additionalContext` on the
-//	                session's next prompt (#227). The half that can speak.
+//	              — DELIVER the room's news (live, or that staged digest) as
+//	                `additionalContext` on the session's next prompt (#227). The
+//	                half that can speak. Claude Code and, since 2026-09-28, Codex:
+//	                it is how the updates the Stop notice announced reach the
+//	                agent without a turn of its own.
 //	pre-tool-use  — match a command about to run against the local prod
 //	                allow-list and, on the engineer's confirmation, declare the
 //	                classified intent (#233, story #192). Not registered for
@@ -46,7 +51,7 @@ var HookEvents = []HookEvent{
 	{
 		ID:      "stop",
 		Hosts:   []string{"claude-code", "codex", "cursor"},
-		Purpose: "block a conclusion while unconsumed room context exists",
+		Purpose: "tell the person when room news is waiting (blocks only on explicit opt-in)",
 	},
 	{
 		ID:      "file-changed",
@@ -64,8 +69,13 @@ var HookEvents = []HookEvent{
 	},
 	{
 		ID:      "user-prompt-submit",
-		Hosts:   []string{"claude-code"},
-		Purpose: "deliver the staged room digest on the session's next prompt",
+		Hosts:   []string{"claude-code", "codex"},
+		Purpose: "deliver the room's news on the session's next prompt",
+		// Codex since 2026-09-28: its `user-prompt-submit.command.output` schema
+		// (codex-cli 0.146) takes the same hookSpecificOutput.additionalContext
+		// object Claude Code does, and without it the Stop notice's promise
+		// ("they reach your agent with your next message") would only hold when
+		// the agent happened to call a room tool.
 		// No matcher, and none is possible: this event "does not support
 		// matchers and always fires on every occurrence". That is exactly why it
 		// is the delivery half — it is the one event guaranteed to run when an

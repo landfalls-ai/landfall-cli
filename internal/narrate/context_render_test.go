@@ -293,7 +293,7 @@ func TestRenderFrame_SaysHowAnEstablishedItemWasAdmitted(t *testing.T) {
 		Established: []client.BriefItem{
 			{Seq: 3, Statement: "origin pool unhealthy", By: "Dana", Basis: "evidence", Admission: &client.BriefAdmission{
 				Trigger:       "bar-met",
-				Corroborators: []client.BriefCorroborator{{By: "pickjonathan", Kind: "member"}, {By: "Jhonny · Codex", Kind: "agent", Reason: "same 5xx in the ALB logs"}},
+				Corroborators: []client.BriefCorroborator{{By: "Maya", Kind: "member"}, {By: "Jhonny · Codex", Kind: "agent", Reason: "same 5xx in the ALB logs"}},
 			}},
 			{Seq: 4, Statement: "rollback is safe", By: "Alex", Admission: &client.BriefAdmission{Trigger: "human-override", DecidedBy: "Jhonny", Reason: "verified on staging"}},
 			{Seq: 5, Statement: "an item from an older server", By: "Alex"},
@@ -301,7 +301,7 @@ func TestRenderFrame_SaysHowAnEstablishedItemWasAdmitted(t *testing.T) {
 	}}
 	got := RenderFrame(frame)
 	for _, want := range []string{
-		"  #3 origin pool unhealthy — Dana\n     admitted: corroborated by pickjonathan (member); Jhonny · Codex (agent): same 5xx in the ALB logs",
+		"  #3 origin pool unhealthy — Dana\n     admitted: corroborated by Maya (member); Jhonny · Codex (agent): same 5xx in the ALB logs",
 		"  #4 rollback is safe — Alex\n     admitted by override: Jhonny (reason: verified on staging)",
 	} {
 		if !strings.Contains(got, want) {
@@ -314,7 +314,7 @@ func TestRenderFrame_SaysHowAnEstablishedItemWasAdmitted(t *testing.T) {
 }
 
 func TestBriefItemDecodesAdmissionAndBasis(t *testing.T) {
-	raw := `{"seq":3,"statement":"s","by":"Dana","basis":"evidence","admission":{"trigger":"human-override","decidedBy":"Jhonny","reason":"r","corroborators":[{"by":"pickjonathan","kind":"member"}]}}`
+	raw := `{"seq":3,"statement":"s","by":"Dana","basis":"evidence","admission":{"trigger":"human-override","decidedBy":"Jhonny","reason":"r","corroborators":[{"by":"Maya","kind":"member"}]}}`
 	var it client.BriefItem
 	if err := json.Unmarshal([]byte(raw), &it); err != nil {
 		t.Fatal(err)
@@ -331,9 +331,9 @@ func TestBriefItemDecodesAdmissionAndBasis(t *testing.T) {
 func TestRenderDelta_RendersAClaimAdmittedItemLikeAnyOther(t *testing.T) {
 	to := int64(9)
 	got := RenderDelta(&client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{
-		{Seq: 9, Type: "claim.admitted", By: "pickjonathan", Class: "substantive", Summary: "#7 corroborated and admitted: origin pool unhealthy"},
+		{Seq: 9, Type: "claim.admitted", By: "Maya", Class: "substantive", Summary: "#7 corroborated and admitted: origin pool unhealthy"},
 	}})
-	if !strings.Contains(got, "#9 claim.admitted [pickjonathan]") || !strings.Contains(got, "#7 corroborated and admitted: origin pool unhealthy") {
+	if !strings.Contains(got, "#9 claim.admitted [Maya]") || !strings.Contains(got, "#7 corroborated and admitted: origin pool unhealthy") {
 		t.Fatalf("got %q", got)
 	}
 }

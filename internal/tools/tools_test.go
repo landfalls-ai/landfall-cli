@@ -569,14 +569,14 @@ func TestGetUpdatesInDaemonModeUsesTheDaemonsCursor(t *testing.T) {
 	to := int64(12)
 	s.SetUpdatesOverride(func(_ context.Context, since *int64) (*client.FrameDelta, int64, bool) {
 		asked = append(asked, since)
-		return &client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{{Seq: 12, Type: "claim.admitted", By: "pickjonathan", Class: "substantive", Summary: "#7 corroborated and admitted: TTL is 60s"}}}, 9, true
+		return &client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{{Seq: 12, Type: "claim.admitted", By: "Maya", Class: "substantive", Summary: "#7 corroborated and admitted: TTL is 60s"}}}, 9, true
 	})
 	var seen []int64
 	s.SetAdvanceHook(func(v int64) { seen = append(seen, v) })
 	list := Build(s)
 
 	out := callTool(t, list, "get_updates", map[string]any{})
-	if !strings.Contains(out, "#12 claim.admitted [pickjonathan]") || !strings.Contains(out, "#7 corroborated and admitted") {
+	if !strings.Contains(out, "#12 claim.admitted [Maya]") || !strings.Contains(out, "#7 corroborated and admitted") {
 		t.Fatalf("result = %q", out)
 	}
 	if len(asked) != 1 || asked[0] != nil {
@@ -617,7 +617,7 @@ func TestGetBriefDoesNotSwallowNewsInDaemonMode(t *testing.T) {
 	c := &fakeClient{delta: &client.FrameDelta{}}
 	s := newSession(c)
 	cursor := int64(10)
-	news := client.DeltaItem{Seq: 11, Type: "chat.message", By: "pickjonathan", Class: "addressed", Summary: "@codex can you check the ALB?"}
+	news := client.DeltaItem{Seq: 11, Type: "chat.message", By: "Maya", Class: "addressed", Summary: "@codex can you check the ALB?"}
 	s.SetAdvanceHook(func(v int64) {
 		if v > cursor {
 			cursor = v

@@ -19,18 +19,22 @@ package cli
 //	        and handed to the handler through HookDeps.Input. A handler that
 //	        read stdin itself would race this read for the same bytes.
 //	stdout  the WIRE. Cursor JSON.parse()s it; UserPromptSubmit's injection
-//	        object is parsed by Claude Code. It is written through the package's
-//	        own `stdout` writer rather than ui.Out, because ui.Out is set to
-//	        io.Discard for these commands (see ui.go: "any incidental write
-//	        through Out in those commands is a protocol violation") — the wire
-//	        format is not an incidental write and must not share that door.
+//	        object and the Stop notice are parsed by Claude Code and Codex.
+//	        It is written through the package's own `stdout` writer rather
+//	        than ui.Out, because ui.Out is set to io.Discard for these
+//	        commands (see ui.go: "any incidental write through Out in those
+//	        commands is a protocol violation") — the wire format is not an
+//	        incidental write and must not share that door.
 //	stderr  everything for the model or the human. A handler's PROTOCOL text
 //	        (the Stop refusal, the file-changed nudge) goes out raw, byte for
 //	        byte as the Node original writes it; a handler's LOG lines go
 //	        through ui.Log and carry the "[landfall] " prefix.
 //
 // The exit code is the whole answer for the exit2 hosts: 0 allows the turn, 2
-// blocks it with stderr fed back to the model.
+// blocks it with stderr fed back to the model. Since 2026-09-28 the Stop hook
+// exits 2 only when the person opted in (`--block`, LANDFALL_STOP_HOOK=block);
+// by default it exits 0 and, when the room has news, writes one
+// `{"systemMessage": ...}` object on stdout for the person to read.
 
 import (
 	"context"
@@ -99,6 +103,9 @@ func runHookEventCommand(ctx context.Context, ui *UI, eventID string, argv []str
 		Workspace: hooks.Workspace{Harness: hooks.DetectHookHarness(f.host, input, os.Getenv)},
 		Log:       ui.Log,
 		Emit:      emit,
+		// Inform unless the person opted in to the refusal, on the command line
+		// they registered or in the host's environment. Only `stop` reads it.
+		StopMode: hooks.ResolveStopMode(f.block, os.Getenv),
 	})
 
 	// A handler emits its own output as it decides, in the order the contract

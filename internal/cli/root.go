@@ -61,8 +61,12 @@ Commands:
               [--org <slug>] [--override "<reason>"]      own landfall login session, never an
                                                           MCP tool); --override is for a genuinely
                                                           solo responder, audited, one-time-only
-  hooks install [--only <ids>] [--dry-run] [--uninstall]  register lifecycle hooks so room context
-                                                          reaches a local session it can't ignore
+  hooks install [--only <ids>] [--dry-run] [--uninstall]  register lifecycle hooks: room news reaches
+                                                          your agent with your next message, and when
+                                                          its turn ends you see a one-line notice. The
+                                                          Stop hook never makes your agent take another
+                                                          turn unless you opt in: LANDFALL_STOP_HOOK=block
+                                                          (or 'landfall hooks stop --block')
   hooks uninstall [--only <ids>]                          remove only landfall's hook entries
   hooks policy [--init]                                   print the local production allow-list and
                                                           exactly what each rule would report

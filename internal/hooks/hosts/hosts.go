@@ -372,7 +372,7 @@ func (h *claudeCodeHost) Uninstall() (Result, error) {
 // The TOML flag is handled by TARGETED TEXT EDIT, not by parsing: this CLI
 // ships no TOML library on purpose, and the alternative — writing a parser —
 // is a far larger risk to a user's config than inserting one root key.
-var codexEventKey = map[string]string{"stop": "Stop", "pre-tool-use": "PreToolUse"}
+var codexEventKey = map[string]string{"stop": "Stop", "user-prompt-submit": "UserPromptSubmit", "pre-tool-use": "PreToolUse"}
 
 var (
 	codexFlagRE  = regexp.MustCompile(`^[ \t]*codex_hooks[ \t]*=[ \t]*(true|false)[ \t]*$`)

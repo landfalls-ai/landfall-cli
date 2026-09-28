@@ -108,6 +108,13 @@ MCP registration gives your agent the incident tools. Hooks give the room a way 
 reach a session that isn't currently making a tool call — the difference between
 context your agent *can* fetch and context it *will* see.
 
+**Hooks never take the wheel.** You decide what your agent does next. No hook starts
+an agent turn you didn't ask for: room news reaches your agent together with your next
+message, and when your agent finishes a turn you get a one-line notice of what's
+waiting. (Until v0.8.12 the `Stop` hook refused the agent's conclusion instead, which
+made it run another turn on its own. That is now an explicit opt-in: see
+[What `Stop` does](#what-stop-does).)
+
 ```
 landfall hooks install                  # every detected host
 landfall hooks install --only codex     # just one
@@ -120,7 +127,7 @@ Three hosts have a lifecycle-hook surface, and each gets what it supports:
 | Host | Config file | Registered |
 |---|---|---|
 | Claude Code | `~/.claude/settings.json` | `Stop`, `FileChanged` (watching `room_events`), `UserPromptSubmit`, `PreToolUse` (`Bash` only) |
-| Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop`, `PreToolUse` (`Bash` only) |
+| Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop`, `UserPromptSubmit`, `PreToolUse` (`Bash` only) |
 | Cursor | `~/.cursor/hooks.json` | `stop` |
 
 No sign-in needed — this edits local config, so it also works from a provisioning
@@ -131,40 +138,69 @@ entry landfall wrote — its current form, or one an earlier version wrote — a
 leaves Codex's `codex_hooks` flag alone: other hooks of yours may depend on it.
 
 Cursor's entry carries `--host cursor`, because Cursor's hook contract is not the
-one Claude Code and Codex share. Those two read a refusal as exit code 2 with the
-message on stderr; Cursor reads exactly one JSON object on stdout, and never sees
-an exit code or stderr at all. Upgrading from v0.2.0 rewrites the older bare
+one Claude Code and Codex share. Those two read a `Stop` notice as a
+`{"systemMessage": "..."}` object on stdout (and an opted-in refusal as exit code 2
+with the message on stderr); Cursor reads exactly one JSON object on stdout, and never
+sees an exit code or stderr at all. Upgrading from v0.2.0 rewrites the older bare
 `landfall hooks stop` entry in place — same position in your list, no duplicate.
+
+**Upgrading Codex from v0.8.12 or earlier:** re-run `landfall hooks install`. It adds
+the new `UserPromptSubmit` entry next to your existing ones (no conflict, no
+duplicates); without it, a Codex agent only sees room news when it next calls a room
+tool.
 
 ### What `Stop` does
 
-Your agent finishes a ten-minute investigation and concludes. Meanwhile another
-investigator published the finding that changes the answer — the war room saw it,
-your agent did not, because an MCP session only learns things on a tool call it
-chose to make.
+Your agent finishes a turn. Meanwhile another investigator published the finding
+that changes the answer — the war room saw it, your agent did not, because an MCP
+session only learns things on a tool call it chose to make.
 
-So on `Stop`, the hook asks any `landfall serve` running in this workspace whether
-room events newer than that session's cursor exist. If they do, it prints them and
-refuses the conclusion; your agent reads them and continues. If they don't, it exits
-silently and immediately — nothing to ask means nothing to wait for.
+So on `Stop`, the hook asks the room daemon (and any `landfall serve` running in this
+workspace) whether room events newer than your cursor exist. If they do, **you** get
+one line from your host, and your agent stops exactly as it was going to:
 
-You are never stuck: whatever the block reported is marked consumed, so a second
-`Stop` on an unchanged room goes straight through, and a host that re-runs the hook
-after a block (`stop_hook_active`) is let through regardless.
+```
+Landfall: 2 updates in the room (1 finding from Maya · Codex, 1 message from Jhonny). They reach your agent with your next message.
+```
 
-On Cursor the same decision arrives by a different verb. Cursor's `stop` is a
+Nothing is marked read. The updates stay queued, and the next message you send
+delivers them to your agent as context (the `UserPromptSubmit` hook below), before the
+model generates anything. If your agent calls a room tool first, it gets them there
+instead. Either way nothing arrives twice, and once they're delivered the notice goes
+quiet. If the room has quarantined something your agent relied on, the line says that
+too. With nothing new, the hook exits silently and immediately.
+
+| Host | What you see | What your agent sees |
+|---|---|---|
+| Claude Code | the line, as a hook message in the session | the updates with your next message |
+| Codex CLI | the line, as a hook message in the session | the updates with your next message (needs the `UserPromptSubmit` entry: re-run `landfall hooks install` after upgrading) |
+| Cursor | nothing (Cursor's `stop` can only answer by starting another agent turn) | the updates on its next room tool call |
+
+**The old behaviour, opt-in only.** Set `LANDFALL_STOP_HOOK=block` in the environment
+your agent host runs hooks with (export it in the shell you start `claude` or `codex`
+from), or change the registered command to `landfall hooks stop --block`. Then `Stop`
+refuses the conclusion while room context is unread ("Do not conclude yet — N
+update(s) ..."), your agent reads it and continues on its own, and whatever the
+refusal reported is marked consumed. You are never stuck: a second `Stop` on an
+unchanged room goes straight through, and a host that re-runs the hook after a refusal
+(`stop_hook_active`) is let through regardless. Any other value of
+`LANDFALL_STOP_HOOK`, or none, is the notice. `landfall hooks install` always writes the
+plain command; an entry you've changed to `--block` is reported as a hand-edited
+conflict on the next install and left exactly as you wrote it.
+
+On Cursor, the opted-in refusal arrives by a different verb. Cursor's `stop` is a
 notification — it cannot refuse a conclusion — but it can hand back a
 `followup_message`, which Cursor submits as the next user message and which
-continues the agent loop. That gets your agent the same thing: it does not walk
-away from the incident holding stale context. Termination is just as bounded —
-what was reported is consumed, an interrupted or errored turn is left alone, and
-Cursor caps auto-followups at five per turn regardless.
+continues the agent loop. Termination is just as bounded — what was reported is
+consumed, an interrupted or errored turn is left alone, and Cursor caps
+auto-followups at five per turn regardless.
 
 ### What `FileChanged` + `UserPromptSubmit` do
 
-`Stop` covers an agent that is concluding. This pair covers one that is **idle** —
-not concluding, not calling tools, so neither the Stop gate nor the in-band block on
-a tool result can reach it.
+`Stop` tells you when news is waiting. This pair is what hands it to your agent when
+it is **idle** — not calling tools, so the in-band block on a tool result can't reach
+it. (`UserPromptSubmit` runs on Claude Code and Codex; the `FileChanged` wake is Claude
+Code's alone, and Codex's `UserPromptSubmit` reads the live room directly.)
 
 It takes two hook events, because no single one can do the job:
 
@@ -434,6 +470,7 @@ landfall leave                # leave the incident
 landfall install [--yes] [--only <ids>] [--dry-run]   # register this machine's coding agents
 landfall uninstall [--yes] [--only <ids>]              # remove that registration
 landfall hooks install [--only <ids>] [--dry-run]      # register lifecycle hooks
+export LANDFALL_STOP_HOOK=block                        # opt in: Stop refuses a conclusion (default: a notice)
 landfall hooks uninstall [--only <ids>]                # remove only landfall's hook entries
 landfall hooks policy [--init]                         # print (or scaffold) the prod allow-list
 ```

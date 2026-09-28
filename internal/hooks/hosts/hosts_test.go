@@ -684,8 +684,9 @@ func TestCodex_HooksJSONWrittenAndCodexHooksFlippedOnInConfigTOML(t *testing.T) 
 	}
 
 	want := map[string]any{"hooks": map[string]any{
-		"Stop":       []any{matcherGroup("", "landfall hooks stop")},
-		"PreToolUse": []any{matcherGroup("Bash", "landfall hooks pre-tool-use")},
+		"Stop":             []any{matcherGroup("", "landfall hooks stop")},
+		"UserPromptSubmit": []any{matcherGroup("", "landfall hooks user-prompt-submit")},
+		"PreToolUse":       []any{matcherGroup("Bash", "landfall hooks pre-tool-use")},
 	}}
 	if got := readJSONFile(t, h.ConfigPath()); !install.EqualJSON(got, want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
@@ -700,6 +701,42 @@ func TestCodex_HooksJSONWrittenAndCodexHooksFlippedOnInConfigTOML(t *testing.T) 
 	}
 	if !strings.Contains(text, `model = "gpt-5"`) {
 		t.Fatal("existing config preserved")
+	}
+}
+
+// 2026-09-28: Codex gained UserPromptSubmit, because the Stop hook stopped
+// refusing conclusions and now only tells the person that news is waiting; this
+// entry is what hands that news to the agent on their next message. Every
+// existing Codex install has Stop + PreToolUse only, and re-running install must
+// ADD the new entry in place — not report a conflict, not duplicate the others.
+func TestCodex_AnInstallFromBeforeUserPromptSubmitUpgradesInPlace(t *testing.T) {
+	s := newSandbox(t)
+	s.mkdir(t, ".codex")
+	h := HostByID("codex")
+	writeText(t, CodexTOMLPath(), "codex_hooks = true\n")
+	older, err := json.Marshal(map[string]any{"hooks": map[string]any{
+		"Stop":       []any{matcherGroup("", "landfall hooks stop")},
+		"PreToolUse": []any{matcherGroup("Bash", "landfall hooks pre-tool-use")},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeText(t, h.ConfigPath(), string(older))
+
+	result, err := h.Install()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Action == install.ActionConflict {
+		t.Fatalf("an unmodified older install must upgrade, not conflict: %+v", result)
+	}
+	want := map[string]any{"hooks": map[string]any{
+		"Stop":             []any{matcherGroup("", "landfall hooks stop")},
+		"UserPromptSubmit": []any{matcherGroup("", "landfall hooks user-prompt-submit")},
+		"PreToolUse":       []any{matcherGroup("Bash", "landfall hooks pre-tool-use")},
+	}}
+	if got := readJSONFile(t, h.ConfigPath()); !install.EqualJSON(got, want) {
+		t.Fatalf("got  %v\nwant %v", got, want)
 	}
 }
 

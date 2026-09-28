@@ -191,6 +191,27 @@ func TestANonShellToolStopsBeforeThePolicyIsEvenRead(t *testing.T) {
 	}
 }
 
+// Landfall's own room tools must never raise the production prompt, even with
+// a policy whose rule the tool's arguments would match word for word and a
+// person ready to press `y`: the hook stops at the tool name, before the
+// policy is read or the terminal touched.
+func TestALandfallMCPToolNeverReachesThePromptEvenWhenItsArgumentsWouldMatch(t *testing.T) {
+	for _, name := range []string{"mcp__landfall__query_signals", "mcp__landfall__share_with_room", "landfall.query_signals"} {
+		s := &preToolUseSpy{}
+		input, _ := json.Marshal(map[string]any{
+			"tool_name":  name,
+			"tool_input": map[string]any{"command": "kubectl --context=prod get po"},
+		})
+		got := runPreToolUse(t, string(input), s, spyConfig{confirmed: true})
+		if got.Result != "not-a-shell-command" || got.ExitCode != 0 {
+			t.Fatalf("%s: got %+v", name, got)
+		}
+		if s.policyReads != 0 || len(s.confirms) != 0 || s.resolves != 0 || len(s.sends) != 0 {
+			t.Fatalf("%s touched something: %+v", name, s)
+		}
+	}
+}
+
 func TestAShellCommandMatchingNoRuleReachesNeitherTheTerminalNorTheNetwork(t *testing.T) {
 	s := &preToolUseSpy{}
 	got := runPreToolUse(t, bashEvent("git status"), s, spyConfig{})

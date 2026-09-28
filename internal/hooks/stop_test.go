@@ -294,7 +294,7 @@ func TestAnAbortedOrErroredTurnIsNotAConclusionWorthInterrupting(t *testing.T) {
 	}
 }
 
-// --- 4. the handler ----------------------------------------------------------
+// --- 4. the handler, in the opt-in block mode --------------------------------
 
 // recorder captures the emits and consumes one run produces, in order.
 type recorder struct {
@@ -322,7 +322,7 @@ func staticQuery(answers ...SocketAnswer) func(SocketRequest) ([]SocketAnswer, e
 func TestASessionCanAlwaysTerminateTheSecondStopAfterABlockIsAllowedThrough(t *testing.T) {
 	answer := peekOfSession(t, "/s", sessionWith(t, 3, 1))
 	r := &recorder{}
-	first := RunStopHook(StopOptions{Input: "{}", Query: staticQuery(answer), Send: r.send, Emit: r.emit})
+	first := RunStopHook(StopOptions{Input: "{}", Query: staticQuery(answer), Send: r.send, Emit: r.emit, Mode: StopModeBlock})
 	if first.ExitCode != 2 {
 		t.Fatalf("exit %d", first.ExitCode)
 	}
@@ -331,6 +331,7 @@ func TestASessionCanAlwaysTerminateTheSecondStopAfterABlockIsAllowedThrough(t *t
 	}
 
 	second := RunStopHook(StopOptions{
+		Mode:  StopModeBlock,
 		Input: `{"stop_hook_active":true}`,
 		Query: func(SocketRequest) ([]SocketAnswer, error) {
 			t.Fatal("the loop guard must short-circuit before any socket is touched")
@@ -347,6 +348,7 @@ func TestASessionCanAlwaysTerminateTheSecondStopAfterABlockIsAllowedThrough(t *t
 func TestTheDigestIsEmittedBeforeAnyCursorMoves(t *testing.T) {
 	r := &recorder{}
 	RunStopHook(StopOptions{
+		Mode:  StopModeBlock,
 		Query: staticQuery(peekOfSession(t, "/s", sessionWith(t, 1, 1))),
 		Send:  r.send,
 		Emit:  r.emit,
@@ -360,6 +362,7 @@ func TestTheDigestIsEmittedBeforeAnyCursorMoves(t *testing.T) {
 func TestAFailedConsumeDoesNotSuppressABlockThatWasAlreadyEmitted(t *testing.T) {
 	var emitted string
 	res := RunStopHook(StopOptions{
+		Mode:  StopModeBlock,
 		Query: staticQuery(peekOfSession(t, "/s", sessionWith(t, 1, 1))),
 		Send:  func(string, SocketRequest) error { return errors.New("socket vanished") },
 		Emit:  func(text, _ string) { emitted = text },
@@ -401,12 +404,13 @@ func TestNoServeSessionAnywhereCostsNothing(t *testing.T) {
 	}
 }
 
-// --- 5. the handler under cursor-json ----------------------------------------
+// --- 5. the handler under cursor-json -----------------------------------------
 
 func TestUnderCursorJSONARefusalIsAFollowupMessageAndItStillConsumes(t *testing.T) {
 	r := &recorder{}
 	var channel string
 	res := RunStopHook(StopOptions{
+		Mode:     StopModeBlock,
 		Input:    `{"hook_event_name":"stop","status":"completed"}`,
 		Protocol: CURSOR_JSON,
 		Query:    staticQuery(peekOfSession(t, "/s", sessionWith(t, 2, 1))),

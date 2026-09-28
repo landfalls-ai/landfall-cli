@@ -1,6 +1,15 @@
 // stop.go — the `stop` lifecycle hook (#225, story #190). A Go port of
 // `src/hooks/stop.mjs`.
 //
+// SINCE 2026-09-28 THE DEFAULT IS INFORM, NOT BLOCK. Everything below this
+// paragraph describes the refusal, which still exists but only as an explicit
+// opt-in (LANDFALL_STOP_HOOK=block, or `landfall hooks stop --block`): a
+// refusal makes the host run another agent turn the human did not ask for, and
+// Landfall must never interrupt a person's interaction with their own agent.
+// By default RunStopHook never blocks and never consumes; it shows the person
+// one line (stopnotice.go) and leaves the updates queued for the
+// UserPromptSubmit hook to hand the agent on the human's next message.
+//
 // An agent that has been investigating for ten minutes concludes with a summary
 // it believes is current. Meanwhile another investigator published the finding
 // that changes the answer. The war room saw it; this agent did not, because an
@@ -359,16 +368,26 @@ type StopOptions struct {
 	Emit func(text, channel string)
 	// MaxChars overrides HookOutputMax. Zero means HookOutputMax.
 	MaxChars int
+	// Mode is StopModeInform or StopModeBlock (stopnotice.go). Anything but
+	// StopModeBlock — including "" — is inform: the refusal is opt-in only.
+	Mode string
 }
 
 // StopOutcome is what one stop run produces.
 type StopOutcome struct {
 	ExitCode int
 	Blocked  bool
-	Reason   string
+	// Informed is set when inform mode showed the person a notice. Never true
+	// together with Blocked.
+	Informed bool
+	// Reason is the refusal text (block) or the notice (inform).
+	Reason string
 }
 
 // RunStopHook runs the stop hook.
+//
+// By default (inform) it never blocks and never consumes: see runStopInform.
+// The rest of this comment is the opt-in block mode.
 //
 // WHAT gets said is BuildStopDecision's; HOW is the protocol's (protocol.go) —
 // exit 2 with the digest on stderr for Claude Code and Codex, one JSON object on
@@ -401,6 +420,9 @@ func RunStopHook(opts StopOptions) StopOutcome {
 	if !IsConcludedTurn(opts.Input) {
 		return allow()
 	}
+	if opts.Mode != StopModeBlock {
+		return runStopInform(opts, protocol, allow)
+	}
 
 	var peeks []SocketAnswer
 	if opts.Query != nil {
@@ -432,6 +454,42 @@ func RunStopHook(opts StopOptions) StopOutcome {
 	return StopOutcome{ExitCode: exitCode, Blocked: true, Reason: decision.Reason}
 }
 
+// runStopInform is the default Stop: peek, tell the person, consume NOTHING.
+//
+// Not consuming is the whole point. The agent has not seen these updates — the
+// person has only been told they exist — so they must still be owed when the
+// person next speaks, which is when UserPromptSubmit hands them to the agent as
+// additionalContext (or the agent's next room tool call flushes them in-band).
+// A notice that consumed would turn "they reach your agent with your next
+// message" into a lie.
+//
+// The same notice can therefore appear at the end of several turns in a row
+// while the person keeps working on something else. That is accurate, costs no
+// agent turn, and stops as soon as the updates are delivered.
+func runStopInform(opts StopOptions, protocol string, allow func() StopOutcome) StopOutcome {
+	// Cursor can only be told something by way of a followup_message, which is a
+	// new agent turn. There is nothing it can hear, so do not even ask.
+	if protocol == CURSOR_JSON {
+		return allow()
+	}
+	if opts.Query == nil {
+		return allow()
+	}
+	peeks, err := opts.Query(PeekRequest())
+	if err != nil {
+		return allow()
+	}
+	notice := BuildStopNotice(peeks)
+	if notice == "" {
+		return allow()
+	}
+	v := RenderStopNotice(protocol, notice)
+	if v.Text != "" && opts.Emit != nil {
+		opts.Emit(v.Text, v.Channel)
+	}
+	return StopOutcome{ExitCode: v.ExitCode, Blocked: false, Informed: true, Reason: notice}
+}
+
 // runStopHandler is the registered handler: HookDeps in, the real socket
 // functions wired up, a HookResult out.
 func runStopHandler(_ context.Context, deps HookDeps) HookResult {
@@ -441,10 +499,14 @@ func runStopHandler(_ context.Context, deps HookDeps) HookResult {
 		Query:    workspaceQuery(deps.Workspace),
 		Send:     workspaceSend(deps.Workspace),
 		Emit:     deps.emit,
+		Mode:     deps.StopMode,
 	})
 	result := "allowed"
-	if out.Blocked {
+	switch {
+	case out.Blocked:
 		result = "blocked"
+	case out.Informed:
+		result = "informed"
 	}
 	// Stdout/Stderr stay EMPTY: the verdict has already been written, in the one
 	// order that makes a crash mid-way recoverable.

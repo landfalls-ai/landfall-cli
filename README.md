@@ -526,6 +526,7 @@ landfall hooks install [--only <ids>] [--dry-run]      # register lifecycle hook
 export LANDFALL_STOP_HOOK=block                        # opt in: Stop refuses a conclusion (default: a notice)
 landfall hooks uninstall [--only <ids>]                # remove only landfall's hook entries
 landfall hooks policy [--init]                         # print (or scaffold) the prod allow-list
+landfall --version                                     # print this build's version (also -v, version)
 ```
 
 ## Guarantees

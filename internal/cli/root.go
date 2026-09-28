@@ -70,6 +70,7 @@ Commands:
   hooks uninstall [--only <ids>]                          remove only landfall's hook entries
   hooks policy [--init]                                   print the local production allow-list and
                                                           exactly what each rule would report
+  version (or --version, -v)                              print this build's version and exit
 
 Run 'landfall <command>' with no further arguments for command-specific behavior.
 Docs: https://github.com/landfalls-ai/landfall-cli`
@@ -103,6 +104,12 @@ func run(ui *UI, args []string, getenv func(string) string) int {
 		ui.Outf("%s\n", helpText)
 		return 0
 	}
+	// `landfall --version` used to fall through to serve, which then sat
+	// waiting on an MCP handshake nobody was going to send.
+	if wantsVersion(args) {
+		ui.Outf("landfall %s\n", buildVersion)
+		return 0
+	}
 
 	name, link, rest := parseArgs(args, getenv)
 	root := newRootCommand(ui, link)
@@ -127,6 +134,19 @@ func wantsHelp(argv []string) bool {
 		}
 	}
 	return len(argv) > 0 && argv[0] == "help"
+}
+
+// wantsVersion is `--version`, `-v` or `version` as the FIRST argument only:
+// unlike help, a `-v` further along belongs to whatever command it follows.
+func wantsVersion(argv []string) bool {
+	if len(argv) == 0 {
+		return false
+	}
+	switch argv[0] {
+	case "--version", "-v", "version":
+		return true
+	}
+	return false
 }
 
 var httpURL = regexp.MustCompile(`^https?://`)

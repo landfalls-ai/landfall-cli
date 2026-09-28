@@ -558,3 +558,27 @@ func TestTheStatusLineSaysWhenAVoteIsAwaited(t *testing.T) {
 		t.Fatalf("status line = %q", s.Line)
 	}
 }
+
+// TestTheDigestCarriesAResolveNote: the digest a UserPromptSubmit hook hands
+// the agent is the peek's lines. A resolve note used to render as a bare
+// "status.changed".
+func TestTheDigestCarriesAResolveNote(t *testing.T) {
+	wire := &fakeWire{}
+	d, _ := testDaemon(t, &fakeEdge{}, wire)
+	ctx := context.Background()
+	h := d.handler
+	cfg := client.Config{BaseURL: "http://x", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	if a := h.Handle(ctx, Request{Op: "attach", Room: &cfg, Reader: &ReaderSpec{Name: "claude-code:ws:1", Kind: "agent", WorkspaceKey: "ws"}}); !a.OK {
+		t.Fatalf("attach: %+v", a)
+	}
+	wire.emit(client.Event{Seq: seq(20), Type: "status.changed", ActorType: "human",
+		Payload: map[string]any{"status": "resolved", "note": "Origin rollback complete; 5xx back to baseline.", "displayName": "Dana"}})
+
+	p := h.Handle(ctx, Request{Op: "peek", WorkspaceKey: "ws"})
+	if !p.OK || len(p.Rooms) != 1 || len(p.Rooms[0].Digest) != 1 {
+		t.Fatalf("peek: %+v", p.Rooms)
+	}
+	if got := p.Rooms[0].Digest[0]; !strings.HasSuffix(got, "[Dana] — resolved: Origin rollback complete; 5xx back to baseline.") {
+		t.Fatalf("digest line = %q", got)
+	}
+}

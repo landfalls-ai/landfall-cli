@@ -136,6 +136,7 @@ func TestEventText_FallsThroughFieldChain(t *testing.T) {
 		{"statement fallback", Args{"statement": "e"}, "e"},
 		{"reason fallback", Args{"reason": "f"}, "f"},
 		{"stance fallback", Args{"stance": "g"}, "g"},
+		{"note fallback", Args{"sourceSeq": float64(4), "note": "rolled back by hand"}, "rolled back by hand"},
 		{"nothing present", Args{}, ""},
 		{"first non-null field non-string yields empty", Args{"text": 5}, ""},
 	}
@@ -145,6 +146,45 @@ func TestEventText_FallsThroughFieldChain(t *testing.T) {
 				t.Errorf("EventText(%v) = %q, want %q", c.payload, got, c.want)
 			}
 		})
+	}
+}
+
+// TestAStatusChangeCarriesItsNote: a resolve note is the one line a person
+// writes when closing an incident, and the digest used to drop it, showing a
+// bare "status.changed".
+func TestAStatusChangeCarriesItsNote(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload Args
+		want    string
+	}{
+		{"resolved with a note", Args{"status": "resolved", "note": "Origin rollback complete; 5xx back to baseline.", "displayName": "Dana"},
+			"#12 status.changed [Dana] — resolved: Origin rollback complete; 5xx back to baseline."},
+		{"resolved without one", Args{"status": "resolved", "displayName": "Dana"}, "#12 status.changed [Dana] — resolved"},
+		{"reopened", Args{"status": "open", "displayName": "Lee"}, "#12 status.changed [Lee] — open"},
+		{"archived with a reason", Args{"status": "archived", "reason": "completed"}, "#12 status.changed — archived: completed"},
+		{"a blank note is no note", Args{"status": "resolved", "note": "  "}, "#12 status.changed — resolved"},
+		{"text still wins", Args{"status": "mitigating", "text": "rolling back"}, "#12 status.changed — rolling back"},
+		{"no status reads as before", Args{"text": "mitigating"}, "#12 status.changed — mitigating"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := FormatEventLine(client.Event{Seq: seqPtr(12), Type: "status.changed", Payload: c.payload}); got != c.want {
+				t.Errorf("got  %q\nwant %q", got, c.want)
+			}
+		})
+	}
+
+	live := DescribeEvent(client.Event{Type: "status.changed", Payload: Args{"status": "resolved", "note": "rollback done", "displayName": "Maya"}})
+	if !strings.Contains(live, `from Maya: "resolved: rollback done"`) {
+		t.Errorf("live nudge = %q", live)
+	}
+
+	// Decided by type: another event that happens to carry a status keeps its
+	// own substance.
+	other := FormatEventLine(client.Event{Seq: seqPtr(13), Type: "proposal.opened", Payload: Args{"status": "open", "description": "Roll back the origin release"}})
+	if other != "#13 proposal.opened — Roll back the origin release" {
+		t.Errorf("proposal = %q", other)
 	}
 }
 

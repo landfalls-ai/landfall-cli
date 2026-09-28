@@ -221,6 +221,10 @@ this delivers it — no action beyond what you were already about to do.
 The cursor only advances once the digest has actually been handed over, so context is
 never consumed by a hook that could not deliver it.
 
+A status change in the digest carries what the person wrote with it (`resolved: Origin
+rollback complete; 5xx back to baseline.`), not just the event's type. Through v0.8.13
+a resolve note was dropped and the line read as a bare `status.changed`.
+
 The marker is a **doorbell, not a mailbox**: it carries a timestamp, a pid and a count,
 never a finding, a name or an incident id. The digest itself is staged next to the
 sockets outside your repo (`0600`), so nothing from the war room lands in a directory

@@ -561,7 +561,7 @@ func TestGetUpdatesRendersTheServerDeltaAndAdvancesTheCursor(t *testing.T) {
 
 // In daemon mode get_updates reads the daemon's cursor for this harness
 // session (the same one the piggyback flush reads), not a second cursor of
-// this process's own; get_brief tells the daemon what it showed.
+// this process's own; read_timeline tells the daemon what it showed.
 func TestGetUpdatesInDaemonModeUsesTheDaemonsCursor(t *testing.T) {
 	c := &fakeClient{delta: &client.FrameDelta{}}
 	s := newSession(c)
@@ -599,8 +599,46 @@ func TestGetUpdatesInDaemonModeUsesTheDaemonsCursor(t *testing.T) {
 
 	c.frame = &client.ContextFrame{AsOfSeq: seq(20)}
 	callTool(t, list, "get_brief", map[string]any{})
-	if len(seen) == 0 || seen[len(seen)-1] != 20 {
-		t.Fatalf("get_brief must tell the daemon what it showed: %v", seen)
+	if len(seen) != 0 {
+		t.Fatalf("a brief carries no chat or delta items; it must not move the daemon's cursor: %v", seen)
+	}
+	c.events = []client.Event{{Seq: seq(25), Type: "chat.message"}}
+	callTool(t, list, "read_timeline", map[string]any{})
+	if len(seen) != 1 || seen[0] != 25 {
+		t.Fatalf("read_timeline hands the agent the raw events; the daemon's cursor follows: %v", seen)
+	}
+}
+
+// Review 2026-09-28: an @mention that arrived after the last flush must still
+// reach the agent through get_updates after it read the brief. The fake
+// daemon here keeps a real cursor that only the advance hook and its own
+// delta move.
+func TestGetBriefDoesNotSwallowNewsInDaemonMode(t *testing.T) {
+	c := &fakeClient{delta: &client.FrameDelta{}}
+	s := newSession(c)
+	cursor := int64(10)
+	news := client.DeltaItem{Seq: 11, Type: "chat.message", By: "pickjonathan", Class: "addressed", Summary: "@codex can you check the ALB?"}
+	s.SetAdvanceHook(func(v int64) {
+		if v > cursor {
+			cursor = v
+		}
+	})
+	s.SetUpdatesOverride(func(_ context.Context, _ *int64) (*client.FrameDelta, int64, bool) {
+		since := cursor
+		var items []client.DeltaItem
+		if news.Seq > cursor {
+			items = append(items, news)
+		}
+		to := int64(12)
+		cursor = to
+		return &client.FrameDelta{ToVersion: &to, Items: items}, since, true
+	})
+	c.frame = &client.ContextFrame{AsOfSeq: seq(12)}
+	list := Build(s)
+	callTool(t, list, "get_brief", map[string]any{})
+	out := callTool(t, list, "get_updates", map[string]any{})
+	if !strings.Contains(out, "@codex can you check the ALB?") {
+		t.Fatalf("the message that arrived before get_brief must still reach get_updates: %q", out)
 	}
 }
 

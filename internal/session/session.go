@@ -129,9 +129,9 @@ type Session struct {
 	// cursor for this harness session instead of this process's own, so the
 	// piggyback flush and get_updates share one cursor per harness.
 	updatesOverride UpdatesFunc
-	// advanceHook, when set, is told every position a read of this session's
-	// own delivered (the brief, the timeline, a join), so the daemon's cursor
-	// for this reader moves with the local one.
+	// advanceHook, when set, is told the position a read of raw events
+	// delivered (read_timeline), so the daemon's cursor for this reader moves
+	// with it. A frame read (get_brief) never moves it: see AdvanceCursorTo.
 	advanceHook func(int64)
 
 	redeem        RedeemFunc
@@ -220,16 +220,19 @@ func (s *Session) SetCursor(v int64) {
 }
 
 // AdvanceCursorTo moves the cursor forward to `v`, never backwards.
+//
+// It deliberately does NOT tell the advance hook (the room daemon). Its
+// callers pass a frame's as-of seq (get_brief, join_war_room), and a frame
+// carries the brief, not the room's chat or delta items: an @mention, a
+// sibling harness's staged claim or a pinned attachment that arrived since
+// the last flush would be marked delivered by the daemon and never shown.
+// Only AdvanceCursor, over events the agent was actually handed, moves it.
 func (s *Session) AdvanceCursorTo(v int64) {
 	s.mu.Lock()
 	if v > s.cursor {
 		s.cursor = v
 	}
-	hook := s.advanceHook
 	s.mu.Unlock()
-	if hook != nil && v >= 0 {
-		hook(v)
-	}
 }
 
 // MirrorCursor moves only this session's own cursor forward to `v`: for a
@@ -685,7 +688,7 @@ func (s *Session) UpdatesOverride() UpdatesFunc {
 	return s.updatesOverride
 }
 
-// SetAdvanceHook is told every position this session's own reads delivered.
+// SetAdvanceHook is told the position a raw-event read delivered.
 func (s *Session) SetAdvanceHook(fn func(int64)) {
 	s.mu.Lock()
 	s.advanceHook = fn

@@ -301,6 +301,84 @@ func (s *Spool) Fail(incidentID, id string, cause error) error {
 	})
 }
 
+// RefusedWindow is how long a refusal counts on the status line. Long enough
+// for a person who glances up now and then to see it; short enough that one
+// refusal early in an incident does not sit on their status line all day.
+const RefusedWindow = time.Hour
+
+// Refuse records that the room refused an entry outright (a 4xx): the entry
+// becomes Refused, which the worker never retries, and keeps the room's reason
+// so the agent and the person can be told what to fix.
+func (s *Spool) Refuse(incidentID, id, reason string) error {
+	now := time.Now().UTC()
+	return s.mark(incidentID, id, func(e *Entry) {
+		e.State = Refused
+		e.Attempts++
+		e.Refusal = reason
+		e.LastError = reason
+		e.RefusedAt = &now
+	})
+}
+
+// Refusals lists a room's refused entries, oldest first.
+func (s *Spool) Refusals(incidentID string) ([]*Entry, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.load(incidentID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*Entry, 0)
+	for _, e := range entries {
+		if e.State == Refused {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// RecentRefusals counts a room's refusals within RefusedWindow of now: what
+// the status line shows.
+func (s *Spool) RecentRefusals(incidentID string, now time.Time) (int, error) {
+	refused, err := s.Refusals(incidentID)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, e := range refused {
+		if e.RefusedAt != nil && now.Sub(*e.RefusedAt) < RefusedWindow {
+			n++
+		}
+	}
+	return n, nil
+}
+
+// TakeUnreported returns the refusals the agent has not been told about yet
+// and marks them told, so each one reaches a tool result exactly once. The
+// mark is written before the caller renders anything: a refusal told twice is
+// noise, one never told is the silent failure this state exists to end, and a
+// crash between the two is the only way to lose one.
+func (s *Spool) TakeUnreported(incidentID string) ([]*Entry, error) {
+	s.mu.Lock()
+	entries, err := s.load(incidentID)
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	var out []*Entry
+	for _, e := range entries {
+		if e.State != Refused || e.Reported {
+			continue
+		}
+		if err := s.mark(incidentID, e.ID, func(x *Entry) { x.Reported = true }); err != nil {
+			return out, err
+		}
+		e.Reported = true
+		out = append(out, e)
+	}
+	return out, nil
+}
+
 // Abandon marks every unpublished entry for a room the responder has left, and
 // returns how many. The count exists so the caller can SAY so: silently
 // dropping a responder's findings because they switched rooms is precisely the

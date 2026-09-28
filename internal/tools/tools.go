@@ -143,7 +143,7 @@ func Build(sess *session.Session) []mcp.Tool { return BuildWithAccepter(sess, ni
 // hand-off and drop it — an agent told "shared" about something that went
 // nowhere is worse than an agent that never had the verb.
 func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
-	b := &bridge{sess: sess}
+	b := &bridge{sess: sess, acc: acc}
 
 	obj := func(props map[string]any, required ...string) map[string]any {
 		schema := map[string]any{"type": "object", "properties": props}
@@ -442,7 +442,8 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		list = append(list, mcp.Tool{
 			Name: "share_with_room",
 			Description: "Share something you found with the war room. Returns immediately — " +
-				"the room is updated in the background. You do not need to classify it, wait for it, or follow up. " +
+				"the room is updated in the background. You do not need to classify it, wait for it, or follow up; " +
+				"if the room refuses it, your next room tool result says why. " +
 				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed — " +
 				"a bare \"widget:\"/\"chart:\" marker in `text` alone still files as a widget, but with nothing to plot.",
 			InputSchema: obj(map[string]any{

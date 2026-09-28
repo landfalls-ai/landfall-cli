@@ -10,6 +10,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -91,10 +92,68 @@ func (c *Client) base() string {
 
 // errorBody is the shape a rejection may carry: the server-provided `reason`
 // (e.g. the artifact policy rejection) or `message`, surfaced so the caller
-// can relay a clear cause and not just a status.
+// can relay a clear cause and not just a status. `message` is raw because
+// NestJS sends a string for a thrown exception and an array of strings for a
+// class-validator failure; either is worth relaying.
 type errorBody struct {
-	Reason  string `json:"reason"`
-	Message string `json:"message"`
+	Reason  string          `json:"reason"`
+	Message json.RawMessage `json:"message"`
+}
+
+// text is the most useful one-line cause the body names, or "".
+func (b errorBody) text() string {
+	if b.Reason != "" {
+		return b.Reason
+	}
+	if len(b.Message) == 0 {
+		return ""
+	}
+	var one string
+	if json.Unmarshal(b.Message, &one) == nil {
+		return one
+	}
+	var many []string
+	if json.Unmarshal(b.Message, &many) == nil {
+		return strings.Join(many, "; ")
+	}
+	return ""
+}
+
+// HTTPError is a non-2xx answer from the room. Its text is exactly what this
+// client always returned ("<path> → HTTP <status>[: <reason>]"); the type
+// exists so a caller can tell a refusal from a transport failure without
+// parsing that text.
+type HTTPError struct {
+	Path   string
+	Status int
+	// Reason is the server's own words for why, when it gave any.
+	Reason string
+}
+
+func (e *HTTPError) Error() string {
+	if e.Reason != "" {
+		return fmt.Sprintf("%s → HTTP %d: %s", e.Path, e.Status, e.Reason)
+	}
+	return fmt.Sprintf("%s → HTTP %d", e.Path, e.Status)
+}
+
+// Refusal reports whether err is the room refusing a request outright: a 4xx
+// that asking again, unchanged, will only get again. The spooled hand-off
+// that drew one is failed for good rather than retried forever.
+//
+// Three 4xx codes are NOT refusals, because each one means "not now" rather
+// than "not this": 408 (the request timed out), 425 (too early) and 429 (the
+// room's rate limit). Those are retried like any transport failure.
+func Refusal(err error) (*HTTPError, bool) {
+	var he *HTTPError
+	if !errors.As(err, &he) || he.Status < 400 || he.Status > 499 {
+		return nil, false
+	}
+	switch he.Status {
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+		return nil, false
+	}
+	return he, true
 }
 
 // post issues a POST and decodes into `out` (which may be nil). A 202 carries
@@ -125,16 +184,10 @@ func (c *Client) post(ctx context.Context, path string, body map[string]any, out
 		var eb errorBody
 		if raw, readErr := io.ReadAll(res.Body); readErr == nil {
 			if json.Unmarshal(raw, &eb) == nil {
-				reason = eb.Reason
-				if reason == "" {
-					reason = eb.Message
-				}
+				reason = eb.text()
 			}
 		}
-		if reason != "" {
-			return fmt.Errorf("%s → HTTP %d: %s", path, res.StatusCode, reason)
-		}
-		return fmt.Errorf("%s → HTTP %d", path, res.StatusCode)
+		return &HTTPError{Path: path, Status: res.StatusCode, Reason: reason}
 	}
 	if res.StatusCode == http.StatusAccepted || out == nil {
 		_, _ = io.Copy(io.Discard, res.Body)
@@ -169,7 +222,7 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		_, _ = io.Copy(io.Discard, res.Body)
-		return fmt.Errorf("%s → HTTP %d", path, res.StatusCode)
+		return &HTTPError{Path: path, Status: res.StatusCode}
 	}
 	raw, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -522,7 +575,7 @@ func (c *Client) getRaw(ctx context.Context, path string) ([]byte, string, error
 
 	if res.StatusCode < 200 || res.StatusCode > 299 {
 		_, _ = io.Copy(io.Discard, res.Body)
-		return nil, "", fmt.Errorf("%s → HTTP %d", path, res.StatusCode)
+		return nil, "", &HTTPError{Path: path, Status: res.StatusCode}
 	}
 	raw, err := io.ReadAll(res.Body)
 	if err != nil {

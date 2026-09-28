@@ -20,9 +20,11 @@ import (
 // error.
 var errNotConnected = errors.New("not connected — call join_war_room with a Landfall agent share link first")
 
-// bridge holds the session the 19 tools are built over.
+// bridge holds the session the 19 tools are built over, and the outbound
+// queue when there is one (nil otherwise).
 type bridge struct {
 	sess *session.Session
+	acc  Accepter
 }
 
 // handlerFunc is a tool's own work, run between the narration prologue and the
@@ -39,7 +41,7 @@ func (b *bridge) requireClient() (session.EdgeClient, error) {
 	return cl, nil
 }
 
-// narrated wraps a handler in the nine-step per-call order. The order is
+// narrated wraps a handler in the ten-step per-call order. The order is
 // load-bearing and verified against the source; see the numbered comments.
 func (b *bridge) narrated(name string, run handlerFunc) mcp.Handler {
 	return func(ctx context.Context, args map[string]any) (string, error) {
@@ -103,9 +105,12 @@ func (b *bridge) narrated(name string, run handlerFunc) mcp.Handler {
 			withNudge = nudge + "\n\n" + body
 		}
 		if asked != "" {
-			return asked + "\n\n" + withNudge, nil
+			withNudge = asked + "\n\n" + withNudge
 		}
-		return withNudge, nil
+
+		// 9. An earlier share the room refused goes first of all: the agent
+		//    was told "shared" and nothing else will ever tell it otherwise.
+		return b.withRefusals(withNudge), nil
 	}
 }
 

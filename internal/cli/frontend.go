@@ -425,6 +425,12 @@ func (h *holdingAccepter) Accept(incidentID, agentInstanceID, text string, refs 
 	return id, redacted, nil
 }
 
+// TakeRefusals implements tools.RefusalReporter by asking the spool, which
+// this process's worker writes refusals into.
+func (h *holdingAccepter) TakeRefusals(incidentID string) []tools.Refusal {
+	return h.inner.TakeRefusals(incidentID)
+}
+
 // HeldReason implements tools.HeldReporter.
 func (h *holdingAccepter) HeldReason(id string) []string {
 	h.mu.Lock()

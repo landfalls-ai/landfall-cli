@@ -37,6 +37,7 @@ package bridge
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -246,8 +247,8 @@ func (w *Worker) drain(ctx context.Context, pub Publisher, incidentID string) {
 	}
 }
 
-// publish sends one entry and records the outcome. Returns false when the pass
-// should stop.
+// publish sends one entry and records the outcome. Returns false when the
+// publish did not land.
 func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) bool {
 	// Claim BEFORE the network call. A crash after this point is recognizable
 	// afterwards as "outcome unknown" rather than looking like it never ran —
@@ -299,14 +300,30 @@ func (w *Worker) publish(ctx context.Context, pub Publisher, e *spool.Entry) boo
 		body["title"] = e.Widget.Title
 		body["data"] = e.Widget.Data
 	}
-	// A claim goes to its own endpoint. Staging is transcription of what the
-	// responder wrote, not evaluation of it — see vetting.go on why the worker
-	// never casts a vote.
+	// A claim goes to its own endpoint, in that endpoint's own shape. Staging
+	// is transcription of what the responder wrote, not evaluation of it (see
+	// vetting.go on why the worker never casts a vote).
 	publish := func() error { return pub.Contribute(ctx, string(kind), body) }
 	if stageableClaim(kind) {
-		publish = func() error { return pub.StageClaim(ctx, body) }
+		publish = func() error { return pub.StageClaim(ctx, claimBody(e)) }
 	}
 	if err := publish(); err != nil {
+		// A refusal is final: the room will answer the same hand-off the same
+		// way however often it is asked, so it is recorded with the room's
+		// reason and told to the agent (share_with_room's refusal line) rather
+		// than retried every sweep for the rest of the session.
+		if refusal, ok := client.Refusal(err); ok {
+			reason := refusal.Reason
+			if reason == "" {
+				reason = fmt.Sprintf("the room answered HTTP %d", refusal.Status)
+			}
+			if rerr := w.spool.Refuse(e.IncidentID, e.ID, reason); rerr != nil {
+				w.log("bridge: could not record the refusal of %s (%v)", e.ID, rerr)
+				return false
+			}
+			w.log("bridge: the room refused a hand-off (%s); it will not be retried, and your agent is told on its next room tool call", reason)
+			return false
+		}
 		if ferr := w.spool.Fail(e.IncidentID, e.ID, err); ferr != nil {
 			w.log("bridge: could not record failure for %s (%v)", e.ID, ferr)
 		}
@@ -382,6 +399,25 @@ func (w *Worker) Abandon(incidentID string) {
 	}
 }
 
+// claimBody is what POST /claims reads: the claim's `statement` (the server
+// answers 400 "statement required" without one, which is what every claim this
+// bridge staged got until 2026-09-28: the body it sent was the contribution
+// shape, `text` and all). The class is left out on purpose: the server infers
+// an absent class conservatively from the statement, never lower than the
+// text supports, which is the right call for a hand-off nobody classed.
+//
+// reuseIfStaged makes a republish idempotent. Reconciliation after a crash
+// cannot recognise a staged claim in the mirror (it records `text`, and a
+// claim carries `statement`), so an entry whose first publish landed is
+// republished; with this flag the server answers with the claim already
+// staged under the same author and statement instead of staging a second.
+func claimBody(e *spool.Entry) map[string]any {
+	return map[string]any{
+		"statement":     e.Text,
+		"reuseIfStaged": true,
+	}
+}
+
 // kindFor decides how an entry publishes. The caller's own word
 // (share_with_room's `kind`) wins over the classifier's guess from the text:
 // the agent said what this is, in the schema itself. An unknown value falls
@@ -396,6 +432,13 @@ func kindFor(e *spool.Entry) Kind {
 	}
 	if e.Widget != nil {
 		kind = KindWidget
+	}
+	// A claim the agent says came out of a failed tool call goes in as a
+	// finding. The claims endpoint has no field for that self-report, so a
+	// staged claim would lose it; a finding carries it (as the room's
+	// tool-error mark) and is staged for vetting by the server all the same.
+	if kind == KindClaim && e.SourceQueryFailed {
+		kind = KindFinding
 	}
 	return kind
 }

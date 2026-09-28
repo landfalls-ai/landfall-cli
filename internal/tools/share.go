@@ -111,17 +111,95 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 
 		if hr, ok := acc.(HeldReporter); ok {
 			if matched := hr.HeldReason(id); len(matched) > 0 {
-				return fmt.Sprintf("held — nothing left this machine. This names the person's working directory (%s), "+
+				return b.withRefusals(fmt.Sprintf("held — nothing left this machine. This names the person's working directory (%s), "+
 					"and they have not allowed working-directory content into this room. Tell them: `landfall held` lists it, "+
-					"`landfall allow-cwd` lets it through. Do not re-share it in other words.", strings.Join(matched, ", ")), nil
+					"`landfall allow-cwd` lets it through. Do not re-share it in other words.", strings.Join(matched, ", "))), nil
 			}
 		}
 		if redacted {
-			return "shared — but something in it looked like a credential and was replaced with [redacted] " +
-				"before it left this machine. Re-share without the secret if the room needs that detail.", nil
+			return b.withRefusals("shared — but something in it looked like a credential and was replaced with [redacted] " +
+				"before it left this machine. Re-share without the secret if the room needs that detail."), nil
 		}
-		return "shared — the room will have this shortly. Carry on; nothing to follow up.", nil
+		return b.withRefusals("shared — the room will have this shortly. Carry on; nothing to follow up."), nil
 	}
+}
+
+// Refusal is one earlier hand-off the room refused outright (a 4xx): what the
+// agent shared, and the room's own reason.
+type Refusal struct {
+	Text   string
+	Reason string
+}
+
+// RefusalReporter is an OPTIONAL capability of an Accepter: the hand-offs the
+// room refused that the agent has not been told about yet. Each is returned
+// once. The spool-backed Accepter implements it; without it, a refused
+// hand-off is still recorded, just never announced on a tool result.
+type RefusalReporter interface {
+	TakeRefusals(incidentID string) []Refusal
+}
+
+// refusalCap bounds how many refusals one tool result names individually.
+const refusalCap = 5
+
+// refusalsFor takes the room's untold refusals for the joined incident and
+// renders them, or "" when there are none (or no queue to ask). Called on
+// every room tool result, which is the only place an agent that was told
+// "shared" can learn the room said no.
+func (b *bridge) refusalsFor() string {
+	rr, ok := b.acc.(RefusalReporter)
+	if !ok {
+		return ""
+	}
+	cl := b.sess.Client()
+	if cl == nil {
+		return ""
+	}
+	return RenderRefusals(rr.TakeRefusals(cl.Config().IncidentID))
+}
+
+// RenderRefusals is the agent-facing text for refused hand-offs: one short
+// line each, naming the room's reason and enough of the text to tell which
+// share it was.
+func RenderRefusals(rs []Refusal) string {
+	if len(rs) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for i, r := range rs {
+		if i == refusalCap {
+			fmt.Fprintf(&sb, "And %d more the room refused.\n", len(rs)-refusalCap)
+			break
+		}
+		reason := strings.TrimSpace(r.Reason)
+		if reason == "" {
+			reason = "the room refused it"
+		}
+		fmt.Fprintf(&sb, "Your earlier share did not reach the room: %s (it began %s).\n", reason, quote(snippet(r.Text, 60)))
+	}
+	sb.WriteString("It will not be retried. Share it again, corrected, if the room still needs it.")
+	return sb.String()
+}
+
+// snippet is the first n characters of text on one line, with an ellipsis
+// when it was cut.
+func snippet(text string, n int) string {
+	one := strings.Join(strings.Fields(text), " ")
+	runes := []rune(one)
+	if len(runes) <= n {
+		return one
+	}
+	return string(runes[:n]) + "…"
+}
+
+// withRefusals puts untold refusals ahead of a tool result: they are about
+// the agent's own earlier work and ask something of it, the same reason vote
+// requests go first.
+func (b *bridge) withRefusals(result string) string {
+	if told := b.refusalsFor(); told != "" {
+		return told + "\n\n" + result
+	}
+	return result
 }
 
 // HeldReporter is an OPTIONAL capability of an Accepter: after Accept, it can

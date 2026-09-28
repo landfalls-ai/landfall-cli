@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -48,18 +49,26 @@ func (f *fakePub) Contribute(_ context.Context, kind string, body map[string]any
 		return f.failWith
 	}
 	if !serverContributionKinds[kind] {
-		return fmt.Errorf("/edge/contributions -> HTTP 400: unknown contribution kind %q", kind)
+		return &client.HTTPError{Path: "/edge/contributions", Status: 400, Reason: fmt.Sprintf("unknown contribution kind %q", kind)}
 	}
 	f.published = append(f.published, body)
 	return nil
 }
 
-// StageClaim is the claims endpoint — separate from contributions.
+// StageClaim is the claims endpoint, separate from contributions and with
+// its own body: the server's AdmissionService.stage reads `statement` and
+// answers 400 "statement required" without one. The fake refuses the same
+// way. It used to accept any body, which is how every claim the bridge ever
+// staged went out as `{text: ...}` and was refused by the real server while
+// this fake said it had been staged.
 func (f *fakePub) StageClaim(_ context.Context, body map[string]any) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.failWith != nil {
 		return f.failWith
+	}
+	if st, _ := body["statement"].(string); strings.TrimSpace(st) == "" {
+		return &client.HTTPError{Path: "/claims", Status: 400, Reason: "statement required"}
 	}
 	f.staged = append(f.staged, body)
 	return nil

@@ -17,10 +17,12 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
 	"github.com/landfalls-ai/landfall-cli/internal/session"
+	"github.com/landfalls-ai/landfall-cli/internal/spool"
 )
 
 // withWorkspace builds an isolated workspace under /tmp — short enough that a
@@ -220,5 +222,46 @@ func TestRunStatusWritesExactlyOneLineWhenThereIsSomethingToSay(t *testing.T) {
 	}
 	if strings.Contains(out.String(), "\n") {
 		t.Fatalf("a statusline command must write one line with no trailing newline, got %q", out.String())
+	}
+}
+
+// TestRunStatusCountsSharesTheRoomRefused: the person sees, where they are
+// working, that a share their agent was told went out did not reach the room.
+func TestRunStatusCountsSharesTheRoomRefused(t *testing.T) {
+	ws := withWorkspace(t)
+	ws.Env["XDG_STATE_HOME"] = ws.Cwd
+	sp, err := spool.Open(ws.Getenv, hooks.WorkspaceKey(ws.Dir()))
+	if err != nil {
+		t.Fatalf("spool.Open: %v", err)
+	}
+	for _, text := range []string{"the root cause is the rollback", "chart: p99"} {
+		e, aerr := sp.Accept("inc-1", "a-1", text, nil)
+		if aerr != nil {
+			t.Fatalf("Accept: %v", aerr)
+		}
+		if rerr := sp.Refuse("inc-1", e.ID, "statement required"); rerr != nil {
+			t.Fatalf("Refuse: %v", rerr)
+		}
+	}
+	// Another room's refusal is not this line's business.
+	other, _ := sp.Accept("inc-2", "a-1", "elsewhere", nil)
+	_ = sp.Refuse("inc-2", other.ID, "no")
+
+	WriteStatusCache(status("inc-1", 0, 0), ws)
+	plantDeadSocket(t, ws)
+
+	var out bytes.Buffer
+	if code := RunStatus(&UI{Out: &out, Err: io.Discard}, ws); code != 0 {
+		t.Fatalf("exit code %d", code)
+	}
+	if !strings.HasSuffix(out.String(), " · 2 shares refused") {
+		t.Fatalf("got %q, want the two refusals counted", out.String())
+	}
+
+	if got := spoolSuffix(ws, []string{"inc-1"}, time.Now().Add(spool.RefusedWindow+time.Minute)); got != "" {
+		t.Fatalf("an old refusal still shows: %q", got)
+	}
+	if got := spoolSuffix(ws, []string{"inc-2"}, time.Now()); got != " · 1 share refused" {
+		t.Fatalf("one refusal = %q", got)
 	}
 }

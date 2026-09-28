@@ -65,5 +65,21 @@ func (a *Accepter) Hold(incidentID, id string, matched []string) error {
 	return a.spool.Hold(incidentID, id, matched)
 }
 
+// TakeRefusals implements tools.RefusalReporter: the hand-offs the room
+// refused that the agent has not been told about, each returned once. A spool
+// that cannot be read answers nothing this time; the refusals stay untold and
+// come back on a later call.
+func (a *Accepter) TakeRefusals(incidentID string) []tools.Refusal {
+	entries, err := a.spool.TakeUnreported(incidentID)
+	if err != nil && len(entries) == 0 {
+		return nil
+	}
+	out := make([]tools.Refusal, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, tools.Refusal{Text: e.Text, Reason: e.Refusal})
+	}
+	return out
+}
+
 // Spool exposes the queue for the person commands that list and release holds.
 func (a *Accepter) Spool() *spool.Spool { return a.spool }

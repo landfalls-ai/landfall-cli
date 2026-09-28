@@ -335,6 +335,23 @@ landfall held drop <id>       # discard one
 
 The allowance is per room and survives a daemon restart. There is no MCP tool for any of this.
 
+### A share the room refuses
+
+`share_with_room` returns at once and publishes in the background, so the agent is told
+"shared" before the room has seen it. When the room then refuses it outright (a malformed
+widget, a claim for a room that has closed, any other 4xx), the hand-off is not retried: it is
+kept in this checkout's queue with the room's reason, your agent's next room tool call opens
+with one line per refusal, for example
+
+```
+Your earlier share did not reach the room: engagement is closed; admission is frozen (it began "the root cause is the rollback at 14:20").
+It will not be retried. Share it again, corrected, if the room still needs it.
+```
+
+and `landfall status` shows `· N shares refused` for an hour. A room that is only
+unreachable, slow, rate-limiting or failing on its own side is different: those hand-offs stay
+queued and publish when it answers.
+
 ## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 
 Configure the MCP server ONCE, with no tokens or IDs:

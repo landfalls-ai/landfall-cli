@@ -17,6 +17,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/realtime"
 )
 
 // IdleGrace is how long the daemon lives after its last reader detaches.
@@ -83,7 +84,7 @@ func New(opts Options) *Daemon {
 // ring rings the doorbell for each terminal reader whose untold set just
 // became non-empty with this event (the 0 → non-empty edge, as hooks.RingOnEdge).
 func (d *Daemon) ring(room *Room, evt client.Event) {
-	if isPlumbing(evt.Type) {
+	if !realtime.IsNews(evt) {
 		return
 	}
 	for _, rd := range room.Readers() {

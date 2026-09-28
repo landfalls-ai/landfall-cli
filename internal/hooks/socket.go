@@ -511,12 +511,13 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 	pid := opts.pid()
 	pending := sessionPending(s)
 	// What a person would want to be told about, as opposed to the room's
-	// machinery talking to itself — see internal/realtime/plumbing.go. Both
+	// machinery talking to itself: realtime.IsNews, the allow-list that mirrors
+	// the server's own delta classifier (internal/realtime/plumbing.go). Both
 	// the status line's "N new" and the hooks' count use this; maxSeq below
 	// still spans everything so a consume clears the plumbing too.
 	worthTelling := 0
 	for _, e := range pending {
-		if !realtime.IsPlumbing(e.Type) {
+		if realtime.IsNews(e) {
 			worthTelling++
 		}
 	}
@@ -529,7 +530,7 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 	if hq, ok := s.(humanQueue); ok {
 		untold = 0
 		for _, e := range hq.PendingForHuman() {
-			if !realtime.IsPlumbing(e.Type) {
+			if realtime.IsNews(e) {
 				untold++
 			}
 		}
@@ -572,7 +573,7 @@ func HandleSocketRequest(req SocketRequest, s SocketSession, opts HandleOptions)
 		// see before an admitted finding, and both before anything else.
 		var addressed, rest []string
 		for _, e := range pending {
-			if realtime.IsPlumbing(e.Type) {
+			if !realtime.IsNews(e) {
 				continue
 			}
 			line := narrate.FormatEventLine(e)

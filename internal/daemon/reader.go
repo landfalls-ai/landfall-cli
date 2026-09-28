@@ -55,12 +55,18 @@ const SilentReaderTTL = time.Hour
 func TerminalReaderName(workspaceKey string) string { return hooks.TerminalReaderName(workspaceKey) }
 
 // Untold is what this reader has not been shown: events past its cursor that
-// are not room machinery, addressed messages first, then by seq. Derived on
-// every call, never stored.
-func Untold(events []client.Event, cursor int64) []client.Event {
+// are investigator news (realtime.IsNews, the allow-list mirroring the
+// server's delta classifier), addressed messages first, then by seq. Derived
+// on every call, never stored.
+//
+// ownInstanceIDs are the agent instances whose writes are this reader's own
+// (its harness's seat): the room's ring keeps every harness's events, so a
+// sibling harness on the same machine is delivered, and only a reader's own
+// echo is left out. None means nothing is anyone's own.
+func Untold(events []client.Event, cursor int64, ownInstanceIDs ...string) []client.Event {
 	var addressed, rest []client.Event
 	for _, e := range events {
-		if e.Seq == nil || *e.Seq <= cursor || realtime.IsPlumbing(e.Type) {
+		if e.Seq == nil || *e.Seq <= cursor || !realtime.IsNews(e) || isOwn(e, ownInstanceIDs) {
 			continue
 		}
 		if IsAddressed(e) {
@@ -75,6 +81,19 @@ func Untold(events []client.Event, cursor int64) []client.Event {
 	bySeq(addressed)
 	bySeq(rest)
 	return append(addressed, rest...)
+}
+
+func isOwn(e client.Event, own []string) bool {
+	id := realtime.EventInstanceID(e)
+	if id == "" {
+		return false
+	}
+	for _, o := range own {
+		if o != "" && o == id {
+			return true
+		}
+	}
+	return false
 }
 
 // IsAddressed: a human's chat message that names someone. The daemon does not

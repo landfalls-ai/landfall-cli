@@ -296,6 +296,9 @@ func IsTemplated(payload Args) bool {
 func FormatEventLine(e client.Event) string {
 	who := EventActor(e.Payload)
 	what := EventText(e.Payload)
+	if what == "" && e.Type == "claim.admitted" {
+		what = admittedText(e.Payload)
+	}
 	marker := ""
 	if IsTemplated(e.Payload) {
 		marker = " (no evidence — templated, not analysis)"
@@ -309,6 +312,20 @@ func FormatEventLine(e client.Event) string {
 	}
 	line += marker
 	return line
+}
+
+// admittedText is what a claim.admitted row says when it carries no text of
+// its own: which claim, and how it got in (the server's delta summary uses the
+// same words).
+func admittedText(p Args) string {
+	how := "corroborated and admitted"
+	if t, _ := p["trigger"].(string); t == "human-override" {
+		how = "admitted directly"
+	}
+	if n, ok := p["claimSeq"].(float64); ok {
+		return fmt.Sprintf("#%d %s", int64(n), how)
+	}
+	return how
 }
 
 // truncate trims s to n runes (default 80, matching narrate.mjs's truncate),

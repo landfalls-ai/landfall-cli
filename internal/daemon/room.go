@@ -131,8 +131,11 @@ type Room struct {
 
 	// client is the primary seat's client, used for the room's shared reads
 	// (the frame, the backfill). Per-agent reads go through the seat's own.
-	client  session.EdgeClient
-	seats   map[string]*Seat
+	client session.EdgeClient
+	seats  map[string]*Seat
+	// seating holds a seat being joined, so a second attach for the same
+	// harness waits for it rather than joining (and leaving) a duplicate.
+	seating map[string]chan struct{}
 	primary string
 	events  []client.Event
 	frame   *client.ContextFrame
@@ -207,10 +210,34 @@ func joinSeat(ctx context.Context, cfg client.Config, deps Deps) (*Seat, error) 
 func (r *Room) EnsureSeat(ctx context.Context, cfg client.Config) (*Seat, error) {
 	label := SeatLabel(cfg)
 	r.mu.Lock()
-	if s, ok := r.seats[label]; ok {
+	for {
+		if s, ok := r.seats[label]; ok {
+			r.mu.Unlock()
+			return s, nil
+		}
+		wait, busy := r.seating[label]
+		if !busy {
+			break
+		}
 		r.mu.Unlock()
-		return s, nil
+		select {
+		case <-wait:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		r.mu.Lock()
 	}
+	if r.seating == nil {
+		r.seating = map[string]chan struct{}{}
+	}
+	done := make(chan struct{})
+	r.seating[label] = done
+	defer func() {
+		r.mu.Lock()
+		delete(r.seating, label)
+		r.mu.Unlock()
+		close(done)
+	}()
 	if cfg.Token == "" {
 		cfg.Token = r.Config.Token
 	}

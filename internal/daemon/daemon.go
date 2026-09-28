@@ -37,8 +37,12 @@ type Daemon struct {
 	opts    Options
 	handler *Handler
 
-	mu           sync.Mutex
-	roomsByKey   map[string]*Room
+	mu         sync.Mutex
+	roomsByKey map[string]*Room
+	// opening holds a room being opened, so a second attach for the same room
+	// waits for that join instead of making its own (which the server would
+	// record as a second, immediately-leaving participant).
+	opening      map[string]chan struct{}
 	fingerprints map[string]*Fingerprints
 	doorbells    map[string]*hooks.Doorbell
 	state        *State
@@ -274,25 +278,41 @@ func (d *Daemon) restore(ctx context.Context, st *State) {
 
 func (d *Daemon) openOrAttach(ctx context.Context, cfg client.Config) (*Room, error) {
 	key := RoomKey(cfg)
-	d.mu.Lock()
-	if r, ok := d.roomsByKey[key]; ok {
+	for {
+		d.mu.Lock()
+		if r, ok := d.roomsByKey[key]; ok {
+			d.mu.Unlock()
+			return r, nil
+		}
+		if wait, busy := d.opening[key]; busy {
+			d.mu.Unlock()
+			select {
+			case <-wait: // the first open finished (or failed); look again
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if d.opening == nil {
+			d.opening = map[string]chan struct{}{}
+		}
+		done := make(chan struct{})
+		d.opening[key] = done
 		d.mu.Unlock()
-		return r, nil
-	}
-	d.mu.Unlock()
-	room, err := OpenRoom(ctx, cfg, d.opts.Deps)
-	if err != nil {
-		return nil, err
-	}
-	d.mu.Lock()
-	if existing, ok := d.roomsByKey[key]; ok { // lost a race; keep the first
+
+		room, err := OpenRoom(ctx, cfg, d.opts.Deps)
+		d.mu.Lock()
+		delete(d.opening, key)
+		if err == nil {
+			d.roomsByKey[key] = room
+		}
 		d.mu.Unlock()
-		room.Close(ctx)
-		return existing, nil
+		close(done)
+		if err != nil {
+			return nil, err
+		}
+		return room, nil
 	}
-	d.roomsByKey[key] = room
-	d.mu.Unlock()
-	return room, nil
 }
 
 func (d *Daemon) room(key string) *Room {

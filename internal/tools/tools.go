@@ -175,7 +175,7 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 				"Call this the moment you see one, even if the user gave you nothing else. Do this first; afterwards " +
 				"read get_brief, then return to what the person was doing. Join in THIS session — do not hand the room to a " +
 				"background subagent on your own: it would share this session's read cursor and mark the room as seen for the person here.",
-			InputSchema: obj(map[string]any{"shareUrl": strProp("")}, "shareUrl"),
+			InputSchema: obj(map[string]any{"shareUrl": strProp("The room's share link, as given: https://<domain>/j/<code>.")}, "shareUrl"),
 			Handler:     b.joinWarRoom,
 		},
 		{
@@ -494,7 +494,15 @@ func constant(text string) handlerFunc {
 // the model has a usable brief in one call. A failed frame fetch degrades to a
 // parenthetical; it must never fail the join itself.
 func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, error) {
-	cfg, err := b.sess.JoinWarRoom(ctx, str(args, "shareUrl"))
+	// Agents guess the argument name: Codex called this with `url` on every
+	// run of the 2026-09-28 retest, spent a round trip on "not a Landfall
+	// agent share link: " (the empty value) and retried. Accept the common
+	// spellings, and name the argument when none is given.
+	link := firstNonEmpty(str(args, "shareUrl"), str(args, "url"), str(args, "link"), str(args, "shareLink"), str(args, "share_url"))
+	if link == "" {
+		return "", fmt.Errorf("join_war_room needs the room's share link in `shareUrl` (a https://…/j/<code> URL)")
+	}
+	cfg, err := b.sess.JoinWarRoom(ctx, link)
 	if err != nil {
 		return "", err
 	}
@@ -963,4 +971,14 @@ func textLike(contentType string) bool {
 		return true
 	}
 	return strings.HasSuffix(ct, "+json") || strings.HasSuffix(ct, "+xml")
+}
+
+// firstNonEmpty returns the first non-blank value.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if strings.TrimSpace(v) != "" {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
 }

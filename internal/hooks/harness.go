@@ -37,7 +37,7 @@ var knownHarnesses = []struct {
 	prefix bool
 	h      Harness
 }{
-	{names: []string{"claude-code", "claude code"}, h: Harness{Key: "claude-code", Label: "Claude Code"}},
+	{names: []string{"claude-code", "claude code"}, prefix: true, h: Harness{Key: "claude-code", Label: "Claude Code"}},
 	{names: []string{"codex-mcp-client", "codex"}, h: Harness{Key: "codex", Label: "Codex"}},
 	{names: []string{"cursor"}, prefix: true, h: Harness{Key: "cursor", Label: "Cursor"}},
 	{names: []string{"visual studio code", "vscode"}, prefix: true, h: Harness{Key: "vscode", Label: "VS Code"}},
@@ -121,8 +121,11 @@ var codexEnvHints = []string{"CODEX_THREAD_ID", "CODEX_SANDBOX", "CODEX_SANDBOX_
 //
 //  1. `--host <id>` on the command line (the installer writes it for Cursor);
 //  2. LANDFALL_HARNESS, an explicit override for any host;
-//  3. CLAUDECODE=1, which Claude Code sets for everything it runs;
-//  4. the payload's transcript_path, under ~/.codex/ or ~/.claude/;
+//  3. the payload's transcript_path, under ~/.codex/ or ~/.claude/: the host
+//     wrote it for this very invocation;
+//  4. CLAUDECODE=1, which Claude Code sets for everything it runs, and which
+//     a host started from inside a Claude Code session also inherits, hence
+//     after the payload;
 //  5. an environment variable only Codex sets.
 //
 // "" is not an error: the daemon then answers for this workspace's harness-less
@@ -137,9 +140,6 @@ func DetectHookHarness(hostFlag, input string, getenv func(string) string) strin
 	}
 	if h := HarnessFromClientName(getenv("LANDFALL_HARNESS")); h.Key != "" {
 		return h.Key
-	}
-	if getenv("CLAUDECODE") == "1" {
-		return "claude-code"
 	}
 	if input != "" {
 		var p struct {
@@ -158,6 +158,9 @@ func DetectHookHarness(hostFlag, input string, getenv func(string) string) strin
 				return "claude-code"
 			}
 		}
+	}
+	if getenv("CLAUDECODE") == "1" {
+		return "claude-code"
 	}
 	for _, k := range codexEnvHints {
 		if getenv(k) != "" {

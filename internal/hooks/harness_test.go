@@ -45,6 +45,7 @@ func TestDetectHookHarnessReadsTheFlagThenTheHostsOwnMarkers(t *testing.T) {
 		{"codex transcript", "", `{"transcript_path":"/Users/p/.codex/sessions/2026/09/28/rollout.jsonl"}`, nil, "codex"},
 		{"claude transcript", "", `{"transcript_path":"/Users/p/.claude/projects/x/abc.jsonl"}`, nil, "claude-code"},
 		{"codex env", "", `{}`, map[string]string{"CODEX_THREAD_ID": "t-1"}, "codex"},
+		{"payload beats an inherited CLAUDECODE", "", `{"transcript_path":"/Users/p/.codex/sessions/r.jsonl"}`, map[string]string{"CLAUDECODE": "1"}, "codex"},
 		{"nothing says", "", `not json`, nil, ""},
 	}
 	for _, c := range cases {

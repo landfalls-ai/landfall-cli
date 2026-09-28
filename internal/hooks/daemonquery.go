@@ -47,7 +47,7 @@ func DaemonRoomKeyOf(socketPath string) string {
 // not answer in time, or it has no room this workspace reads — every one of
 // which means "ask the per-pid sockets alone", never an error.
 func DaemonPeek(ws Workspace, timeout time.Duration) []SocketAnswer {
-	res, err := SendToSocket(DaemonSocketPath(ws), SocketRequest{Op: "peek", WorkspaceKey: WorkspaceKey(ws.Dir())}, timeout)
+	res, err := SendToSocket(DaemonSocketPath(ws), SocketRequest{Op: "peek", WorkspaceKey: WorkspaceKey(ws.Dir()), Harness: ws.Harness}, timeout)
 	if err != nil || res == nil || !res.OK {
 		return nil
 	}
@@ -71,6 +71,9 @@ func DaemonPeek(ws Workspace, timeout time.Duration) []SocketAnswer {
 // sockets, merged per incident as the file header describes. Only `peek` is
 // answered by the daemon; any other verb goes to the per-pid sockets alone.
 func QueryWorkspace(req SocketRequest, ws Workspace, timeout time.Duration) []SocketAnswer {
+	if req.Harness == "" {
+		req.Harness = ws.Harness
+	}
 	perPid := QueryHookSockets(req, ws, timeout)
 	if req.verb() != "peek" {
 		return perPid
@@ -104,13 +107,24 @@ func MergeAnswers(fromDaemon, perPid []SocketAnswer) []SocketAnswer {
 // SendToAnswer sends a follow-up (a consume) to wherever an answer came from:
 // the daemon, for the terminal reader of this workspace and the answer's room,
 // or the per-pid socket named by the path.
+//
+// The daemon consume names the workspace and harness and lets the daemon
+// resolve them to the same terminal reader(s) its peek answered for. It also
+// names the harness-less reader, which is the whole request a daemon of an
+// older build understands (one still running across an upgrade peeks and
+// consumes that reader, and ignores the harness); a current daemon resolves
+// by harness whenever one is given.
 func SendToAnswer(ws Workspace, socketPath string, req SocketRequest, timeout time.Duration) error {
+	if req.Harness == "" {
+		req.Harness = ws.Harness
+	}
 	if !IsDaemonAnswer(socketPath) {
 		_, err := SendToSocket(socketPath, req, timeout)
 		return err
 	}
 	req.RoomKey = DaemonRoomKeyOf(socketPath)
-	req.ReaderName = TerminalReaderName(WorkspaceKey(ws.Dir()))
+	req.WorkspaceKey = WorkspaceKey(ws.Dir())
+	req.ReaderName = TerminalReaderName(req.WorkspaceKey)
 	res, err := SendToSocket(DaemonSocketPath(ws), req, timeout)
 	if err != nil {
 		return err

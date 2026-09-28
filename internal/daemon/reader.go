@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"sort"
 	"strings"
@@ -33,15 +35,21 @@ func ParseKind(s string) (Kind, error) {
 
 // Reader is a named consumer of one room with its own cursor.
 type Reader struct {
-	Name         string    `json:"name"`
-	Kind         Kind      `json:"kind"`
-	Host         string    `json:"host"`
-	WorkspaceKey string    `json:"workspaceKey"`
-	Workspace    string    `json:"workspace,omitempty"`
-	Cursor       int64     `json:"cursor"`
-	AttachedAt   time.Time `json:"attachedAt"`
-	LastSeenAt   time.Time `json:"lastSeenAt"`
-	Connected    bool      `json:"connected"`
+	Name         string `json:"name"`
+	Kind         Kind   `json:"kind"`
+	Host         string `json:"host"`
+	WorkspaceKey string `json:"workspaceKey"`
+	Workspace    string `json:"workspace,omitempty"`
+	// Harness is the agent host this reader belongs to (hooks.Harness key);
+	// Seat is the label of that harness's agent session in the room. A
+	// terminal reader carries both, so the person's view in Claude Code and
+	// in Codex are two readers with two cursors.
+	Harness    string    `json:"harness,omitempty"`
+	Seat       string    `json:"seat,omitempty"`
+	Cursor     int64     `json:"cursor"`
+	AttachedAt time.Time `json:"attachedAt"`
+	LastSeenAt time.Time `json:"lastSeenAt"`
+	Connected  bool      `json:"connected"`
 }
 
 // SilentReaderTTL is how long a reader that detached (or vanished) keeps its
@@ -54,13 +62,36 @@ const SilentReaderTTL = time.Hour
 // without this package.
 func TerminalReaderName(workspaceKey string) string { return hooks.TerminalReaderName(workspaceKey) }
 
+// TerminalReaderNameFor is the person's reader at a checkout in one harness
+// (hooks.TerminalReaderNameFor); no harness is TerminalReaderName.
+func TerminalReaderNameFor(workspaceKey, harness string) string {
+	return hooks.TerminalReaderNameFor(workspaceKey, harness)
+}
+
+// LinkHash is how the daemon remembers a share link without writing down the
+// credential it carries: a truncated sha256 of the trimmed link text.
+func LinkHash(link string) string {
+	link = strings.TrimSpace(link)
+	if link == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(link))
+	return hex.EncodeToString(sum[:16])
+}
+
 // Untold is what this reader has not been shown: events past its cursor that
-// are not room machinery, addressed messages first, then by seq. Derived on
-// every call, never stored.
-func Untold(events []client.Event, cursor int64) []client.Event {
+// are investigator news (realtime.IsNews, the allow-list mirroring the
+// server's delta classifier), addressed messages first, then by seq. Derived
+// on every call, never stored.
+//
+// ownInstanceIDs are the agent instances whose writes are this reader's own
+// (its harness's seat): the room's ring keeps every harness's events, so a
+// sibling harness on the same machine is delivered, and only a reader's own
+// echo is left out. None means nothing is anyone's own.
+func Untold(events []client.Event, cursor int64, ownInstanceIDs ...string) []client.Event {
 	var addressed, rest []client.Event
 	for _, e := range events {
-		if e.Seq == nil || *e.Seq <= cursor || realtime.IsPlumbing(e.Type) {
+		if e.Seq == nil || *e.Seq <= cursor || !realtime.IsNews(e) || isOwn(e, ownInstanceIDs) {
 			continue
 		}
 		if IsAddressed(e) {
@@ -75,6 +106,19 @@ func Untold(events []client.Event, cursor int64) []client.Event {
 	bySeq(addressed)
 	bySeq(rest)
 	return append(addressed, rest...)
+}
+
+func isOwn(e client.Event, own []string) bool {
+	id := realtime.EventInstanceID(e)
+	if id == "" {
+		return false
+	}
+	for _, o := range own {
+		if o != "" && o == id {
+			return true
+		}
+	}
+	return false
 }
 
 // IsAddressed: a human's chat message that names someone. The daemon does not

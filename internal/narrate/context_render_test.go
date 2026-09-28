@@ -1,6 +1,7 @@
 package narrate
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -284,5 +285,63 @@ func TestRenderFrame_ScopeStaysAboveTheFooter(t *testing.T) {
 	})
 	if strings.Index(got, "Scope pinned") > strings.Index(got, "As of seq") {
 		t.Errorf("scope rendered below the footer; full output:\n%s", got)
+	}
+}
+
+func TestRenderFrame_SaysHowAnEstablishedItemWasAdmitted(t *testing.T) {
+	frame := &client.ContextFrame{Brief: client.Brief{
+		Established: []client.BriefItem{
+			{Seq: 3, Statement: "origin pool unhealthy", By: "Dana", Basis: "evidence", Admission: &client.BriefAdmission{
+				Trigger:       "bar-met",
+				Corroborators: []client.BriefCorroborator{{By: "pickjonathan", Kind: "member"}, {By: "Jhonny · Codex", Kind: "agent", Reason: "same 5xx in the ALB logs"}},
+			}},
+			{Seq: 4, Statement: "rollback is safe", By: "Alex", Admission: &client.BriefAdmission{Trigger: "human-override", DecidedBy: "Jhonny", Reason: "verified on staging"}},
+			{Seq: 5, Statement: "an item from an older server", By: "Alex"},
+		},
+	}}
+	got := RenderFrame(frame)
+	for _, want := range []string{
+		"  #3 origin pool unhealthy — Dana\n     admitted: corroborated by pickjonathan (member); Jhonny · Codex (agent): same 5xx in the ALB logs",
+		"  #4 rollback is safe — Alex\n     admitted by override: Jhonny (reason: verified on staging)",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("RenderFrame missing %q; full output:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "#5 an item from an older server — Alex\n     admitted") {
+		t.Errorf("an item with no admission must render nothing extra:\n%s", got)
+	}
+}
+
+func TestBriefItemDecodesAdmissionAndBasis(t *testing.T) {
+	raw := `{"seq":3,"statement":"s","by":"Dana","basis":"evidence","admission":{"trigger":"human-override","decidedBy":"Jhonny","reason":"r","corroborators":[{"by":"pickjonathan","kind":"member"}]}}`
+	var it client.BriefItem
+	if err := json.Unmarshal([]byte(raw), &it); err != nil {
+		t.Fatal(err)
+	}
+	if it.Basis != "evidence" || it.Admission == nil || it.Admission.DecidedBy != "Jhonny" || len(it.Admission.Corroborators) != 1 {
+		t.Fatalf("decoded %+v", it)
+	}
+	var old client.BriefItem
+	if err := json.Unmarshal([]byte(`{"seq":1,"statement":"s","by":"x"}`), &old); err != nil || old.Admission != nil {
+		t.Fatalf("an older server's item must decode with no admission: %+v %v", old, err)
+	}
+}
+
+func TestRenderDelta_RendersAClaimAdmittedItemLikeAnyOther(t *testing.T) {
+	to := int64(9)
+	got := RenderDelta(&client.FrameDelta{ToVersion: &to, Items: []client.DeltaItem{
+		{Seq: 9, Type: "claim.admitted", By: "pickjonathan", Class: "substantive", Summary: "#7 corroborated and admitted: origin pool unhealthy"},
+	}})
+	if !strings.Contains(got, "#9 claim.admitted [pickjonathan]") || !strings.Contains(got, "#7 corroborated and admitted: origin pool unhealthy") {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestFormatEventLine_ClaimAdmittedWithNoTextSaysWhichClaim(t *testing.T) {
+	n := int64(12)
+	got := FormatEventLine(client.Event{Seq: &n, Type: "claim.admitted", Payload: map[string]any{"claimSeq": float64(7), "trigger": "bar-met"}})
+	if !strings.Contains(got, "#7 corroborated and admitted") {
+		t.Fatalf("got %q", got)
 	}
 }

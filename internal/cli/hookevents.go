@@ -92,8 +92,13 @@ func runHookEventCommand(ctx context.Context, ui *UI, eventID string, argv []str
 		// inferring the output contract from an unfamiliar payload would be a
 		// guess (#228).
 		Host: f.host,
-		Log:  ui.Log,
-		Emit: emit,
+		// Which harness's person-reader this hook reads and marks read. Unlike
+		// the output contract this IS inferred when no flag says (Claude Code
+		// and Codex share the bare command), and "unknown" is safe: the daemon
+		// then answers as every hook did before harnesses were told apart.
+		Workspace: hooks.Workspace{Harness: hooks.DetectHookHarness(f.host, input, os.Getenv)},
+		Log:       ui.Log,
+		Emit:      emit,
 	})
 
 	// A handler emits its own output as it decides, in the order the contract

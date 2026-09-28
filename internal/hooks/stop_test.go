@@ -522,3 +522,42 @@ func TestRunHookEventRoutesStopToTheRegisteredHandler(t *testing.T) {
 		t.Fatalf("got %+v / %v", got, emitted)
 	}
 }
+
+// 2026-09-28: a Stop hook refused a conclusion over the room's own system
+// noise (an on-call schedule lookup, a voice recording starting and stopping).
+// None of it is news; the cursor still moves past it on the next consume.
+func TestStopDoesNotBlockOnOnCallOrVoiceRecordingNoise(t *testing.T) {
+	s := session.New(session.Options{Client: client.New(client.Config{IncidentID: "inc-1", Slug: "acme"}, nil)})
+	for i, typ := range []string{"oncall.schedule.resolved", "voice.recording_started", "voice.recording_stopped", "agent.step"} {
+		n := int64(i + 1)
+		s.EnqueueEvent(context.Background(), client.Event{Seq: &n, Type: typ, ActorType: "system", Payload: map[string]any{"text": typ}})
+	}
+	answer := peekOfSession(t, "/s", s)
+	if c := answer.Response.CountOr(-1); c != 0 {
+		t.Fatalf("system noise must count as nothing new, count = %d", c)
+	}
+	if answer.Response.MaxSeqOr(-1) != 4 {
+		t.Fatalf("maxSeq must still span the noise so a consume clears it, got %d", answer.Response.MaxSeqOr(-1))
+	}
+	if d := BuildStopDecision([]SocketAnswer{answer}, 0); d.Block {
+		t.Fatalf("the stop hook blocked on system noise:\n%s", d.Reason)
+	}
+
+	// The same room with one real finding on top of the noise blocks, and the
+	// digest names only the finding.
+	n := int64(5)
+	s.EnqueueEvent(context.Background(), client.Event{Seq: &n, Type: "edge.finding", Payload: map[string]any{"displayName": "Ana", "text": "origin 5xx"}})
+	d := BuildStopDecision([]SocketAnswer{peekOfSession(t, "/s", s)}, 0)
+	if !d.Block || !strings.Contains(d.Reason, "1 update(s)") || strings.Contains(d.Reason, "oncall") || strings.Contains(d.Reason, "voice.recording") {
+		t.Fatalf("want a block naming only the finding, got:\n%s", d.Reason)
+	}
+}
+
+func TestStopDoesNotBlockOnAnotherAgentsChatLine(t *testing.T) {
+	s := session.New(session.Options{Client: client.New(client.Config{IncidentID: "inc-1", Slug: "acme"}, nil)})
+	n := int64(1)
+	s.EnqueueEvent(context.Background(), client.Event{Seq: &n, Type: "chat.message", Payload: map[string]any{"text": "checking the cache", "agentInstanceId": "inst-9", "edgeAgentLabel": "Codex"}})
+	if d := BuildStopDecision([]SocketAnswer{peekOfSession(t, "/s", s)}, 0); d.Block {
+		t.Fatalf("an agent's chat line is not a reason to stop anyone:\n%s", d.Reason)
+	}
+}

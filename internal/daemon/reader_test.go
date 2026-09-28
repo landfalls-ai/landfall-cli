@@ -52,3 +52,17 @@ func TestParseKindRefusesTheUnknown(t *testing.T) {
 		t.Fatal("an unknown kind must be refused, not guessed")
 	}
 }
+
+func TestUntoldCountsOnlyInvestigatorNews(t *testing.T) {
+	events := []client.Event{
+		{Seq: seq(1), Type: "oncall.schedule.resolved", ActorType: "system"},
+		{Seq: seq(2), Type: "voice.recording_started"},
+		{Seq: seq(3), Type: "voice.recording_stopped"},
+		{Seq: seq(4), Type: "chat.message", Payload: map[string]any{"text": "on it", "agentInstanceId": "inst-2"}},
+		{Seq: seq(5), Type: "claim.corroborated"},
+	}
+	got := Untold(events, 0)
+	if len(got) != 1 || *got[0].Seq != 5 {
+		t.Fatalf("untold = %+v, want only the corroboration", got)
+	}
+}

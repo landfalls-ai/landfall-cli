@@ -17,6 +17,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/realtime"
 )
 
 // IdleGrace is how long the daemon lives after its last reader detaches.
@@ -36,14 +37,22 @@ type Daemon struct {
 	opts    Options
 	handler *Handler
 
-	mu           sync.Mutex
-	roomsByKey   map[string]*Room
+	mu         sync.Mutex
+	roomsByKey map[string]*Room
+	// opening holds a room being opened, so a second attach for the same room
+	// waits for that join instead of making its own (which the server would
+	// record as a second, immediately-leaving participant).
+	opening      map[string]chan struct{}
 	fingerprints map[string]*Fingerprints
 	doorbells    map[string]*hooks.Doorbell
 	state        *State
 	statePath    string
-	stopCh       chan struct{}
-	stopOnce     sync.Once
+	links        linkBook
+	// loggedOnce keeps a repeated diagnostic (a hook whose harness has no
+	// reader here) to one line per key.
+	loggedOnce map[string]bool
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 // New builds a daemon (does not start it).
@@ -73,7 +82,10 @@ func New(opts Options) *Daemon {
 	userOnEvent := d.opts.Deps.OnEvent
 	d.opts.Deps.OnEvent = func(room *Room, evt client.Event) {
 		d.ring(room, evt)
-		if userOnEvent != nil {
+		// The OS notification is for the room talking to the person; one of
+		// this machine's own agents writing is not that, whichever harness it
+		// runs in.
+		if userOnEvent != nil && !room.FromThisMachine(evt) {
 			userOnEvent(room, evt)
 		}
 	}
@@ -83,7 +95,7 @@ func New(opts Options) *Daemon {
 // ring rings the doorbell for each terminal reader whose untold set just
 // became non-empty with this event (the 0 → non-empty edge, as hooks.RingOnEdge).
 func (d *Daemon) ring(room *Room, evt client.Event) {
-	if isPlumbing(evt.Type) {
+	if !realtime.IsNews(evt) {
 		return
 	}
 	for _, rd := range room.Readers() {
@@ -91,7 +103,9 @@ func (d *Daemon) ring(room *Room, evt client.Event) {
 			continue
 		}
 		untold := room.UntoldFor(rd.Name)
-		if len(untold) != 1 {
+		// The edge: this event is the one and only thing untold to this reader
+		// (its own harness's write is never in its untold set).
+		if len(untold) != 1 || untold[0].SeqOr(-1) != evt.SeqOr(-2) {
 			continue
 		}
 		d.mu.Lock()
@@ -168,6 +182,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 			d.shutdown(true)
 			return nil
 		case <-ticker.C:
+			d.reapSeats()
 			if d.idle() {
 				d.opts.Log("no reader for " + d.opts.IdleGrace.String() + "; leaving rooms and exiting")
 				d.shutdown(false)
@@ -194,6 +209,23 @@ func (d *Daemon) idle() bool {
 	return true
 }
 
+// reapSeats leaves the agent session of a harness whose front ends have all
+// gone, while another harness still reads the room (Room.ReapSeats).
+func (d *Daemon) reapSeats() {
+	changed := false
+	for _, r := range d.rooms() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		for _, label := range r.ReapSeats(ctx, d.opts.IdleGrace) {
+			d.opts.Log(fmt.Sprintf("left %s as %q: no reader for %s", r.Config.IncidentID, label, d.opts.IdleGrace))
+			changed = true
+		}
+		cancel()
+	}
+	if changed {
+		d.save()
+	}
+}
+
 // shutdown leaves every room. keepRooms says whether they are written to
 // state for the next daemon to rejoin: true for a stop or a signal (readers
 // may still be there and will re-attach, spec FR-013), false for an idle exit
@@ -211,6 +243,19 @@ func (d *Daemon) shutdown(keepRooms bool) {
 	defer cancel()
 	for _, r := range rooms {
 		r.Close(ctx)
+	}
+}
+
+func (d *Daemon) logOnce(key, msg string) {
+	d.mu.Lock()
+	if d.loggedOnce == nil {
+		d.loggedOnce = map[string]bool{}
+	}
+	seen := d.loggedOnce[key]
+	d.loggedOnce[key] = true
+	d.mu.Unlock()
+	if !seen {
+		d.opts.Log(msg)
 	}
 }
 
@@ -233,25 +278,41 @@ func (d *Daemon) restore(ctx context.Context, st *State) {
 
 func (d *Daemon) openOrAttach(ctx context.Context, cfg client.Config) (*Room, error) {
 	key := RoomKey(cfg)
-	d.mu.Lock()
-	if r, ok := d.roomsByKey[key]; ok {
+	for {
+		d.mu.Lock()
+		if r, ok := d.roomsByKey[key]; ok {
+			d.mu.Unlock()
+			return r, nil
+		}
+		if wait, busy := d.opening[key]; busy {
+			d.mu.Unlock()
+			select {
+			case <-wait: // the first open finished (or failed); look again
+				continue
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		if d.opening == nil {
+			d.opening = map[string]chan struct{}{}
+		}
+		done := make(chan struct{})
+		d.opening[key] = done
 		d.mu.Unlock()
-		return r, nil
-	}
-	d.mu.Unlock()
-	room, err := OpenRoom(ctx, cfg, d.opts.Deps)
-	if err != nil {
-		return nil, err
-	}
-	d.mu.Lock()
-	if existing, ok := d.roomsByKey[key]; ok { // lost a race; keep the first
+
+		room, err := OpenRoom(ctx, cfg, d.opts.Deps)
+		d.mu.Lock()
+		delete(d.opening, key)
+		if err == nil {
+			d.roomsByKey[key] = room
+		}
 		d.mu.Unlock()
-		room.Close(ctx)
-		return existing, nil
+		close(done)
+		if err != nil {
+			return nil, err
+		}
+		return room, nil
 	}
-	d.roomsByKey[key] = room
-	d.mu.Unlock()
-	return room, nil
 }
 
 func (d *Daemon) room(key string) *Room {
@@ -329,6 +390,27 @@ func reach(ws hooks.Workspace) (*Response, error) {
 	return Send(hooks.DaemonSocketPath(ws), Request{Op: "rooms"}, 1500*time.Millisecond)
 }
 
+// HandoverWait is how long a front end waits for an older daemon to exit
+// after asking it to: it leaves each room (bounded at 5 s) first.
+const HandoverWait = 10 * time.Second
+
+// handOver asks the running daemon to stop and waits until it has let go of
+// both its socket and its lock, so the daemon spawned next can take them.
+func handOver(ws hooks.Workspace) bool {
+	sock := hooks.DaemonSocketPath(ws)
+	_, _ = Send(sock, Request{Op: "stop"}, time.Second)
+	lockPath := filepath.Join(hooks.RuntimeDir(ws), "daemon.lock")
+	deadline := time.Now().Add(HandoverWait)
+	for time.Now().Before(deadline) {
+		if unlock, err := lock(lockPath); err == nil {
+			unlock()
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
+}
+
 // SpawnWait is how long a `serve` waits for a daemon it just spawned. The
 // daemon binds its socket only after restoring the rooms of its state file,
 // and each restore is a join round trip plus a backfill against the server.
@@ -341,8 +423,25 @@ func EnsureRunning(ws hooks.Workspace, spawn func() error, log func(string)) boo
 	if os.Getenv("LANDFALL_DAEMON") == "0" {
 		return false
 	}
-	if Reachable(ws) {
+	_, rerr := reach(ws)
+	if rerr == nil {
 		return true
+	}
+	var ve *VersionError
+	if errors.As(rerr, &ve) {
+		if ve.Theirs > ve.Ours {
+			log(fmt.Sprintf("a newer room daemon (protocol %d) is running; running in-process (one cursor per process). Update landfall to share it.", ve.Theirs))
+			return false
+		}
+		// An older daemon would fold every harness on this machine back into
+		// one agent session until it idles out. Ask it to hand over: it saves
+		// its rooms and readers, leaves, and exits; the daemon spawned below
+		// restores them.
+		log(fmt.Sprintf("an older room daemon (protocol %d) is running; asking it to hand over to this version", ve.Theirs))
+		if !handOver(ws) {
+			log("the older room daemon did not exit in time; running in-process (one cursor per process)")
+			return false
+		}
 	}
 	if spawn == nil {
 		spawn = DefaultSpawn(ws)

@@ -56,8 +56,49 @@ func briefLines(items []client.BriefItem, heading string) []string {
 	lines = append(lines, heading+":")
 	for _, it := range items {
 		lines = append(lines, fmt.Sprintf("  #%d %s — %s", it.Seq, it.Statement, it.By))
+		if a := admissionLine(it.Admission); a != "" {
+			lines = append(lines, "     "+a)
+		}
 	}
 	return lines
+}
+
+// admissionLine says how an item got into the main context, so an agent
+// reading the brief knows who vouched for what. "" when the server did not
+// say (an older server, or an item that was never admitted).
+func admissionLine(a *client.BriefAdmission) string {
+	if a == nil {
+		return ""
+	}
+	if a.Trigger == "human-override" {
+		who := a.DecidedBy
+		if who == "" {
+			who = "an admin"
+		}
+		line := "admitted by override: " + who
+		if r := strings.TrimSpace(a.Reason); r != "" {
+			line += " (reason: " + r + ")"
+		}
+		return line
+	}
+	if len(a.Corroborators) == 0 {
+		return "admitted: the room's bar was met"
+	}
+	parts := make([]string, 0, len(a.Corroborators))
+	for _, c := range a.Corroborators {
+		who := c.By
+		if who == "" {
+			who = "someone"
+		}
+		if c.Kind != "" {
+			who += " (" + c.Kind + ")"
+		}
+		if r := strings.TrimSpace(c.Reason); r != "" {
+			who += ": " + r
+		}
+		parts = append(parts, who)
+	}
+	return "admitted: corroborated by " + strings.Join(parts, "; ")
 }
 
 // --- the room's pinned scope (monorepo 20260921-101054) --------------------

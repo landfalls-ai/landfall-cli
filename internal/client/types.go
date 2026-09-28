@@ -20,6 +20,10 @@ type Event struct {
 	Seq     *int64         `json:"seq"`
 	Type    string         `json:"type"`
 	Payload map[string]any `json:"payload,omitempty"`
+	// ActorType is the server's own word for who wrote the row ("human",
+	// "system", "agent"). Absent on older rows and on some fixtures, so a
+	// reader must treat "" as "not known", never as "human" by itself.
+	ActorType string `json:"actorType,omitempty"`
 
 	Raw json.RawMessage `json:"-"`
 }
@@ -74,6 +78,29 @@ type BriefItem struct {
 	Seq       int64  `json:"seq"`
 	Statement string `json:"statement"`
 	By        string `json:"by"`
+	// Basis is the server's word for what the item rests on. Optional.
+	Basis string `json:"basis,omitempty"`
+	// Admission is how an admitted claim got into the main context: the bar
+	// was met by the corroborations listed, or an admin admitted it directly.
+	// Absent on an older server and on anything not admitted.
+	Admission *BriefAdmission `json:"admission,omitempty"`
+}
+
+// BriefAdmission is how one brief item was admitted. Names are display names,
+// never ids.
+type BriefAdmission struct {
+	// Trigger is "bar-met" or "human-override".
+	Trigger       string              `json:"trigger"`
+	DecidedBy     string              `json:"decidedBy,omitempty"`
+	Reason        string              `json:"reason,omitempty"`
+	Corroborators []BriefCorroborator `json:"corroborators"`
+}
+
+// BriefCorroborator is one vote the admission gate counted.
+type BriefCorroborator struct {
+	By     string `json:"by"`
+	Kind   string `json:"kind"`
+	Reason string `json:"reason,omitempty"`
 }
 
 // Brief is the established-vs-open summary carried by a ContextFrame.

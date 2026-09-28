@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -259,7 +260,14 @@ func (h *serveHarness) waitForStderr(want string) {
 		}
 		time.Sleep(2 * time.Millisecond)
 	}
-	h.t.Fatalf("timed out waiting for %q on stderr; got:\n%s", want, h.errBuf.String())
+	h.t.Fatalf("timed out waiting for %q on stderr; got:\n%s\n%s", want, h.errBuf.String(), goroutineDump())
+}
+
+// goroutineDump is every goroutine's stack: on a CI runner a wait that timed
+// out says nothing about WHERE serve was stuck without it.
+func goroutineDump() string {
+	buf := make([]byte, 1<<20)
+	return "goroutines:\n" + string(buf[:runtime.Stack(buf, true)])
 }
 
 // rpc writes one JSON-RPC frame and reads the one response it produces.

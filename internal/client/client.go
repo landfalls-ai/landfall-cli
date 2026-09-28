@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Doer is the injectable transport. *http.Client satisfies it.
@@ -46,10 +47,21 @@ type Client struct {
 	agentInstanceID string
 }
 
-// New builds a client. A nil Doer falls back to http.DefaultClient.
+// RequestTimeout bounds one edge/* request made with the default transport.
+// http.DefaultClient has no timeout at all, so a server that accepted a
+// connection and never answered held a join (and the MCP handshake waiting
+// on it) open indefinitely. Generous, because an artifact upload rides the
+// same client.
+const RequestTimeout = 60 * time.Second
+
+// defaultHTTP is the transport a client gets when the caller supplies none.
+var defaultHTTP = &http.Client{Timeout: RequestTimeout}
+
+// New builds a client. A nil Doer falls back to an http.Client bounded by
+// RequestTimeout.
 func New(cfg Config, doer Doer) *Client {
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = defaultHTTP
 	}
 	return &Client{cfg: cfg, http: doer}
 }

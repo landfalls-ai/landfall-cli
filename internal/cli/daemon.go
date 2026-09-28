@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,7 +22,9 @@ func newDaemonCommand(ui *UI) *cobra.Command {
 	c := newCommand(ui, "daemon", func(cmd *cobra.Command, args []string) error {
 		ws := hooks.Workspace{}
 		if len(args) > 0 && args[0] == "stop" {
-			if _, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "stop"}, time.Second); err != nil {
+			// A daemon of another protocol still took the request.
+			var ve *daemon.VersionError
+			if _, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "stop"}, time.Second); err != nil && !errors.As(err, &ve) {
 				ui.Outf("no room daemon is running\n")
 				return nil
 			}
@@ -69,6 +72,10 @@ func daemonOptions(ui *UI, ws hooks.Workspace) daemon.Options {
 func newRoomsCommand(ui *UI) *cobra.Command {
 	c := newCommand(ui, "rooms", func(_ *cobra.Command, args []string) error {
 		res, err := daemon.Send(hooks.DaemonSocketPath(hooks.Workspace{}), daemon.Request{Op: "rooms"}, time.Second)
+		var ve *daemon.VersionError
+		if errors.As(err, &ve) && res != nil {
+			err = nil // an older daemon's room list reads the same
+		}
 		if err != nil {
 			ui.Outf("no room daemon is running; nothing is open on this machine\n")
 			return nil
@@ -82,6 +89,9 @@ func newRoomsCommand(ui *UI) *cobra.Command {
 		}
 		for _, r := range res.Rooms {
 			ui.Outf("%s/%s  %s\n", r.Slug, r.IncidentID, r.Connection)
+			for _, s := range r.Seats {
+				ui.Outf("  agent session %-26q instance %s\n", s.Label, s.InstanceID)
+			}
 			for _, rd := range r.Readers {
 				state := "detached"
 				if rd.Connected {

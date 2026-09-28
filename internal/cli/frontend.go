@@ -29,6 +29,9 @@ type frontEnd struct {
 	socketPath string
 	log        func(string)
 
+	// mu guards everything below: the MCP loop writes host/harness on
+	// initialize, a background join and ensure() write the attachment, and
+	// the hook socket's goroutines read all of it.
 	mu       sync.Mutex
 	host     string        // from the MCP initialize clientInfo, when the host sent one
 	harness  hooks.Harness // the same, mapped to a key and a room label
@@ -36,9 +39,8 @@ type frontEnd struct {
 	reader   string
 	attached bool
 	cfg      client.Config
-	// link is LinkHash of the share link this front end is joining with (set
-	// just before the redeem, sent on the next attach), so a sibling harness
-	// handed the same single-use link can join through the daemon.
+	// link is LinkHash of the share link this front end is joining with, sent
+	// on the next attach so the room records it.
 	link string
 	// lastEnsure rate-limits respawn attempts when the daemon has gone away.
 	lastEnsure time.Time
@@ -48,11 +50,26 @@ func newFrontEnd(ws hooks.Workspace, log func(string)) *frontEnd {
 	return &frontEnd{ws: ws, socketPath: hooks.DaemonSocketPath(ws), log: log}
 }
 
+// attachment is a consistent snapshot of what this front end is attached to.
+type attachment struct {
+	roomKey, reader string
+	attached        bool
+	harness         string
+}
+
+func (f *frontEnd) snapshot() attachment {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return attachment{roomKey: f.roomKey, reader: f.reader, attached: f.attached, harness: f.harness.Key}
+}
+
 // readerName is `<host>:<workspaceKey>:<pid>`: stable prefix per host and
 // checkout (a returning session keeps its cursor within the TTL), pid for
 // uniqueness between two windows on one checkout.
 func (f *frontEnd) readerName() string {
+	f.mu.Lock()
 	host := f.host
+	f.mu.Unlock()
 	if host == "" {
 		host = os.Getenv("LANDFALL_AGENT_LABEL")
 	}
@@ -64,10 +81,13 @@ func (f *frontEnd) readerName() string {
 
 // onInitialize records the host the MCP client named itself as.
 func (f *frontEnd) onInitialize(ci mcp.ClientInfo) {
-	if ci.Name != "" {
-		f.host = ci.Name
-		f.harness = hooks.HarnessFromClientName(ci.Name)
+	if ci.Name == "" {
+		return
 	}
+	f.mu.Lock()
+	f.host = ci.Name
+	f.harness = hooks.HarnessFromClientName(ci.Name)
+	f.mu.Unlock()
 }
 
 // seatLabel is the label this harness's agent session joins the room under:
@@ -77,8 +97,11 @@ func (f *frontEnd) seatLabel(cfg client.Config) string {
 	if env := os.Getenv("LANDFALL_AGENT_LABEL"); env != "" {
 		return env
 	}
-	if f.harness.Label != "" {
-		return f.harness.Label
+	f.mu.Lock()
+	label := f.harness.Label
+	f.mu.Unlock()
+	if label != "" {
+		return label
 	}
 	if cfg.AgentLabel != "" {
 		return cfg.AgentLabel
@@ -86,27 +109,56 @@ func (f *frontEnd) seatLabel(cfg client.Config) string {
 	return daemon.DefaultSeatLabel
 }
 
-// rememberLink notes the share link the next attach joins with.
-func (f *frontEnd) rememberLink(link string) {
+func (f *frontEnd) setLink(hash string) {
 	f.mu.Lock()
-	f.link = daemon.LinkHash(link)
+	f.link = hash
 	f.mu.Unlock()
 }
 
-// knownLink asks the daemon whether a share link already opened a room on
-// this machine. A share link is single-use: the first harness's redeem spent
-// it, so a second harness handed the same link joins with the config the
-// daemon already holds (its attach then joins its own seat).
-func (f *frontEnd) knownLink(link string) (*client.Config, bool) {
-	if !f.ensure() {
-		return nil, false
+// redeemLink turns a share link into a config through the daemon's link book
+// (internal/daemon/links.go), so a single-use link is redeemed once per
+// machine:
+//
+//   - a link this machine already redeemed answers with that session (a
+//     second harness, or a retry after a join that failed);
+//   - a link a sibling is redeeming right now waits for that redeem;
+//   - otherwise this front end holds the claim, redeems, and records the
+//     session with the daemon at once, before any join can fail.
+//
+// With no daemon to ask, the link is simply redeemed.
+func (f *frontEnd) redeemLink(ctx context.Context, link string, redeem func(context.Context, string) (*client.Config, error)) (*client.Config, error) {
+	hash := daemon.LinkHash(link)
+	if hash == "" || !f.ensure() {
+		return redeem(ctx, link)
 	}
-	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "link", Link: daemon.LinkHash(link)}, time.Second)
-	if err != nil || res.Room == nil {
-		return nil, false
+	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "link", Link: hash}, daemon.LinkWait+3*time.Second)
+	switch {
+	case err != nil && res != nil && !res.OK:
+		// The daemon answered: a sibling is still redeeming. Redeeming here
+		// as well would spend the link out from under it.
+		return nil, err
+	case err != nil:
+		f.log("room daemon did not answer about the link (" + err.Error() + "); redeeming it here")
+		return redeem(ctx, link)
+	case res.Room != nil:
+		f.setLink(hash)
+		f.log(fmt.Sprintf("this link was already redeemed on this machine (incident %s); joining with that session.", res.Room.IncidentID))
+		cfg := *res.Room
+		return &cfg, nil
 	}
-	f.rememberLink(link)
-	return res.Room, true
+	cfg, rerr := redeem(ctx, link)
+	if rerr != nil || cfg == nil {
+		_, _ = daemon.Send(f.socketPath, daemon.Request{Op: "link-failed", Link: hash}, time.Second)
+		if rerr == nil {
+			rerr = fmt.Errorf("the link did not resolve to an incident")
+		}
+		return nil, rerr
+	}
+	if _, serr := daemon.Send(f.socketPath, daemon.Request{Op: "link-redeemed", Link: hash, Room: cfg}, time.Second); serr != nil {
+		f.log("could not record the redeemed link with the room daemon: " + serr.Error())
+	}
+	f.setLink(hash)
+	return cfg, nil
 }
 
 // attach registers this process as a reader of cfg's room. The daemon joins
@@ -115,27 +167,34 @@ func (f *frontEnd) knownLink(link string) (*client.Config, bool) {
 //
 // The attach names this harness (its key, and its label on the room config):
 // the daemon joins the room separately for each harness, so the agent id that
-// comes back is this harness's own, never a sibling's.
-func (f *frontEnd) attach(cfg client.Config) (*daemon.Response, error) {
+// comes back is this harness's own, never a sibling's. timeout bounds the
+// whole attach, the daemon's join included.
+func (f *frontEnd) attach(cfg client.Config, timeout time.Duration) (*daemon.Response, error) {
 	cfg.AgentLabel = f.seatLabel(cfg)
+	name := f.readerName()
 	f.mu.Lock()
-	link := f.link
+	link, host, harness := f.link, f.host, f.harness.Key
 	f.mu.Unlock()
+	if timeout <= 0 || timeout > daemon.AttachTimeout {
+		timeout = daemon.AttachTimeout
+	}
 	res, err := daemon.Send(f.socketPath, daemon.Request{
 		Op:   "attach",
 		Room: &cfg,
 		Link: link,
 		Reader: &daemon.ReaderSpec{
-			Name: f.readerName(), Kind: string(daemon.KindAgent), Host: f.host,
+			Name: name, Kind: string(daemon.KindAgent), Host: host,
 			WorkspaceKey: hooks.WorkspaceKey(f.ws.Dir()), Workspace: f.ws.Dir(),
-			Harness: f.harness.Key,
+			Harness: harness,
 		},
 		Fingerprints: computeFingerprints(f.ws.Dir()),
-	}, daemon.AttachTimeout)
+	}, timeout)
 	if err != nil {
 		return nil, err
 	}
-	f.roomKey, f.reader, f.attached, f.cfg = res.RoomKey, f.readerName(), true, cfg
+	f.mu.Lock()
+	f.roomKey, f.reader, f.attached, f.cfg = res.RoomKey, name, true, cfg
+	f.mu.Unlock()
 	return res, nil
 }
 
@@ -151,40 +210,48 @@ func (f *frontEnd) ensure() bool {
 	if daemon.Reachable(f.ws) {
 		return true
 	}
+	f.mu.Lock()
 	if time.Since(f.lastEnsure) < 5*time.Second {
+		f.mu.Unlock()
 		return false
 	}
 	f.lastEnsure = time.Now()
+	cfg := f.cfg
+	f.mu.Unlock()
 	if !daemon.EnsureRunning(f.ws, nil, f.log) {
 		return false
 	}
-	if f.cfg.IncidentID == "" {
+	if cfg.IncidentID == "" {
 		return true
 	}
-	if _, err := f.attach(f.cfg); err != nil {
+	if _, err := f.attach(cfg, 0); err != nil {
 		f.log("room daemon came back but re-attach failed: " + err.Error())
 		return false
 	}
-	f.log("room daemon restarted; re-attached as " + f.reader)
+	f.log("room daemon restarted; re-attached as " + f.snapshot().reader)
 	return true
 }
 
 func (f *frontEnd) detach() {
-	if !f.attached {
+	f.mu.Lock()
+	at, roomKey, reader := f.attached, f.roomKey, f.reader
+	f.attached = false
+	f.mu.Unlock()
+	if !at {
 		return
 	}
-	_, _ = daemon.Send(f.socketPath, daemon.Request{Op: "detach", RoomKey: f.roomKey, ReaderName: f.reader}, time.Second)
-	f.attached = false
+	_, _ = daemon.Send(f.socketPath, daemon.Request{Op: "detach", RoomKey: roomKey, ReaderName: reader}, time.Second)
 }
 
 // delta is this reader's own pull, rendered by the tool wrapper exactly as
 // FlushPending's result was. A daemon that cannot answer means nothing owed
 // this time, never an error on a tool result.
 func (f *frontEnd) delta(context.Context) *client.FrameDelta {
-	if !f.attached || !f.ensure() {
+	if !f.snapshot().attached || !f.ensure() {
 		return nil
 	}
-	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "delta", RoomKey: f.roomKey, ReaderName: f.reader}, 3*time.Second)
+	at := f.snapshot()
+	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "delta", RoomKey: at.roomKey, ReaderName: at.reader}, 3*time.Second)
 	if err != nil || res.Delta == nil {
 		return nil
 	}
@@ -198,29 +265,31 @@ func (f *frontEnd) delta(context.Context) *client.FrameDelta {
 // the flush above. ok=false (not attached, no daemon) sends get_updates back
 // to the process's own cursor.
 func (f *frontEnd) updates(_ context.Context, since *int64) (*client.FrameDelta, int64, bool) {
-	if !f.attached || !f.ensure() {
+	if !f.snapshot().attached || !f.ensure() {
 		return nil, -1, false
 	}
-	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "delta", RoomKey: f.roomKey, ReaderName: f.reader, Since: since}, 5*time.Second)
+	at := f.snapshot()
+	res, err := daemon.Send(f.socketPath, daemon.Request{Op: "delta", RoomKey: at.roomKey, ReaderName: at.reader, Since: since}, 5*time.Second)
 	if err != nil || res.Since == nil {
 		return nil, -1, false
 	}
 	return res.Delta, *res.Since, true
 }
 
-// seen tells the daemon a read of this front end's own (the brief, the
-// timeline, a join) showed the agent the room up to upTo.
+// seen tells the daemon a raw-event read (read_timeline) showed the agent the
+// room up to upTo.
 func (f *frontEnd) seen(upTo int64) {
-	if !f.attached {
+	at := f.snapshot()
+	if !at.attached {
 		return
 	}
-	_, _ = daemon.Send(f.socketPath, daemon.Request{Op: "seen", RoomKey: f.roomKey, ReaderName: f.reader, UpTo: &upTo}, time.Second)
+	_, _ = daemon.Send(f.socketPath, daemon.Request{Op: "seen", RoomKey: at.roomKey, ReaderName: at.reader, UpTo: &upTo}, time.Second)
 }
 
 // clientFactory wraps the real HTTP client so that Join attaches to the daemon
 // instead of joining the room a second time. The instance id the daemon holds
-// is adopted, so contributions and heartbeats from this process carry the
-// machine's one presence identity.
+// for this harness is adopted, so contributions from this process carry this
+// harness's own presence identity.
 func (f *frontEnd) clientFactory(cfg client.Config) session.EdgeClient {
 	cfg.AgentLabel = f.seatLabel(cfg)
 	return &attachingClient{Client: client.New(cfg, nil), fe: f, cfg: cfg}
@@ -232,8 +301,18 @@ type attachingClient struct {
 	cfg client.Config
 }
 
-func (a *attachingClient) Join(context.Context) (*client.JoinResult, error) {
-	res, err := a.fe.attach(a.cfg)
+// Join attaches through the daemon, within the caller's deadline.
+func (a *attachingClient) Join(ctx context.Context) (*client.JoinResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	timeout := daemon.AttachTimeout
+	if dl, ok := ctx.Deadline(); ok {
+		if left := time.Until(dl); left < timeout {
+			timeout = left
+		}
+	}
+	res, err := a.fe.attach(a.cfg, timeout)
 	if err != nil {
 		return nil, fmt.Errorf("room daemon: %w", err)
 	}
@@ -259,12 +338,13 @@ func (d *daemonSession) peek() *daemon.RoomView {
 	if !d.fe.ensure() {
 		return nil
 	}
-	res, err := daemon.Send(d.fe.socketPath, daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir()), Harness: d.fe.harness.Key}, time.Second)
+	at := d.fe.snapshot()
+	res, err := daemon.Send(d.fe.socketPath, daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir()), Harness: at.harness}, time.Second)
 	if err != nil {
 		return nil
 	}
 	for i := range res.Rooms {
-		if res.Rooms[i].RoomKey == d.fe.roomKey {
+		if res.Rooms[i].RoomKey == at.roomKey {
 			return &res.Rooms[i]
 		}
 	}
@@ -297,9 +377,11 @@ func (d *daemonSession) consume(upTo int64) int64 {
 	if !d.fe.ensure() {
 		return -1
 	}
+	at := d.fe.snapshot()
+	key := hooks.WorkspaceKey(d.fe.ws.Dir())
 	res, err := daemon.Send(d.fe.socketPath, daemon.Request{
-		Op: "consume", RoomKey: d.fe.roomKey, WorkspaceKey: hooks.WorkspaceKey(d.fe.ws.Dir()), Harness: d.fe.harness.Key, UpTo: &upTo,
-		ReaderName: daemon.TerminalReaderName(hooks.WorkspaceKey(d.fe.ws.Dir())),
+		Op: "consume", RoomKey: at.roomKey, WorkspaceKey: key, Harness: at.harness, UpTo: &upTo,
+		ReaderName: daemon.TerminalReaderName(key),
 	}, time.Second)
 	if err != nil || res.Cursor == nil {
 		return -1
@@ -324,10 +406,11 @@ func newHoldingAccepter(inner *bridge.Accepter, fe *frontEnd) *holdingAccepter {
 
 func (h *holdingAccepter) Accept(incidentID, agentInstanceID, text string, refs []string, widget *tools.WidgetPayload, sourceQueryFailed bool, kind string) (string, bool, error) {
 	id, redacted, err := h.inner.Accept(incidentID, agentInstanceID, text, refs, widget, sourceQueryFailed, kind)
-	if err != nil || !h.fe.attached || !h.fe.ensure() {
+	if err != nil || !h.fe.snapshot().attached || !h.fe.ensure() {
 		return id, redacted, err
 	}
-	res, merr := daemon.Send(h.fe.socketPath, daemon.Request{Op: "match", RoomKey: h.fe.roomKey, ReaderName: h.fe.reader, Text: text}, 2*time.Second)
+	at := h.fe.snapshot()
+	res, merr := daemon.Send(h.fe.socketPath, daemon.Request{Op: "match", RoomKey: at.roomKey, ReaderName: at.reader, Text: text}, 2*time.Second)
 	if merr != nil || res == nil || !res.Held {
 		return id, redacted, nil
 	}

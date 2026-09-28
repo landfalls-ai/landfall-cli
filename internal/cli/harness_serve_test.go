@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -93,6 +94,13 @@ type frontEndRun struct {
 
 func startFrontEnd(t *testing.T, ws hooks.Workspace, link string, resolve func(context.Context, *UI, string) (*client.Config, error)) *frontEndRun {
 	t.Helper()
+	r := launchFrontEnd(t, ws, link, resolve)
+	r.waitFor(t, "MCP stdio server ready")
+	return r
+}
+
+func launchFrontEnd(t *testing.T, ws hooks.Workspace, link string, resolve func(context.Context, *UI, string) (*client.Config, error)) *frontEndRun {
+	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
 	r := &frontEndRun{stdin: inW, out: bufio.NewReader(outR), errBuf: &lockedBuffer{}, done: make(chan error, 1)}
@@ -117,7 +125,6 @@ func startFrontEnd(t *testing.T, ws hooks.Workspace, link string, resolve func(c
 		case <-time.After(5 * time.Second):
 		}
 	})
-	r.waitFor(t, "MCP stdio server ready")
 	return r
 }
 
@@ -130,7 +137,7 @@ func (r *frontEndRun) waitFor(t *testing.T, want string) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %q; stderr:\n%s", want, r.errBuf.String())
+	t.Fatalf("timed out waiting for %q; stderr:\n%s\n%s", want, r.errBuf.String(), goroutineDump())
 }
 
 func (r *frontEndRun) initialize(t *testing.T, clientName string) {
@@ -180,7 +187,7 @@ func TestTwoHostsOnOneMachineJoinAsTwoAgentSessionsWithOneLink(t *testing.T) {
 	codex := startFrontEnd(t, ws, link, secondResolve)
 	codex.initialize(t, "codex-mcp-client")
 	codex.waitFor(t, `joined incident inc-1 as "Codex" (instance inst-codex)`)
-	codex.waitFor(t, "this link already opened incident inc-1 on this machine")
+	codex.waitFor(t, "this link was already redeemed on this machine (incident inc-1)")
 
 	labels, tokens := joins.snapshot()
 	if strings.Join(labels, ",") != "Claude Code,Codex" {
@@ -207,4 +214,121 @@ func TestTwoHostsOnOneMachineJoinAsTwoAgentSessionsWithOneLink(t *testing.T) {
 	if !terminals[hooks.TerminalReaderNameFor(key, "claude-code")] || !terminals[hooks.TerminalReaderNameFor(key, "codex")] {
 		t.Fatalf("the person needs one reader per host in this checkout: %v", terminals)
 	}
+}
+
+func (r *frontEndRun) call(t *testing.T, id int, tool string) map[string]any {
+	t.Helper()
+	body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%d,"method":"tools/call","params":{"name":%q,"arguments":{}}}`, id, tool)
+	if _, err := io.WriteString(r.stdin, body+"\n"); err != nil {
+		t.Fatal(err)
+	}
+	line, err := r.out.ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("no answer to %s: %v", tool, err)
+	}
+	var res map[string]any
+	if json.Unmarshal(line, &res) != nil {
+		t.Fatalf("%s answered %s", tool, line)
+	}
+	return res
+}
+
+// Two hosts started together with the same --link: the link is redeemed once,
+// the second waits for the first redeem rather than spending the link again.
+func TestTwoHostsStartedTogetherRedeemTheLinkOnce(t *testing.T) {
+	t.Setenv("LANDFALL_AGENT_LABEL", "")
+	dir, runDir := shortTempDir(t), shortTempDir(t)
+	ws := hooks.Workspace{Cwd: dir, Env: map[string]string{"XDG_RUNTIME_DIR": runDir}}
+	joins := startTestDaemon(t, ws)
+
+	const link = "https://app.landfalls.test/j/together"
+	var mu sync.Mutex
+	redeemed := 0
+	resolve := func(context.Context, *UI, string) (*client.Config, error) {
+		mu.Lock()
+		redeemed++
+		n := redeemed
+		mu.Unlock()
+		if n > 1 {
+			return nil, errors.New("could not join the war room (HTTP 410): the link expired or was already used")
+		}
+		time.Sleep(300 * time.Millisecond) // a slow redeem, so the sibling has to wait for it
+		return &client.Config{BaseURL: "http://127.0.0.1:1", Slug: "acme", IncidentID: "inc-1", Token: "edge-token"}, nil
+	}
+	a := launchFrontEnd(t, ws, link, resolve)
+	b := launchFrontEnd(t, ws, link, resolve)
+	a.waitFor(t, "MCP stdio server ready")
+	b.waitFor(t, "MCP stdio server ready")
+	a.initialize(t, "claude-code")
+	b.initialize(t, "codex-mcp-client")
+	a.waitFor(t, "joined incident inc-1")
+	b.waitFor(t, "joined incident inc-1")
+	mu.Lock()
+	defer mu.Unlock()
+	if redeemed != 1 {
+		t.Fatalf("the link must be redeemed once, got %d", redeemed)
+	}
+	if labels, _ := joins.snapshot(); len(labels) != 2 {
+		t.Fatalf("two sessions: %v", labels)
+	}
+}
+
+// initialize is answered at once even while the join is slow; a tool call
+// waits for the join to land.
+func TestInitializeIsAnsweredBeforeASlowJoinAndToolsWaitForIt(t *testing.T) {
+	t.Setenv("LANDFALL_AGENT_LABEL", "")
+	dir, runDir := shortTempDir(t), shortTempDir(t)
+	ws := hooks.Workspace{Cwd: dir, Env: map[string]string{"XDG_RUNTIME_DIR": runDir}}
+	startSlowDaemon(t, ws, 700*time.Millisecond)
+	cfg := &client.Config{BaseURL: "http://127.0.0.1:1", Slug: "acme", IncidentID: "inc-1", Token: "t"}
+	fe := startFrontEnd(t, ws, "", func(context.Context, *UI, string) (*client.Config, error) { c := *cfg; return &c, nil })
+	began := time.Now()
+	fe.initialize(t, "codex-mcp-client")
+	if took := time.Since(began); took > 500*time.Millisecond {
+		t.Fatalf("initialize waited %s for the join; a host gives a server only seconds", took)
+	}
+	res := fe.call(t, 2, "describe_widget_types")
+	if res["result"] == nil {
+		t.Fatalf("a tool call after initialize waits for the join and runs: %v", res)
+	}
+	fe.waitFor(t, `joined incident inc-1 as "Codex"`)
+}
+
+func startSlowDaemon(t *testing.T, ws hooks.Workspace, delay time.Duration) {
+	t.Helper()
+	d := daemon.New(daemon.Options{
+		Workspace: ws,
+		IdleGrace: time.Hour,
+		Deps: daemon.Deps{
+			NewClient: func(cfg client.Config) session.EdgeClient {
+				return &slowEdge{labelledEdge: labelledEdge{fakeEdge: &fakeEdge{cfg: cfg}, id: "inst-slow"}, delay: delay}
+			},
+			Heartbeat: time.Hour,
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { _ = d.Run(ctx); close(done) }()
+	t.Cleanup(func() { cancel(); <-done })
+	deadline := time.Now().Add(3 * time.Second)
+	for !daemon.Reachable(ws) {
+		if time.Now().After(deadline) {
+			t.Fatal("the test daemon never answered")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+type slowEdge struct {
+	labelledEdge
+	delay time.Duration
+}
+
+func (s *slowEdge) Join(ctx context.Context) (*client.JoinResult, error) {
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	return s.labelledEdge.Join(ctx)
 }

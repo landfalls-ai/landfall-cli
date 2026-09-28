@@ -410,40 +410,41 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		}
 	}
 
-	// A second harness on this machine handed the same share link: the link
-	// is single-use and the first harness already spent it, so in daemon mode
-	// the daemon is asked first whether that link already opened a room here.
-	// Only when it did not is the link redeemed (and remembered for the next
-	// harness).
+	// A share link is single-use. In daemon mode every redeem goes through
+	// the daemon's link book (frontEnd.redeemLink): a second harness handed
+	// the same link joins with the session the first redeem gave, two started
+	// together redeem it once, and a redeem is recorded before any join can
+	// fail. One helper for both redeem paths, join_war_room and --link.
 	resolve := opts.Resolve
 	if fe != nil {
 		redeem := sess.Redeemer()
 		sess.SetRedeemer(func(ctx context.Context, shareURL string) (client.Config, error) {
-			if cfg, ok := fe.knownLink(shareURL); ok {
-				ui.Log("this link already opened incident %s on this machine; joining through it.", cfg.IncidentID)
-				return *cfg, nil
-			}
-			fe.rememberLink(shareURL)
-			cfg, err := redeem(ctx, shareURL)
+			cfg, err := fe.redeemLink(ctx, shareURL, func(ctx context.Context, link string) (*client.Config, error) {
+				c, err := redeem(ctx, link)
+				if err != nil {
+					return nil, err
+				}
+				return &c, nil
+			})
 			if err != nil {
-				fe.rememberLink("")
+				return client.Config{}, err
 			}
-			return cfg, err
+			return *cfg, nil
 		})
 		resolve = func(ctx context.Context, ui *UI, link string) (*client.Config, error) {
-			if isShareLink(link) {
-				if cfg, ok := fe.knownLink(link); ok {
-					ui.Log("this link already opened incident %s on this machine; joining through it.", cfg.IncidentID)
-					cfg.AgentLabel = agentLabel()
-					return cfg, nil
-				}
-				fe.rememberLink(link)
+			if !isShareLink(link) {
+				return opts.Resolve(ctx, ui, link)
 			}
-			cfg, err := opts.Resolve(ctx, ui, link)
-			if err != nil || cfg == nil {
-				fe.rememberLink("")
+			cfg, err := fe.redeemLink(ctx, link, func(ctx context.Context, link string) (*client.Config, error) {
+				return opts.Resolve(ctx, ui, link)
+			})
+			if err != nil {
+				return nil, err
 			}
-			return cfg, err
+			if cfg.AgentLabel == "" {
+				cfg.AgentLabel = agentLabel()
+			}
+			return cfg, nil
 		}
 	}
 
@@ -453,9 +454,9 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 	}
 	// joinResolved is the startup join of a config resolved from --link or
 	// the environment.
-	joinResolved := func(cfg client.Config) error {
+	joinResolved := func(ctx context.Context, cfg client.Config) error {
 		cl := opts.NewClient(cfg)
-		if _, err := cl.Join(stopCtx); err != nil {
+		if _, err := cl.Join(ctx); err != nil {
 			return err
 		}
 		sess.SetClient(cl)
@@ -466,23 +467,20 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 	}
 	// In daemon mode the join waits for MCP initialize: the daemon gives each
 	// harness its own agent session in the room, labelled with the host's own
-	// name, and the host says its name only on initialize. The join then runs
-	// before initialize is answered, so no tool call can arrive ahead of it.
-	var deferredJoin func()
+	// name, and the host says its name only on initialize. initialize itself
+	// is answered at once (a host gives an MCP server only seconds to start);
+	// the join runs in the background and tool calls wait on it (joinGate).
+	var gate *joinGate
 	switch {
 	case cfg != nil && fe != nil:
-		pending := *cfg
-		var once sync.Once
-		deferredJoin = func() {
-			once.Do(func() {
-				if err := joinResolved(pending); err != nil {
-					ui.Log("could not join incident %s: %v. The agent can still call join_war_room.", pending.IncidentID, err)
-				}
-			})
-		}
-		ui.Log("incident %s resolved; joining when the agent host connects.", pending.IncidentID)
+		gate = newJoinGate(*cfg, func(cfg client.Config) error {
+			ctx, cancel := context.WithTimeout(stopCtx, daemon.AttachTimeout)
+			defer cancel()
+			return joinResolved(ctx, cfg)
+		}, func(msg string) { ui.Log("%s", msg) })
+		ui.Log("incident %s resolved; joining when the agent host connects.", cfg.IncidentID)
 	case cfg != nil:
-		if err := joinResolved(*cfg); err != nil {
+		if err := joinResolved(stopCtx, *cfg); err != nil {
 			return err
 		}
 	default:
@@ -526,7 +524,7 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	ui.Log("MCP stdio server ready — connect your agent. Every tool call narrates to the war room.")
 	serveErr := serveStdio(stopCtx, opts.In, opts.Out, mcp.Options{
-		Tools:      tools.BuildWithAccepter(sess, toolAccepter),
+		Tools:      gate.wrap(tools.BuildWithAccepter(sess, toolAccepter)),
 		ServerInfo: &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
 		OnInitialize: func(ci mcp.ClientInfo) {
 			h := hooks.HarnessFromClientName(ci.Name)
@@ -543,8 +541,8 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 			}
 		},
 		OnHandshake: func() {
-			if deferredJoin != nil {
-				deferredJoin()
+			if gate != nil {
+				gate.start()
 			}
 		},
 		// Must match the surface actually registered — instructions naming

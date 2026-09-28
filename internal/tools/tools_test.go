@@ -10,6 +10,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -732,7 +733,7 @@ func TestQuerySignalsPassesSourceOperationParamsConnectionAndAccountThrough(t *t
 		"account":    "acct-1",
 	})
 
-	if !strings.Contains(out, `"ok": true`) {
+	if !strings.Contains(out, `{"ok":true}`) {
 		t.Errorf("result = %q", out)
 	}
 	got := c.lastQuery
@@ -771,8 +772,62 @@ func TestQuerySignalsRendersAnEmptyEnvelopeWhenTheClientReturnsNone(t *testing.T
 	if err != nil {
 		t.Fatalf("query_signals must never return a Go error for a normal call, got %v", err)
 	}
-	if strings.TrimSpace(out) != "{}" {
+	if out != "datadog metrics.range: the source returned no data." {
 		t.Errorf("result = %q", out)
+	}
+}
+
+// A log read is summarised, not dumped: the tool's args maxLines and raw reach
+// the renderer, and neither is sent to the source as a provider param.
+func TestQuerySignalsSummarisesAndHonoursMaxLinesAndRaw(t *testing.T) {
+	events := make([]any, 0, 300)
+	for i := 0; i < 300; i++ {
+		events = append(events, map[string]any{
+			"timestamp": float64(1790604000000 + i*1000), "message": fmt.Sprintf("upstream 503 attempt %d", i),
+			"logStreamName": "web", "eventId": fmt.Sprintf("%060d", i),
+		})
+	}
+	c := &fakeClient{querySignalsResult: client.SignalsQueryResult{
+		"source": "cloudwatch", "operation": "filterLogEvents", "fetchedAt": "2026-09-28T14:05:00Z",
+		"params": map[string]any{"logGroupName": "/aws/lambda/checkout"},
+		"raw":    map[string]any{"events": events},
+	}}
+	list := Build(newSession(c))
+
+	out := callTool(t, list, "query_signals", map[string]any{
+		"source": "cloudwatch", "operation": "filterLogEvents", "params": map[string]any{"logGroupName": "/aws/lambda/checkout"},
+	})
+	for _, want := range []string{
+		"cloudwatch filterLogEvents: 300 log events, 2026-09-28 14:00:00Z to 14:04:59Z.",
+		"14:00:00Z upstream 503 attempt 0",
+		"Trimmed: showing the first 20 and the last 20 of 300 events.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "eventId") {
+		t.Errorf("the default answer is still the raw envelope")
+	}
+
+	out = callTool(t, list, "query_signals", map[string]any{"source": "cloudwatch", "operation": "filterLogEvents", "maxLines": float64(4)})
+	if !strings.Contains(out, "showing the first 2 and the last 2 of 300 events") {
+		t.Errorf("maxLines not honoured:\n%s", out)
+	}
+	out = callTool(t, list, "query_signals", map[string]any{"source": "cloudwatch", "operation": "filterLogEvents", "maxLines": "4"})
+	if !strings.Contains(out, "showing the first 2 and the last 2 of 300 events") {
+		t.Errorf("maxLines as a string not honoured:\n%s", out)
+	}
+	if _, sent := c.lastQuery.params["maxLines"]; sent {
+		t.Errorf("maxLines leaked into the provider params: %v", c.lastQuery.params)
+	}
+
+	out = callTool(t, list, "query_signals", map[string]any{"source": "cloudwatch", "operation": "filterLogEvents", "raw": true})
+	if !strings.HasPrefix(out, `{"fetchedAt":"2026-09-28T14:05:00Z"`) || !strings.Contains(out, `"eventId":`) {
+		t.Errorf("raw: true must return the envelope: %.200s", out)
+	}
+	if len(out) > 64*1024+512 {
+		t.Errorf("raw answer is %d bytes, past the cap", len(out))
 	}
 }
 

@@ -277,15 +277,24 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 		},
 		{
 			Name: "query_signals",
-			Description: "Read from one connected source through Landfall's credential proxy. Returns the provider's raw " +
-				"response envelope; partial: true with an error means the source degraded, not that you were refused. " +
-				"Every operation is read-only.",
+			Description: "Read from one connected source through Landfall's credential proxy. The answer is a bounded summary: " +
+				"for logs, the event count, the time range and up to maxLines lines as HH:MM:SSZ message; for metrics, each " +
+				"series' name, point count, min, max and last value, and up to maxLines points. It says when it trimmed and how " +
+				"to get more. raw: true returns the source's own response instead, capped at 64 KB. A read the source could not " +
+				"complete says so; that means the source degraded, not that you were refused. Every operation is read-only.",
 			InputSchema: obj(map[string]any{
 				"source":     strProp("A source from get_signal_catalog, e.g. cloudwatch, datadog, loki."),
 				"operation":  strProp("An operation that source advertises."),
 				"params":     map[string]any{"type": "object", "description": "Provider-shaped parameters for the operation."},
 				"connection": strProp("The catalog entry's connectionId, when the organization has more than one for this source."),
 				"account":    strProp("The catalog entry's accountId, for a management connection with declared member accounts."),
+				"maxLines": numProp(fmt.Sprintf("How many log lines, metric points or list items to show (default %d, at most %d).",
+					narrate.SignalLinesDefault, narrate.SignalLinesMax)),
+				"raw": map[string]any{
+					"type": "boolean",
+					"description": "Return the source's own response as JSON instead of the summary, capped at 64 KB. " +
+						"Only when you need a field the summary leaves out.",
+				},
 			}, "source", "operation"),
 			Handler: b.narrated("query_signals", b.querySignals),
 		},
@@ -622,7 +631,12 @@ func (b *bridge) searchContext(ctx context.Context, args map[string]any, _ strin
 // plugin-owned. The catalog is rendered as a compact list an agent reads
 // (narrate.RenderSignalCatalog: source, connection, account, each operation
 // with what it reads, its parameters and its time window); a query's answer
-// is the provider's raw envelope, passed through. A failure is reported as a
+// is rendered by narrate.RenderSignalRead as a bounded summary (log lines,
+// metric series, or the answer's main list), with the provider's raw envelope
+// behind raw: true and capped. It used to be that envelope, indented and
+// unbounded: one CloudWatch log-group read put 100+ KB of JSON into the
+// agent's context. The wire is untouched (constitution v2.2.0: raw stays on
+// the wire); only what the agent reads changed. A failure is reported as a
 // normal (non-error) result, same discipline as flagContext/stageClaim, so
 // the wrapper's flush/vote/nudge epilogue still runs.
 func (b *bridge) getSignalCatalog(ctx context.Context, _ map[string]any, _ string, cl session.EdgeClient) (string, error) {
@@ -646,11 +660,29 @@ func (b *bridge) querySignals(ctx context.Context, args map[string]any, _ string
 	if err != nil {
 		return fmt.Sprintf("The signal read was refused or unavailable: %v", err), nil
 	}
-	encoded, err := json.MarshalIndent(result, "", "  ")
-	if err != nil {
-		return "", err
+	opts := narrate.SignalReadOptions{Raw: truthy(args["raw"])}
+	if n, ok := jsNumber(args["maxLines"]); ok {
+		opts.MaxLines = int(n)
+	} else if s, isStr := args["maxLines"].(string); isStr {
+		// Agents send numbers as strings often enough that refusing one would
+		// cost a round trip for nothing.
+		if f, perr := strconv.ParseFloat(strings.TrimSpace(s), 64); perr == nil {
+			opts.MaxLines = int(f)
+		}
 	}
-	return string(encoded), nil
+	return narrate.RenderSignalRead(source, operation, result, opts), nil
+}
+
+// truthy reads a boolean argument, accepting the string spellings an agent
+// sometimes sends ("true").
+func truthy(v any) bool {
+	switch t := v.(type) {
+	case bool:
+		return t
+	case string:
+		return strings.EqualFold(strings.TrimSpace(t), "true")
+	}
+	return false
 }
 
 func (b *bridge) uploadArtifact(ctx context.Context, args map[string]any, _ string, cl session.EdgeClient) (string, error) {

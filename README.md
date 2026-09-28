@@ -516,6 +516,33 @@ loki · logs
     params: query (LogQL, e.g. {app="web"})
 ```
 
+`query_signals` answers with a bounded summary, not the source's raw JSON. A log read is the
+event count, the time range and up to 40 lines as `HH:MM:SSZ message` (the first half and the
+last half when there are more). A metric read is each series' name, point count, min, max and
+last value, then its points within the same budget. Anything else shows its main list, one item
+per line. It always says when it trimmed and how to get more: a narrower time window or filter
+in `params`, `maxLines` (up to 200), or the next page's token when the source has one.
+
+```
+cloudwatch filterLogEvents: 1,284 log events, 2026-09-28 14:02:11Z to 14:31:40Z, across 3 streams.
+14:02:11Z upstream 503 from origin, route /checkout
+14:02:12Z retrying origin request, attempt 2
+...
+… 1,244 events not shown …
+...
+14:31:40Z origin healthy again, 0 errors in the last minute
+Trimmed: showing the first 20 and the last 20 of 1,284 events. To see more, narrow the time window or the filter in params, or raise maxLines (up to 200).
+
+cloudwatch getMetricStatistics: 1 series, 60 points, 2026-09-28 14:00:00Z to 14:59:00Z.
+5xxErrorRate (Percent): 60 points; min 0.1, max 12.4, last 3.2 at 14:59:00Z
+  14:00:00Z 0.1
+  ...
+```
+
+`raw: true` returns the source's own response as JSON instead, capped at 64 KB, for the rare
+field the summary leaves out. Through v0.8.13 that JSON, indented and unbounded, was the only
+answer: one CloudWatch log-group read could put over 100 KB into your agent's context.
+
 ## Env-config setup
 
 ```json

@@ -111,8 +111,8 @@ type Entry struct {
 	// Widget carries the structured values for a widget hand-off, when the
 	// caller supplied them explicitly (widgetType/title/data), rather than
 	// leaving the worker to infer one from free text. Nil for every other
-	// kind, and nil for a widget hand-off with no structured payload — see
-	// classify.go on why that case still produces a widget, just an empty one.
+	// kind, and nil for a widget hand-off with no structured payload, which
+	// the worker publishes as a note (internal/bridge's kindFor).
 	Widget *WidgetPayload `json:"widget,omitempty"`
 
 	State    State `json:"state"`

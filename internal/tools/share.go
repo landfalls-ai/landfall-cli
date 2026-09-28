@@ -43,21 +43,26 @@ type WidgetPayload struct {
 	Data       map[string]any
 }
 
-// widgetOf reads share_with_room's optional structured `widget` argument.
-// Absent or malformed returns nil — the hand-off still queues as plain text
-// and Classify falls back to its marker heuristic, so a bad `widget` value
-// degrades rather than fails the whole call.
-func widgetOf(args map[string]any) *WidgetPayload {
-	raw, ok := args["widget"].(map[string]any)
+// widgetArg reads share_with_room's optional structured `widget` argument.
+// Absent (or null) is nil: the hand-off is words only. Present but not an
+// object is an error, not a quiet fall back to text: an agent that sent a
+// widget meant a widget, and used to learn otherwise only by its absence from
+// the canvas. The payload itself is checked by ValidateWidget.
+func widgetArg(args map[string]any) (*WidgetPayload, error) {
+	v, ok := args["widget"]
+	if !ok || v == nil {
+		return nil, nil
+	}
+	raw, ok := v.(map[string]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("share_with_room: `widget` must be an object {widgetType, title, data} (got %s). Nothing was shared", shown(v))
 	}
 	data, _ := raw["data"].(map[string]any)
 	return &WidgetPayload{
 		WidgetType: str(raw, "widgetType"),
 		Title:      str(raw, "title"),
 		Data:       data,
-	}
+	}, nil
 }
 
 // ErrQueueFull is what an Accepter reports when the outbound queue is at its
@@ -98,7 +103,24 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 		if err != nil {
 			return "", err
 		}
-		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widgetOf(args), sourceQueryFailedOf(args), kind)
+		// A widget the room would refuse is refused HERE, in this result,
+		// with what to fix. After "shared" the only way the agent hears about
+		// it is a refusal line on a later call; before, it can fix and retry
+		// now. The room still checks every widget itself.
+		widget, err := widgetArg(args)
+		if err != nil {
+			return "", err
+		}
+		switch {
+		case widget != nil:
+			if problems := ValidateWidget(widget); len(problems) > 0 {
+				return "", widgetProblem(widget, problems, "share", "shared")
+			}
+		case kind == "widget":
+			return "", errors.New("share_with_room: kind \"widget\" needs `widget` with the values to plot, {widgetType, title, data}. " +
+				"Nothing was shared. To share words only, use kind note or finding")
+		}
+		id, redacted, err := acc.Accept(cfg.IncidentID, cl.AgentInstanceID(), text, refsOf(args), widget, sourceQueryFailedOf(args), kind)
 		switch {
 		case errors.Is(err, ErrQueueFull):
 			// FR-012: never silent. A responder must not believe a finding

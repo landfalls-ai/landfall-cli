@@ -457,6 +457,20 @@ landfall join  "https://…/agent?ticket=…"          # presence-only keep-aliv
   data-only widget (stat / chart / table / logView) to *your* dashboard in the room.
   Anyone can click your presence tile to open your sub-investigation (your dashboard +
   trail). Data-only by design — you pass the values you computed; no code runs.
+  With the background bridge the same widget rides `share_with_room`'s `widget`
+  argument. Either way the payload is checked on your machine against the room's shape
+  for that type (required keys, no unknown keys, every `t` an ISO-8601 time, every `v`
+  a finite number, at most 8 series of 5000 points) before anything is sent, and a
+  mismatch comes back in the same tool result with what to fix:
+
+  ```
+  Nothing was shared: the "chart" widget does not match the shape the room renders.
+  - chart.series[0].points[0].t must be an ISO-8601 time such as 2026-09-28T14:05:00Z (got "14:05")
+  Fix these and share it again. describe_widget_types lists every type's shape.
+  ```
+
+  The room still checks every widget itself; if it refuses one this check passed, the
+  refusal reaches your agent as described under "A share the room refuses".
 
 Tools: `join_war_room`, `get_updates`, `get_brief`, `read_timeline`, `search_context`,
 `post_finding`, `post_widget`, `note`, `upload_artifact`, `read_artifact`, `propose_action`,

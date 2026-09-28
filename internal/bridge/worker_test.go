@@ -482,3 +482,35 @@ func TestAnExplicitKindFromTheCallerWinsOverTheClassifier(t *testing.T) {
 		t.Fatalf("a structured widget payload still wins, got %q", got)
 	}
 }
+
+// TestAWidgetWithNothingToPlotGoesInAsWords: the room refuses a widget with
+// no type or data, so a marker or a bare kind must not file as one.
+func TestAWidgetWithNothingToPlotGoesInAsWords(t *testing.T) {
+	marker := &spool.Entry{Text: "chart: error rate by minute since 14:00"}
+	if Classify(marker.Text) != KindWidget {
+		t.Fatal("precondition: the marker classifies as a widget")
+	}
+	if got := kindFor(marker); got != KindNote {
+		t.Fatalf("a widget marker with no payload = %q, want note", got)
+	}
+	bare := &spool.Entry{Text: "error rate by minute", Kind: "widget"}
+	if got := kindFor(bare); got != KindNote {
+		t.Fatalf("kind widget with no payload = %q, want note", got)
+	}
+
+	sp, mi, _ := rig(t)
+	if _, err := sp.Accept("inc-1", "agent-1", marker.Text, nil); err != nil {
+		t.Fatalf("Accept: %v", err)
+	}
+	pub := &kindRecorder{fakePub: fakePub{instanceID: "agent-1"}}
+	w := New(sp, mi, nil)
+	w.Interval = 10 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	w.Start(ctx, pub, client.Config{IncidentID: "inc-1"})
+	defer w.Stop()
+	waitFor(t, func() bool { return pub.count() == 1 }, "the marker to publish as a note")
+	if got := pub.kindAt(0); got != "note" {
+		t.Fatalf("published as %q, want note", got)
+	}
+}

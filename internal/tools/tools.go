@@ -237,9 +237,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 				"title":      strProp(""),
 				"data":       map[string]any{"type": "object"},
 			}, "widgetType", "title", "data"),
-			Handler: b.narrated("post_widget", func(_ context.Context, args map[string]any, _ string, _ session.EdgeClient) (string, error) {
+			Handler: checkWidget(b.narrated("post_widget", func(_ context.Context, args map[string]any, _ string, _ session.EdgeClient) (string, error) {
 				return "Widget " + quote(str(args, "title")) + " added to your sub-investigation dashboard.", nil
-			}),
+			})),
 		},
 		{
 			Name: "upload_artifact",
@@ -444,8 +444,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 			Description: "Share something you found with the war room. Returns immediately — " +
 				"the room is updated in the background. You do not need to classify it, wait for it, or follow up; " +
 				"if the room refuses it, your next room tool result says why. " +
-				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed — " +
-				"a bare \"widget:\"/\"chart:\" marker in `text` alone still files as a widget, but with nothing to plot.",
+				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed. " +
+				"It is checked against the room's shape for that type before anything is queued, and a mismatch comes back " +
+				"in this result with what to fix. Without `widget`, the text is shared as words, never as an empty widget.",
 			InputSchema: obj(map[string]any{
 				"text": strProp("What you found, in your own words."),
 				"refs": map[string]any{

@@ -318,7 +318,13 @@ func TestShareWithRoomPassesAnExplicitKindThroughAndRefusesAnUnknownOne(t *testi
 	for _, kind := range ShareKinds {
 		acc := &fakeAccepter{}
 		tool := shareTool(t, newSession(&fakeClient{}), acc)
-		if _, err := tool.Handler(context.Background(), map[string]any{"text": "the retry storm began at 14:22Z", "kind": kind}); err != nil {
+		args := map[string]any{"text": "the retry storm began at 14:22Z", "kind": kind}
+		if kind == "widget" {
+			// A widget kind carries the values to plot; without them it is
+			// refused (TestAWidgetKindWithoutAWidgetIsRefused).
+			args["widget"] = map[string]any{"widgetType": "stat", "title": "Retries", "data": map[string]any{"value": 12.0}}
+		}
+		if _, err := tool.Handler(context.Background(), args); err != nil {
 			t.Fatalf("kind %q: %v", kind, err)
 		}
 		if acc.lastKind != kind {

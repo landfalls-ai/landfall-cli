@@ -433,6 +433,14 @@ func kindFor(e *spool.Entry) Kind {
 	if e.Widget != nil {
 		kind = KindWidget
 	}
+	// A widget with nothing to plot goes in as words. The room refuses a
+	// widget without its type and data, so a "chart:" marker in the text (or
+	// a kind of "widget" from an older caller with no payload) filed as one
+	// would only ever be refused; as a note it reaches everyone verbatim.
+	// share_with_room itself now refuses kind "widget" without `widget`.
+	if kind == KindWidget && e.Widget == nil {
+		kind = KindNote
+	}
 	// A claim the agent says came out of a failed tool call goes in as a
 	// finding. The claims endpoint has no field for that self-report, so a
 	// staged claim would lose it; a finding carries it (as the room's

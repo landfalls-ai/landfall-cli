@@ -59,8 +59,9 @@ func Classify(text string) Kind {
 	}
 
 	// A widget is data the room can plot. Requires an explicit request: the
-	// hand-off carries free text, not the structured values a widget needs, so
-	// anything less than an explicit ask would produce an empty chart.
+	// hand-off carries free text, not the structured values a widget needs.
+	// Without a structured payload the worker files it as a note (kindFor):
+	// the room refuses a widget with nothing in it.
 	for _, marker := range widgetMarkers {
 		if strings.Contains(t, marker) {
 			return KindWidget

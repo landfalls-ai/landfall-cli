@@ -1,0 +1,72 @@
+{
+  "_source": "the monorepo widget catalog's per-type `example` payloads, read 2026-09-28. The room renders these, so the local check must accept every one.",
+  "stat": { "value": 6.7, "unit": "%", "decimals": 1, "delta": 6.4, "deltaLabel": "↑ 22×", "trend": "up", "tone": "critical", "baseline": 0.3, "baselineLabel": "baseline 0.3%", "spark": [0.3, 0.3, 0.4, 0.3, 2.1, 5.8, 6.4, 6.7] },
+  "chart": {
+    "series": [
+      { "label": "eu-west-1", "unit": "%", "points": [{ "t": "2026-09-04T14:00:00Z", "v": 0.3 }, { "t": "2026-09-04T14:15:00Z", "v": 0.3 }, { "t": "2026-09-04T14:30:00Z", "v": 0.4 }, { "t": "2026-09-04T14:35:00Z", "v": 9.8 }, { "t": "2026-09-04T14:45:00Z", "v": 12.4 }] },
+      { "label": "us-east-1", "unit": "%", "points": [{ "t": "2026-09-04T14:00:00Z", "v": 0.3 }, { "t": "2026-09-04T14:15:00Z", "v": 0.3 }, { "t": "2026-09-04T14:30:00Z", "v": 0.4 }, { "t": "2026-09-04T14:35:00Z", "v": 0.4 }, { "t": "2026-09-04T14:45:00Z", "v": 0.4 }] }
+    ],
+    "thresholds": [{ "value": 5, "label": "alert · 5%", "tone": "warning" }],
+    "markers": [{ "t": "2026-09-04T14:32:00Z", "label": "deploy #4127", "kind": "deploy" }]
+  },
+  "table": {
+    "columns": [
+      { "key": "path", "label": "Path", "type": "string" },
+      { "key": "code", "label": "Code", "type": "status" },
+      { "key": "count", "label": "Count 5m", "type": "number" },
+      { "key": "share", "label": "Share", "type": "share" }
+    ],
+    "rows": [
+      { "path": "/api/checkout/session", "code": 502, "count": 4812, "share": 18.2 },
+      { "path": "/api/cart", "code": 502, "count": 3109, "share": 14.7 }
+    ]
+  },
+  "logView": {
+    "lines": [
+      { "t": "2026-09-04T14:33:02Z", "level": "error", "message": "CloudFront origin 502 Bad Gateway path=/api/checkout edge=eu-west-1" },
+      { "t": "2026-09-04T14:33:05Z", "level": "warn", "message": "target i-0a1 draining (2/6 healthy)" }
+    ]
+  },
+  "timeline": {
+    "events": [
+      { "t": "2026-09-04T14:32:00Z", "label": "web-edge #4127 · task def :47", "kind": "deploy", "correlated": 0.94 },
+      { "t": "2026-09-04T14:18:00Z", "label": "checkout-v2 rollout 25% → 50%", "kind": "flag" }
+    ]
+  },
+  "geo": {
+    "unit": "%",
+    "points": [
+      { "place": "eu-west-1", "value": 12.4, "tone": "critical", "pulse": true, "label": "eu-west-1 · 12.4% 5xx" },
+      { "place": "eu-central-1", "value": 3.2, "tone": "warning" },
+      { "place": "us-east-1", "value": 0.4, "tone": "good", "label": "us-east-1 · 0.4%" },
+      { "place": "ap-southeast-1", "value": 0.3, "tone": "good" }
+    ]
+  },
+  "codeFinding": {
+    "codeRef": { "provider": "github", "owner": "acme", "repo": "web-edge", "ref": "9f3c1e2a", "path": "src/origin.ts", "lineStart": 41, "lineEnd": 44, "permalink": "https://github.com/acme/web-edge/blob/9f3c1e2a/src/origin.ts#L41-L44" },
+    "snippet": { "startLine": 41, "lines": ["const ttl = 120;", "export const origin = alb(\"web-edge-tg\", { ttl });"] }
+  },
+  "events": {
+    "window": { "from": "2026-09-21T01:00:00Z", "to": "2026-09-21T04:00:00Z" },
+    "events": [
+      { "t": "2026-09-21T03:12:44Z", "actor": { "kind": "role", "id": "deploy-ci", "label": "deploy-ci" }, "action": "UpdateDistribution", "target": { "kind": "cloudfront_distribution", "id": "E123ABC" }, "outcome": "success", "sourceIp": "203.0.113.42" },
+      { "t": "2026-09-21T03:11:02Z", "actor": { "kind": "user", "id": "AIDAEXAMPLE", "label": "jordan" }, "action": "PutBucketPolicy", "target": { "kind": "bucket", "id": "checkout-assets" }, "outcome": "denied", "errorCode": "AccessDenied" }
+    ]
+  },
+  "graph": {
+    "focus": "checkout",
+    "legend": "Dashed links were inferred from architecture documents and not confirmed.",
+    "nodes": [
+      { "id": "checkout", "label": "checkout", "entity": { "kind": "service", "id": "checkout" }, "tone": "critical", "trust": "confirmed" },
+      { "id": "orders-db", "label": "orders", "entity": { "kind": "database", "id": "orders" }, "tone": "warning", "trust": "confirmed" },
+      { "id": "cart", "label": "cart", "entity": { "kind": "service", "id": "cart" }, "tone": "good", "trust": "established" },
+      { "id": "pricing", "label": "pricing", "entity": { "kind": "service", "id": "pricing" }, "tone": "neutral", "trust": "inferred" }
+    ],
+    "edges": [
+      { "from": "checkout", "to": "orders-db", "kind": "depends_on", "trust": "confirmed", "tone": "critical" },
+      { "from": "cart", "to": "orders-db", "kind": "depends_on", "trust": "confirmed" },
+      { "from": "checkout", "to": "pricing", "kind": "depends_on", "trust": "inferred" }
+    ],
+    "omitted": 0
+  }
+}

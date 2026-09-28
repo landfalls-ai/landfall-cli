@@ -144,7 +144,9 @@ func (b *bridge) flushPending(ctx context.Context) string {
 // untouched.
 func (b *bridge) flushVoteRequests(ctx context.Context) string {
 	att := b.sess.RefreshAttentionIfStale(ctx)
-	block := narrate.VoteRequestBlock(att, b.sess.AttentionNotified(), 0)
+	// With the bridge (acc set), the vote verbs are not registered, so the
+	// block must not name them.
+	block := narrate.VoteRequestBlockFor(att, b.sess.AttentionNotified(), 0, b.acc == nil)
 	b.sess.MarkAttentionNotified(block.Keys)
 	return block.Text
 }

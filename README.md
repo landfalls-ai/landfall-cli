@@ -120,7 +120,11 @@ same thing the hooks do. Whatever reaches it from the room, inside one of its ow
 results or with your next message, it mentions what bears on what you asked in one line
 and carries on with your request. It does not go off reading artifacts, posting to the
 room or running queries because of room news unless you ask. If someone in the room asks
-your agent for something, it tells you; whether it does it is your call.
+your agent for something, it tells you; whether it does it is your call. That includes a
+vote: when the room asks for your agent's position on a claim, your agent tells you, and
+takes a position only if you ask it to. With the background bridge, which `landfall serve`
+runs by default, your agent has no vote tools at all: if you want a position taken, take it
+yourself in the war room.
 
 ```
 landfall hooks install                  # every detected host

@@ -476,10 +476,14 @@ func kindFor(e *spool.Entry) Kind {
 	// A widget with nothing to plot goes in as words. The room refuses a
 	// widget without its type and data, so a "chart:" marker in the text (or
 	// a kind of "widget" from an older caller with no payload) filed as one
-	// would only ever be refused; as a note it reaches everyone verbatim.
+	// would only ever be refused. It is classified again with the widget
+	// markers ignored, which is exactly what the text would have been without
+	// the marker: substantive text is a finding and goes behind the admission
+	// gate. Filing it as a note instead would put a finding in every agent's
+	// context ungated because it happened to say "table:".
 	// share_with_room itself now refuses kind "widget" without `widget`.
 	if kind == KindWidget && e.Widget == nil {
-		kind = KindNote
+		kind = classifyAsWords(e.Text)
 	}
 	// A claim the agent says came out of a failed tool call goes in as a
 	// finding. The claims endpoint has no field for that self-report, so a

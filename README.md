@@ -559,6 +559,12 @@ cloudwatch getMetricStatistics: 1 series, 60 points, 2026-09-28 14:00:00Z to 14:
   ...
 ```
 
+An MCP-server source answers in the MCP tool's own text, which is read through once more when it
+is JSON. mcp-grafana's `query_loki_logs` gets the same log view (and, for a LogQL metric query,
+the series view) from its own answer shape, which is not Loki's API; when it stopped at its
+`limit` with more left, the answer says so. Other MCP tools' JSON is read like any other
+answer: one of the views above when it has that shape, its main list when it does not.
+
 `raw: true` returns the source's own response as JSON instead, capped at 64 KB, for the rare
 field the summary leaves out. Through v0.8.13 that JSON, indented and unbounded, was the only
 answer: one CloudWatch log-group read could put over 100 KB into your agent's context.

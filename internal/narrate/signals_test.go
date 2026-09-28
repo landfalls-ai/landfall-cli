@@ -3,6 +3,7 @@ package narrate
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -425,18 +426,114 @@ func TestALookalikeIsNotMistakenForLogs(t *testing.T) {
 	}
 }
 
-func TestAnMCPSourcesTextIsReadThroughToItsShape(t *testing.T) {
-	inner := `{"status":"success","data":{"resultType":"streams","result":[{"stream":{"app":"web"},"values":[["1790604000000000000","GET /checkout 503"]]}]}}`
-	result := roundTrip(t, map[string]any{"source": "grafana", "operation": "query_loki_logs",
-		"raw": map[string]any{"content": []any{map[string]any{"type": "text", "text": inner}}}})
-	got := RenderSignalRead("", "", result, SignalReadOptions{})
-	if !strings.Contains(got, "grafana query_loki_logs: 1 log event, at 2026-09-28 14:00:00Z.\n14:00:00Z GET /checkout 503") {
-		t.Errorf("got:\n%s", got)
+// grafanaCapture is one query_loki_logs answer from
+// testdata/mcp-grafana-query-loki-logs.json, a real capture of mcp-grafana,
+// wrapped in the envelope the MCP-server source hands query_signals: the tool
+// result, as the MCP client returned it, in `raw`.
+func grafanaCapture(t *testing.T, call string) map[string]any {
+	t.Helper()
+	b, err := os.ReadFile("testdata/mcp-grafana-query-loki-logs.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capture struct {
+		Calls map[string]struct {
+			Arguments map[string]any `json:"arguments"`
+			Result    map[string]any `json:"result"`
+		} `json:"calls"`
+	}
+	if err := json.Unmarshal(b, &capture); err != nil {
+		t.Fatal(err)
+	}
+	c, ok := capture.Calls[call]
+	if !ok {
+		t.Fatalf("the capture has no %q call", call)
+	}
+	return roundTrip(t, map[string]any{"source": "mcp-server", "operation": "query_loki_logs",
+		"params": c.Arguments, "fetchedAt": "2026-09-28T20:56:35.000Z", "raw": c.Result})
+}
+
+// mcp-grafana's query_loki_logs is the MCP answer Landfall actually relays for
+// Grafana, and it is its own shape, not Loki's API: data[].{timestamp, line,
+// labels}, each timestamp a string that itself carries quote characters. Read
+// through to that shape, it is the same log view as any other log read.
+func TestGrafanasMCPLogAnswerReadsAsLogLines(t *testing.T) {
+	const lines = "mcp-server query_loki_logs: 5 log events, 2026-09-28 20:51:18Z to 20:54:18Z, across 2 streams.\n" +
+		"20:51:18Z GET /checkout 503 upstream=payments latency_ms=5012\n" +
+		"20:51:38Z connection pool exhausted, waiting for a free connection\n" +
+		"20:52:18Z GET /checkout 503 upstream=payments latency_ms=5007\n" +
+		"20:52:58Z retrying authorization against card processor\n" +
+		`20:54:18Z {"level":"error","msg":"payment authorization timed out","route":"/checkout","attempt":3}` + "\n" +
+		"The source notes: This query used the default 1-hour lookback window because startRfc3339 and endRfc3339 were not provided."
+
+	// The default format, and format "compact" (lines grouped under each
+	// stream beside an empty data list), read the same.
+	for _, call := range []string{"full", "compact"} {
+		if got := RenderSignalRead("", "", grafanaCapture(t, call), SignalReadOptions{}); got != lines {
+			t.Errorf("%s:\n%s\nwant:\n%s", call, got, lines)
+		}
+	}
+}
+
+// The source trims too: at its line limit it says more matched, and so does
+// the view, with how to get more.
+func TestGrafanasMCPLimitIsSaid(t *testing.T) {
+	got := RenderSignalRead("", "", grafanaCapture(t, "limitReached"), SignalReadOptions{})
+	for _, want := range []string{
+		"mcp-server query_loki_logs: 2 log events, 2026-09-28 20:52:58Z to 20:54:18Z, across 2 streams.\n",
+		"\nThe source stopped at its limit of 2 results for this read, and more matched. " +
+			"To see more, narrow the time window or the query in params, or set a higher limit in params.\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q in:\n%s", want, got)
+		}
+	}
+	if full := RenderSignalRead("", "", grafanaCapture(t, "full"), SignalReadOptions{}); strings.Contains(full, "stopped at its limit") {
+		t.Errorf("an answer under the limit claims it stopped:\n%s", full)
+	}
+}
+
+// A LogQL metric query through the same tool answers with samples, not lines,
+// and reads as series: data[].{labels, values[]} for a range query,
+// data[].{labels, timestamp, value} for an instant one.
+func TestGrafanasMCPMetricAnswerReadsAsSeries(t *testing.T) {
+	got := RenderSignalRead("", "", grafanaCapture(t, "metricRange"), SignalReadOptions{})
+	for _, want := range []string{
+		"mcp-server query_loki_logs: 2 series, 12 points, 2026-09-28 20:52:00Z to 20:57:00Z.\n",
+		"app=checkout: 6 points; min 1, max 3, last 2 at 20:57:00Z\n  20:52:00Z 1\n",
+		"app=payments: 6 points; min 1, max 2, last 1 at 20:57:00Z\n",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("range: missing %q in:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "log event") {
+		t.Errorf("a metric answer read as logs:\n%s", got)
 	}
 
-	plain := roundTrip(t, map[string]any{"source": "grafana", "operation": "list_dashboards",
+	got = RenderSignalRead("", "", grafanaCapture(t, "metricInstant"), SignalReadOptions{})
+	want := "mcp-server query_loki_logs: 2 series, 2 points, at 2026-09-28 20:56:56Z.\n" +
+		"app=checkout: 1 point; min 3, max 3, last 3 at 20:56:56Z\n  20:56:56Z 3\n" +
+		"app=payments: 1 point; min 2, max 2, last 2 at 20:56:56Z\n  20:56:56Z 2"
+	if got != want {
+		t.Errorf("instant:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestGrafanasMCPNoMatchSaysWhy(t *testing.T) {
+	got := RenderSignalRead("", "", grafanaCapture(t, "noMatch"), SignalReadOptions{})
+	want := "mcp-server query_loki_logs: no log events came back.\n" +
+		"The source notes: The Loki query returned no log entries for the specified time range."
+	if got != want {
+		t.Errorf("got:\n%s", got)
+	}
+}
+
+// An MCP tool that answers in plain text, not JSON, reads as lines of text.
+func TestAnMCPSourcesPlainTextReadsAsLines(t *testing.T) {
+	plain := roundTrip(t, map[string]any{"source": "mcp-server", "operation": "search_runbooks",
 		"raw": map[string]any{"content": []any{map[string]any{"type": "text", "text": "checkout overview\npayments"}}}})
-	if got := RenderSignalRead("", "", plain, SignalReadOptions{}); got != "grafana list_dashboards: 2 lines of text.\ncheckout overview\npayments" {
+	if got := RenderSignalRead("", "", plain, SignalReadOptions{}); got != "mcp-server search_runbooks: 2 lines of text.\ncheckout overview\npayments" {
 		t.Errorf("got %q", got)
 	}
 }

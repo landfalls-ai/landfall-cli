@@ -13,7 +13,9 @@ package narrate
 // same ones the server's own source plugins shape for widgets (each plugin's
 // toEntries / toSeries): log reads as a count, a
 // time range and "HH:MM:SSZ message" lines; metric reads as each series' name,
-// point count, min, max and last value, and its points. Anything it does not
+// point count, min, max and last value, and its points. One MCP tool's answer
+// is read the same way: mcp-grafana's query_loki_logs, in its own shape (a real
+// capture is in testdata). Anything it does not
 // recognize is rendered generically (the largest list in the answer, one item
 // per line). Every view is bounded, and says when it trimmed and how to get
 // more. The provider's raw envelope is one argument away (raw: true), capped
@@ -157,15 +159,17 @@ func isSignalEnvelope(m map[string]any) bool {
 // tool's text, plain text, or the generic list view.
 func renderSignalPayload(head string, payload any, n, depth int) string {
 	if entries, total, ok := readLogEntries(payload); ok {
-		return renderLogs(head, entries, total, n, pageToken(payload))
+		return renderLogs(head, entries, total, n, pageToken(payload), grafanaMCPNotes(payload))
 	}
 	if series, ok := readSeries(payload); ok {
-		return renderSeries(head, series, n)
+		return withNotes(renderSeries(head, series, n), grafanaMCPNotes(payload))
 	}
 	if text, ok := mcpText(payload); ok {
 		// An MCP server's tool answers in text, very often JSON text: read it
-		// again as a payload once, so a Loki answer relayed through an MCP
-		// server still reads as log lines.
+		// again as a payload once, so a shape this file knows still gets its
+		// view. mcp-grafana's query_loki_logs is the one MCP answer read as
+		// logs or metrics (grafanaMCPLogs, grafanaMCPSeries); it is its own
+		// shape, not Loki's API, and testdata holds a real capture of it.
 		var inner any
 		if depth == 0 && json.Unmarshal([]byte(strings.TrimSpace(text)), &inner) == nil {
 			if _, isObj := inner.(map[string]any); isObj {
@@ -201,8 +205,10 @@ func readLogEntries(payload any) ([]logLine, int, bool) {
 	if !isMap {
 		return nil, 0, false
 	}
+	// grafanaMCPLogs goes first: its compact answer carries an empty `data`
+	// list beside its `streams`, which datadogLogs would read as "no events".
 	for _, read := range []func(map[string]any) ([]logLine, int, bool){
-		cloudwatchLogs, datadogLogs, lokiStreams, coralogixLogs, gcpLogs, azureLogs,
+		grafanaMCPLogs, cloudwatchLogs, datadogLogs, lokiStreams, coralogixLogs, gcpLogs, azureLogs,
 	} {
 		if entries, total, ok := read(m); ok && (len(entries) > 0 || total == 0) {
 			sort.SliceStable(entries, func(i, j int) bool { return entries[i].t.Before(entries[j].t) })
@@ -301,6 +307,107 @@ func lokiStreams(m map[string]any) ([]logLine, int, bool) {
 		}
 	}
 	return out, total, true
+}
+
+// grafanaMCPMeta is the metadata block mcp-grafana's query_loki_logs puts on
+// every answer ({linesReturned, maxLinesAllowed, resultsTruncated, ...}): it
+// is how that tool's answer is told apart from Loki's own API shape, which it
+// is not. See testdata/mcp-grafana-query-loki-logs.json, a real capture.
+func grafanaMCPMeta(m map[string]any) (map[string]any, bool) {
+	meta, _ := m["metadata"].(map[string]any)
+	_, ok := meta["linesReturned"]
+	return meta, ok
+}
+
+// grafanaMCPTime reads an mcp-grafana timestamp. A log line's is nanoseconds
+// in a JSON string that itself carries quote characters ("\"1790628778841205000\""),
+// a metric sample's is seconds ("1790628720.000").
+func grafanaMCPTime(v any) (time.Time, bool) {
+	if s, ok := v.(string); ok {
+		v = strings.Trim(strings.TrimSpace(s), `"`)
+	}
+	return signalTime(v)
+}
+
+// grafanaMCPLogs: mcp-grafana's query_loki_logs log answer, the tool the
+// generic MCP-server source relays for Grafana. By default it is
+// data[].{timestamp, line, labels}; with format "compact" it is
+// streams[].{labels, lines[].{timestamp, line}} beside an empty data list. A
+// data list whose items carry no `line` is a metric answer, for
+// grafanaMCPSeries.
+func grafanaMCPLogs(m map[string]any) ([]logLine, int, bool) {
+	if _, ok := grafanaMCPMeta(m); !ok {
+		return nil, 0, false
+	}
+	var out []logLine
+	total := 0
+	read := func(e map[string]any, stream string) {
+		total++
+		t, tok := grafanaMCPTime(e["timestamp"])
+		line, lok := e["line"].(string)
+		if tok && lok {
+			out = append(out, logLine{t: t, line: line, stream: stream})
+		}
+	}
+	if streams, ok := m["streams"].([]any); ok {
+		for _, x := range streams {
+			st, _ := x.(map[string]any)
+			label := promLabel(st["labels"])
+			lines, _ := st["lines"].([]any)
+			for _, l := range lines {
+				e, _ := l.(map[string]any)
+				read(e, label)
+			}
+		}
+		return out, total, true
+	}
+	items, ok := m["data"].([]any)
+	if !ok {
+		return nil, 0, false
+	}
+	for _, it := range items {
+		e, _ := it.(map[string]any)
+		if _, isLog := e["line"]; !isLog {
+			return nil, 0, false
+		}
+		read(e, promLabel(e["labels"]))
+	}
+	return out, total, true
+}
+
+// grafanaMCPNotes is what mcp-grafana says about its own answer: that it
+// stopped at its limit with more left, and its one-line summary of the read
+// (the lookback it assumed, or why nothing matched). Nil for any other answer.
+func grafanaMCPNotes(payload any) []string {
+	m, _ := payload.(map[string]any)
+	meta, ok := grafanaMCPMeta(m)
+	if !ok {
+		return nil
+	}
+	var notes []string
+	if meta["resultsTruncated"] == true {
+		n, _ := finiteNumber(meta["linesReturned"])
+		notes = append(notes, fmt.Sprintf("The source stopped at its limit of %s for this read, and more matched. "+
+			"To see more, narrow the time window or the query in params, or set a higher limit in params.",
+			plural(int(n), "result", "results")))
+	}
+	hints, _ := m["hints"].(map[string]any)
+	if summary, _ := hints["summary"].(string); strings.TrimSpace(summary) != "" {
+		var cut lineCuts
+		notes = append(notes, "The source notes: "+cut.line(summary, signalLineMax))
+		if note := cut.note("line", "lines", signalLineMax); note != "" {
+			notes = append(notes, note)
+		}
+	}
+	return notes
+}
+
+// withNotes puts each note on a line of its own after view.
+func withNotes(view string, notes []string) string {
+	if len(notes) == 0 {
+		return view
+	}
+	return view + "\n" + strings.Join(notes, "\n")
 }
 
 // coralogixLogs: a DataPrime batch, result.results[] (or results[]), each with
@@ -454,12 +561,15 @@ func azureLogs(m map[string]any) ([]logLine, int, bool) {
 	return out, len(rows), true
 }
 
-func renderLogs(head string, entries []logLine, total, n int, token *pageTokenInfo) string {
+func renderLogs(head string, entries []logLine, total, n int, token *pageTokenInfo, notes []string) string {
 	var sb strings.Builder
 	if len(entries) == 0 {
 		fmt.Fprintf(&sb, "%s: no log events came back.", head)
 		if total > 0 {
 			fmt.Fprintf(&sb, " %s in the answer could not be read as log lines; pass raw: true to see them.", plural(total, "item", "items"))
+		}
+		for _, note := range notes {
+			writeNote(&sb, note)
 		}
 		writeToken(&sb, token)
 		return sb.String()
@@ -507,6 +617,9 @@ func renderLogs(head string, entries []logLine, total, n int, token *pageTokenIn
 			plural(skipped, "item", "items"))
 	}
 	writeNote(&sb, cut.note("line", "lines", signalLineMax))
+	for _, note := range notes {
+		writeNote(&sb, note)
+	}
 	writeToken(&sb, token)
 	return strings.TrimRight(sb.String(), "\n")
 }
@@ -530,7 +643,7 @@ func readSeries(payload any) ([]seriesView, bool) {
 		return nil, false
 	}
 	for _, read := range []func(map[string]any) ([]seriesView, bool){
-		cloudwatchStatistics, cloudwatchMetricData, datadogSeries, promSeries, gcpSeries, azureSeries,
+		cloudwatchStatistics, cloudwatchMetricData, datadogSeries, promSeries, gcpSeries, azureSeries, grafanaMCPSeries,
 	} {
 		if series, ok := read(m); ok {
 			for i := range series {
@@ -678,6 +791,45 @@ func promSeries(m map[string]any) ([]seriesView, bool) {
 	}
 	known := data["resultType"] == "matrix" || data["resultType"] == "vector"
 	return out, len(out) > 0 || (known && len(result) == 0)
+}
+
+// grafanaMCPSeries: mcp-grafana's query_loki_logs metric answer (a LogQL
+// metric query such as count_over_time), data[].{labels, values[].{timestamp,
+// value}} for a range query, or data[].{labels, timestamp, value} for an
+// instant one.
+func grafanaMCPSeries(m map[string]any) ([]seriesView, bool) {
+	if _, ok := grafanaMCPMeta(m); !ok {
+		return nil, false
+	}
+	items, ok := m["data"].([]any)
+	if !ok {
+		return nil, false
+	}
+	var out []seriesView
+	for _, it := range items {
+		r, _ := it.(map[string]any)
+		rows, isRange := r["values"].([]any)
+		if !isRange {
+			if _, isInstant := r["value"]; !isInstant {
+				continue
+			}
+			rows = []any{r}
+		}
+		s := seriesView{label: promLabel(r["labels"])}
+		if s.label == "" {
+			s.label = "series"
+		}
+		for _, row := range rows {
+			p, _ := row.(map[string]any)
+			t, tok := grafanaMCPTime(p["timestamp"])
+			v, vok := finiteNumber(p["value"])
+			if tok && vok {
+				s.points = append(s.points, point{t, v})
+			}
+		}
+		out = append(out, s)
+	}
+	return out, len(out) > 0
 }
 
 // gcpSeries: Cloud Monitoring timeSeries[].{metric.type, points[].{interval.endTime, value}}.

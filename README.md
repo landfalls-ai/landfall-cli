@@ -115,6 +115,13 @@ waiting. (Until v0.8.12 the `Stop` hook refused the agent's conclusion instead, 
 made it run another turn on its own. That is now an explicit opt-in: see
 [What `Stop` does](#what-stop-does).)
 
+**Room news is information, not a task.** Your agent's standing instructions say the
+same thing the hooks do. Whatever reaches it from the room, inside one of its own tool
+results or with your next message, it mentions what bears on what you asked in one line
+and carries on with your request. It does not go off reading artifacts, posting to the
+room or running queries because of room news unless you ask. If someone in the room asks
+your agent for something, it tells you; whether it does it is your call.
+
 ```
 landfall hooks install                  # every detected host
 landfall hooks install --only codex     # just one

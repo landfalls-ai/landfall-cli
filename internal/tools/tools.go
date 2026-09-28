@@ -612,25 +612,19 @@ func (b *bridge) searchContext(ctx context.Context, args map[string]any, _ strin
 }
 
 // getSignalCatalog and querySignals (20260906-204144-data-source-sdk /
-// landfall-cli#12) are a straight passthrough, like search_context: the
-// credential proxy and the shape of a source's advertised operations are
-// entirely server- and plugin-owned, so there is nothing for this CLI to
-// interpret beyond rendering what came back. A failure is reported as a
-// normal (non-error) result — same discipline as flagContext/stageClaim —
-// so the wrapper's flush/vote/nudge epilogue still runs.
+// landfall-cli#12) read through routes whose shapes are server- and
+// plugin-owned. The catalog is rendered as a compact list an agent reads
+// (narrate.RenderSignalCatalog: source, connection, account, each operation
+// with what it reads, its parameters and its time window); a query's answer
+// is the provider's raw envelope, passed through. A failure is reported as a
+// normal (non-error) result, same discipline as flagContext/stageClaim, so
+// the wrapper's flush/vote/nudge epilogue still runs.
 func (b *bridge) getSignalCatalog(ctx context.Context, _ map[string]any, _ string, cl session.EdgeClient) (string, error) {
 	catalog, err := cl.GetSignalCatalog(ctx)
 	if err != nil {
 		return fmt.Sprintf("The signal catalog is unavailable right now: %v", err), nil
 	}
-	if catalog == nil {
-		catalog = []client.SignalCatalogEntry{}
-	}
-	encoded, err := json.MarshalIndent(catalog, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(encoded), nil
+	return narrate.RenderSignalCatalog(catalog), nil
 }
 
 func (b *bridge) querySignals(ctx context.Context, args map[string]any, _ string, cl session.EdgeClient) (string, error) {

@@ -698,8 +698,11 @@ func TestGetSignalCatalogRendersTheCatalogAndNeverContributes(t *testing.T) {
 	list := Build(newSession(c))
 	out := callTool(t, list, "get_signal_catalog", map[string]any{})
 
-	if !strings.Contains(out, `"source": "cloudwatch"`) {
+	if !strings.Contains(out, "1 telemetry source connected.") || !strings.Contains(out, "cloudwatch · metrics") {
 		t.Errorf("result = %q", out)
+	}
+	if strings.Contains(out, `"source"`) {
+		t.Errorf("the catalog is still a JSON dump: %q", out)
 	}
 	if len(c.recorded("contribute")) != 0 {
 		t.Errorf("get_signal_catalog must never post a contribution, got %v", c.recorded("contribute"))
@@ -713,7 +716,7 @@ func TestGetSignalCatalogDegradesToEmptyRatherThanErroring(t *testing.T) {
 	c := &fakeClient{}
 	list := Build(newSession(c))
 	out := callTool(t, list, "get_signal_catalog", map[string]any{})
-	if strings.TrimSpace(out) != "[]" {
+	if !strings.HasPrefix(out, "No telemetry sources are connected") {
 		t.Errorf("result = %q, want an empty catalog", out)
 	}
 }

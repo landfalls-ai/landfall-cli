@@ -482,6 +482,23 @@ Tools: `join_war_room`, `get_updates`, `get_brief`, `read_timeline`, `search_con
 `record_activity`, `get_signal_catalog`, `query_signals` (the incident's connected telemetry sources
 and a read against one of them, through Landfall's credential proxy).
 
+`get_signal_catalog` answers as a short list rather than raw JSON: one line per source with its
+kinds and the connection and account to pass, then one line per operation with what it reads,
+its parameters in the source's own order, and how it takes a time window:
+
+```
+2 telemetry sources connected. Read one with query_signals {source, operation, params}.
+
+cloudwatch · metrics, logs · connection "landfall-aws" (Production AWS)
+  getMetricStatistics (metrics, range): CloudWatch GetMetricStatistics, a metric statistic series.
+    params: Namespace (e.g. AWS/CloudFront), MetricName (e.g. 5xxErrorRate), StartTime (RFC3339 or epoch), ...
+    window: StartTime to EndTime as iso, step Period
+
+loki · logs
+  logs.range (logs, range): LogQL range query.
+    params: query (LogQL, e.g. {app="web"})
+```
+
 ## Env-config setup
 
 ```json

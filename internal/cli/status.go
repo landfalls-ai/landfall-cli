@@ -161,19 +161,26 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 }
 
 // spoolSuffix is what only this checkout's spool (the worker's, not the
-// daemon's) knows about the rooms on the line: hand-offs held by the
-// working-directory rule, and hand-offs the room refused within
-// spool.RefusedWindow. Counted here so the person sees them where they are
-// working; "" when there is nothing to add or no spool to read.
+// daemon's) knows about the rooms on the line: a room session that has
+// expired (the room answered 401, so shares wait here until the person
+// rejoins with a new link), hand-offs held by the working-directory rule, and
+// hand-offs the room refused within spool.RefusedWindow. Counted here so the
+// person sees them where they are working; "" when there is nothing to add or
+// no spool to read.
 func spoolSuffix(ws hooks.Workspace, incidentIDs []string, now time.Time) string {
 	sp, err := spool.Open(ws.Getenv, hooks.WorkspaceKey(ws.Dir()))
 	if err != nil {
 		return ""
 	}
 	held, refused := 0, 0
+	expired, waiting := false, 0
 	for _, id := range incidentIDs {
 		if id == "" {
 			continue
+		}
+		if gone, n, xerr := sp.AwaitingSession(id); xerr == nil && gone {
+			expired = true
+			waiting += n
 		}
 		if items, herr := sp.Held(id); herr == nil {
 			held += len(items)
@@ -183,6 +190,15 @@ func spoolSuffix(ws hooks.Workspace, incidentIDs []string, now time.Time) string
 		}
 	}
 	out := ""
+	// First, because it is the one thing only the person can fix and it stops
+	// everything else from reaching the room.
+	if expired {
+		shares := fmt.Sprintf("%d shares waiting", waiting)
+		if waiting == 1 {
+			shares = "1 share waiting"
+		}
+		out += " · session expired, " + shares + ": rejoin with a new link"
+	}
 	if held > 0 {
 		out += fmt.Sprintf(" · %d held", held)
 	}

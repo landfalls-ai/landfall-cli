@@ -141,19 +141,66 @@ func (e *HTTPError) Error() string {
 // that asking again, unchanged, will only get again. The spooled hand-off
 // that drew one is failed for good rather than retried forever.
 //
-// Three 4xx codes are NOT refusals, because each one means "not now" rather
-// than "not this": 408 (the request timed out), 425 (too early) and 429 (the
-// room's rate limit). Those are retried like any transport failure.
+// Some 4xx answers are NOT refusals, because each one means "not now" rather
+// than "not this", and those are retried like any transport failure:
+//
+//   - 408 (the request timed out), 425 (too early), 429 (the room's rate
+//     limit).
+//   - 401: the room session this client holds has expired (an edge session
+//     token lives for 8 hours and this CLI cannot renew it). Nothing is wrong
+//     with the hand-off; it lands once the person rejoins with a new link,
+//     which starts the worker again over the same queue. See SessionExpired.
+//   - 409 when the write lost a race with other writers in a busy room
+//     ("could not append edge event after retries", "could not append claim
+//     event after retries"). Retrying is safe: nothing was appended, and a
+//     claim carries reuseIfStaged. Only a 409 that names a state of the room
+//     ("engagement is closed; admission is frozen") is a refusal. See
+//     lostRace.
 func Refusal(err error) (*HTTPError, bool) {
 	var he *HTTPError
 	if !errors.As(err, &he) || he.Status < 400 || he.Status > 499 {
 		return nil, false
 	}
 	switch he.Status {
-	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests, http.StatusUnauthorized:
 		return nil, false
+	case http.StatusConflict:
+		if lostRace(he.Reason) {
+			return nil, false
+		}
 	}
 	return he, true
+}
+
+// raceWords are the phrases core-api's lost-append ConflictExceptions use.
+var raceWords = []string{"after retries", "retry", "did not converge"}
+
+// SessionExpired reports whether err is the room saying this client's session
+// is no longer valid (HTTP 401). The edge session token is minted for 8 hours
+// at join and there is no refresh path, so in a long incident every write
+// after that point draws one. It is not a refusal of what was sent: the same
+// hand-off lands once the person rejoins with a new link.
+func SessionExpired(err error) bool {
+	var he *HTTPError
+	return errors.As(err, &he) && he.Status == http.StatusUnauthorized
+}
+
+// lostRace reports that a 409 is the room losing an append race rather than
+// refusing the write. core-api appends with optimistic concurrency and, when
+// it keeps losing to other writers, gives up with a ConflictException whose
+// words say so: "could not append … after retries", "… did not converge",
+// "expectedSeq stale, retry". Every other 409 names a state of the room (a
+// closed engagement, an item already decided) that asking again will not
+// change. A 409 with no words at all is treated as a race: the room's own
+// state conflicts always say what they are.
+func lostRace(reason string) bool {
+	r := strings.ToLower(strings.TrimSpace(reason))
+	for _, words := range raceWords {
+		if strings.Contains(r, words) {
+			return true
+		}
+	}
+	return r == ""
 }
 
 // post issues a POST and decodes into `out` (which may be nil). A 202 carries

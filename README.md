@@ -344,18 +344,33 @@ The allowance is per room and survives a daemon restart. There is no MCP tool fo
 
 `share_with_room` returns at once and publishes in the background, so the agent is told
 "shared" before the room has seen it. When the room then refuses it outright (a malformed
-widget, a claim for a room that has closed, any other 4xx), the hand-off is not retried: it is
-kept in this checkout's queue with the room's reason, your agent's next room tool call opens
-with one line per refusal, for example
+widget, a claim for a room that has closed, a room this session may not write to), the
+hand-off is not retried: it is kept in this checkout's queue with the room's reason, and your
+agent's next room tool call opens with one line per refusal and what to do about it. Only a
+refusal that names something in the share (a missing statement, a widget that does not fit its
+shape) asks the agent to share it again, corrected; any other says sharing again gets the same
+answer, for example
 
 ```
 Your earlier share did not reach the room: engagement is closed; admission is frozen (it began "the root cause is the rollback at 14:20").
-It will not be retried. Share it again, corrected, if the room still needs it.
+It will not be retried. Sharing it again will get the same answer; tell the person.
 ```
 
 and `landfall status` shows `· N shares refused` for an hour. A room that is only
-unreachable, slow, rate-limiting or failing on its own side is different: those hand-offs stay
-queued and publish when it answers.
+unreachable, slow, rate-limiting, failing on its own side, or so busy that a write lost a race
+with other writers (HTTP 409 "could not append … after retries") is different: those hand-offs
+stay queued and publish when it answers.
+
+### When the room session expires
+
+The session a join starts lasts 8 hours, and this CLI cannot renew it. After that the room
+answers every share with HTTP 401. Nothing is lost and nothing is refused: the shares stay
+queued on this machine, `landfall status` shows
+`· session expired, N shares waiting: rejoin with a new link`, and your agent's next room tool
+result says so once (and `share_with_room` says "queued on this machine, not in the room yet"
+rather than "shared"). Rejoin the room the way you joined it (a new agent link from the room,
+or the incident URL if you are signed in with `landfall login`); the waiting shares go out on
+their own.
 
 ## Any other MCP client, or a global CLI install: sign in once, then join with no share link
 

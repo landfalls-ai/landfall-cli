@@ -262,13 +262,13 @@ func TestRunStatusCountsSharesTheRoomRefused(t *testing.T) {
 		if aerr != nil {
 			t.Fatalf("Accept: %v", aerr)
 		}
-		if rerr := sp.Refuse("inc-1", e.ID, "statement required"); rerr != nil {
+		if rerr := sp.Refuse("inc-1", e.ID, 400, "statement required"); rerr != nil {
 			t.Fatalf("Refuse: %v", rerr)
 		}
 	}
 	// Another room's refusal is not this line's business.
 	other, _ := sp.Accept("inc-2", "a-1", "elsewhere", nil)
-	_ = sp.Refuse("inc-2", other.ID, "no")
+	_ = sp.Refuse("inc-2", other.ID, 400, "no")
 
 	WriteStatusCache(status("inc-1", 0, 0), ws)
 	plantDeadSocket(t, ws)
@@ -286,6 +286,41 @@ func TestRunStatusCountsSharesTheRoomRefused(t *testing.T) {
 	}
 	if got := spoolSuffix(ws, []string{"inc-2"}, time.Now()); got != " · 1 share refused" {
 		t.Fatalf("one refusal = %q", got)
+	}
+}
+
+// TestRunStatusSaysTheRoomSessionExpired: after 8 hours the room answers 401
+// to every share, and only the person can fix that, by rejoining with a new
+// link. The line says so, with how many shares are waiting on it.
+func TestRunStatusSaysTheRoomSessionExpired(t *testing.T) {
+	ws := withWorkspace(t)
+	ws.Env["XDG_STATE_HOME"] = ws.Cwd
+	sp, err := spool.Open(ws.Getenv, hooks.WorkspaceKey(ws.Dir()))
+	if err != nil {
+		t.Fatalf("spool.Open: %v", err)
+	}
+	first, _ := sp.Accept("inc-1", "a-1", "origin returned 502", nil)
+	_, _ = sp.Accept("inc-1", "a-1", "latency spiked at 14:02", nil)
+	if got := spoolSuffix(ws, []string{"inc-1"}, time.Now()); got != "" {
+		t.Fatalf("shares merely queued already read as a problem: %q", got)
+	}
+	_ = sp.Claim("inc-1", first.ID)
+	if xerr := sp.Expire("inc-1", first.ID, "HTTP 401"); xerr != nil {
+		t.Fatalf("Expire: %v", xerr)
+	}
+
+	WriteStatusCache(status("inc-1", 0, 0), ws)
+	plantDeadSocket(t, ws)
+
+	var out bytes.Buffer
+	if code := RunStatus(&UI{Out: &out, Err: io.Discard}, ws); code != 0 {
+		t.Fatalf("exit code %d", code)
+	}
+	if !strings.HasSuffix(out.String(), " · session expired, 2 shares waiting: rejoin with a new link") {
+		t.Fatalf("got %q", out.String())
+	}
+	if strings.Contains(out.String(), "refused") {
+		t.Fatalf("an expired session reads as a refusal: %q", out.String())
 	}
 }
 

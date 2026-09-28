@@ -76,9 +76,21 @@ func (a *Accepter) TakeRefusals(incidentID string) []tools.Refusal {
 	}
 	out := make([]tools.Refusal, 0, len(entries))
 	for _, e := range entries {
-		out = append(out, tools.Refusal{Text: e.Text, Reason: e.Refusal})
+		out = append(out, tools.Refusal{Text: e.Text, Reason: e.Refusal, Status: e.RefusalStatus})
 	}
 	return out
+}
+
+// SessionExpired implements tools.SessionReporter: whether the room answered
+// this room's latest publish with 401 (the session expired), and how many
+// hand-offs wait on this machine for the person to rejoin. A spool that cannot
+// be read says nothing this time.
+func (a *Accepter) SessionExpired(incidentID string) (int, bool) {
+	expired, waiting, err := a.spool.AwaitingSession(incidentID)
+	if err != nil {
+		return 0, false
+	}
+	return waiting, expired
 }
 
 // Spool exposes the queue for the person commands that list and release holds.

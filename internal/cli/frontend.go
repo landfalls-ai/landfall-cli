@@ -433,6 +433,12 @@ func (h *holdingAccepter) TakeRefusals(incidentID string) []tools.Refusal {
 	return h.inner.TakeRefusals(incidentID)
 }
 
+// SessionExpired implements tools.SessionReporter by asking the spool, which
+// this process's worker marks when the room answers 401.
+func (h *holdingAccepter) SessionExpired(incidentID string) (int, bool) {
+	return h.inner.SessionExpired(incidentID)
+}
+
 // HeldReason implements tools.HeldReporter.
 func (h *holdingAccepter) HeldReason(id string) []string {
 	h.mu.Lock()

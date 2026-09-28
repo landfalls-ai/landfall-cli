@@ -57,11 +57,11 @@ func TestAReasonFieldWinsOverMessage(t *testing.T) {
 
 func TestRefusalIsEveryClientErrorExceptNotNow(t *testing.T) {
 	for status, want := range map[int]bool{
-		400: true, 401: true, 403: true, 404: true, 409: true, 413: true, 422: true,
-		408: false, 425: false, 429: false,
+		400: true, 403: true, 404: true, 413: true, 422: true,
+		401: false, 408: false, 425: false, 429: false,
 		500: false, 502: false, 503: false, 302: false,
 	} {
-		err := fmt.Errorf("publish: %w", &HTTPError{Path: "/x", Status: status})
+		err := fmt.Errorf("publish: %w", &HTTPError{Path: "/x", Status: status, Reason: "no"})
 		if _, got := Refusal(err); got != want {
 			t.Errorf("Refusal(HTTP %d) = %v, want %v", status, got, want)
 		}
@@ -71,5 +71,46 @@ func TestRefusalIsEveryClientErrorExceptNotNow(t *testing.T) {
 	}
 	if _, got := Refusal(nil); got {
 		t.Error("nil is not a refusal")
+	}
+}
+
+// TestAConflictIsARefusalOnlyWhenItNamesTheRoomsState: core-api answers 409
+// both when a write loses an append race in a busy room (worth another try:
+// nothing was appended) and when the room's state rules the write out (a
+// closed engagement). Only the second is final.
+func TestAConflictIsARefusalOnlyWhenItNamesTheRoomsState(t *testing.T) {
+	for reason, want := range map[string]bool{
+		// edge.service.ts and admission.service.ts, verbatim.
+		"could not append edge event after retries":                false,
+		"could not append claim event after retries":               false,
+		"org-memory event append: seq allocation did not converge": false,
+		"expectedSeq stale, retry":                                 false,
+		"":                                                         false,
+		"engagement is closed; admission is frozen":                true,
+		"incident is closed; vetting is frozen":                    true,
+		"that proposal is already applied":                         true,
+	} {
+		err := fmt.Errorf("publish: %w", &HTTPError{Path: "/claims", Status: 409, Reason: reason})
+		if _, got := Refusal(err); got != want {
+			t.Errorf("Refusal(HTTP 409 %q) = %v, want %v", reason, got, want)
+		}
+	}
+}
+
+// TestSessionExpiredIsA401Only: the worker keeps a hand-off that drew one
+// queued for the next session and says why; nothing else reads as expiry.
+func TestSessionExpiredIsA401Only(t *testing.T) {
+	if !SessionExpired(fmt.Errorf("publish: %w", &HTTPError{Path: "/edge/contributions", Status: 401, Reason: "Unauthorized"})) {
+		t.Error("HTTP 401 is an expired session")
+	}
+	for _, err := range []error{
+		&HTTPError{Path: "/x", Status: 403},
+		&HTTPError{Path: "/x", Status: 500},
+		errors.New("connection refused"),
+		nil,
+	} {
+		if SessionExpired(err) {
+			t.Errorf("SessionExpired(%v) = true", err)
+		}
 	}
 }

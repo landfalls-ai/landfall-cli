@@ -290,15 +290,55 @@ func (s *Spool) Ack(incidentID, id string) error {
 	return s.mark(incidentID, id, func(e *Entry) { e.State = Published })
 }
 
-// Fail returns an entry to the queue and records why, for backoff.
+// Fail returns an entry to the queue and records why, for backoff. The latest
+// attempt met something other than an expired session, so an earlier expiry
+// mark is cleared.
 func (s *Spool) Fail(incidentID, id string, cause error) error {
 	return s.mark(incidentID, id, func(e *Entry) {
 		e.State = Queued
 		e.Attempts++
+		e.SessionExpired = false
 		if cause != nil {
 			e.LastError = cause.Error()
 		}
 	})
+}
+
+// Expire returns an entry to the queue because the room said the session
+// that sent it has expired (HTTP 401). Nothing is wrong with the entry: it
+// waits here, marked, until the person rejoins with a new link and a worker
+// over the new session publishes it. The mark is what the status line and
+// the agent's next room tool result read to say so.
+func (s *Spool) Expire(incidentID, id, reason string) error {
+	return s.mark(incidentID, id, func(e *Entry) {
+		e.State = Queued
+		e.Attempts++
+		e.SessionExpired = true
+		e.LastError = reason
+	})
+}
+
+// AwaitingSession reports whether a room's queue is waiting on a new session:
+// some queued entry's latest attempt met an expired one. waiting is how many
+// hand-offs are still owed to the room (queued or mid-publish), all of which
+// go out once the person rejoins.
+func (s *Spool) AwaitingSession(incidentID string) (expired bool, waiting int, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entries, err := s.load(incidentID)
+	if err != nil {
+		return false, 0, err
+	}
+	for _, e := range entries {
+		switch e.State {
+		case Queued, Publishing:
+			waiting++
+			if e.SessionExpired {
+				expired = true
+			}
+		}
+	}
+	return expired, waiting, nil
 }
 
 // RefusedWindow is how long a refusal counts on the status line. Long enough
@@ -307,14 +347,17 @@ func (s *Spool) Fail(incidentID, id string, cause error) error {
 const RefusedWindow = time.Hour
 
 // Refuse records that the room refused an entry outright (a 4xx): the entry
-// becomes Refused, which the worker never retries, and keeps the room's reason
-// so the agent and the person can be told what to fix.
-func (s *Spool) Refuse(incidentID, id, reason string) error {
+// becomes Refused, which the worker never retries, and keeps the room's HTTP
+// status and reason so the agent and the person can be told what happened
+// and whether a corrected share could land.
+func (s *Spool) Refuse(incidentID, id string, status int, reason string) error {
 	now := time.Now().UTC()
 	return s.mark(incidentID, id, func(e *Entry) {
 		e.State = Refused
 		e.Attempts++
+		e.SessionExpired = false
 		e.Refusal = reason
+		e.RefusalStatus = status
 		e.LastError = reason
 		e.RefusedAt = &now
 	})

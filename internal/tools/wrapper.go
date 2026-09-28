@@ -9,6 +9,7 @@ package tools
 import (
 	"context"
 	"errors"
+	"sync"
 
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
 	"github.com/landfalls-ai/landfall-cli/internal/narrate"
@@ -25,6 +26,11 @@ var errNotConnected = errors.New("not connected — call join_war_room with a La
 type bridge struct {
 	sess *session.Session
 	acc  Accepter
+
+	// expiryTold is per room: the agent has been told that room's session
+	// expired (see expiryNotice). Guarded by mu.
+	mu         sync.Mutex
+	expiryTold map[string]bool
 }
 
 // handlerFunc is a tool's own work, run between the narration prologue and the

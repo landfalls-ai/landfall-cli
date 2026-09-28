@@ -37,6 +37,7 @@ import "time"
 //	       │
 //	       ▼
 //	 [Publishing] ── transient failure ──► [Queued] (attempts++)
+//	       │ ├────── session expired (401) ──► [Queued] (marked SessionExpired)
 //	       │ └────── the room refused it (4xx) ──► [Refused]
 //	    success
 //	       │
@@ -44,8 +45,10 @@ import "time"
 //	 [Published] ──► compacted out on Ack
 //
 // A transient failure (the room unreachable, a timeout, a 5xx, the room's rate
-// limit) requeues: the same hand-off will likely land later. A REFUSAL does
-// not. The room answered 400 "statement required" to every claim this bridge
+// limit, a write that lost a race with other writers) requeues: the same
+// hand-off will likely land later. So does an expired session (a 401), with a
+// mark saying so: the hand-off lands once the person rejoins with a new link.
+// A REFUSAL does not. The room answered 400 "statement required" to every claim this bridge
 // ever staged, and the entry was retried every five seconds for the rest of
 // the session while the agent had been told "shared" (found 2026-09-28). An
 // entry the room refuses is therefore Refused: kept, never retried, and told
@@ -132,12 +135,24 @@ type Entry struct {
 	// Refusal is the room's own reason for refusing this hand-off, set when
 	// State == Refused ("statement required", the widget contract error).
 	Refusal string `json:"refusal,omitempty"`
+	// RefusalStatus is the HTTP status the refusal came with. It decides what
+	// the agent is told to do: a 400 names something in the hand-off it can
+	// fix; a 403, 404 or a closed engagement's 409 will answer a corrected
+	// share the same way. Zero on an entry refused before this was recorded.
+	RefusalStatus int `json:"refusal_status,omitempty"`
 	// RefusedAt is when the room refused it. The status line counts recent
 	// refusals only (RefusedWindow), so an old one does not linger there.
 	RefusedAt *time.Time `json:"refused_at,omitempty"`
 	// Reported records that the agent was told about the refusal, on a room
 	// tool result. Each refusal is told once.
 	Reported bool `json:"reported,omitempty"`
+
+	// SessionExpired records that this entry's latest attempt was answered
+	// HTTP 401: the room session that sent it had expired. The entry stays
+	// Queued (nothing is wrong with it) and goes out once the person rejoins
+	// with a new link; until then the status line and the agent say why it
+	// has not landed. Cleared by the next attempt that meets anything else.
+	SessionExpired bool `json:"session_expired,omitempty"`
 
 	// SourceQueryFailed is the caller's OWN self-report, at hand-off time,
 	// that this text/widget was produced after one of its own tool calls

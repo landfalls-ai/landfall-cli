@@ -121,7 +121,7 @@ func RedeemShareLink(ctx context.Context, shareURL string, opts RedeemOptions) (
 
 	doer := opts.Doer
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = defaultHTTP
 	}
 
 	endpoint := base + "/o/" + parsed.Slug + "/incidents/" + parsed.IncidentID + "/edge/redeem"
@@ -151,7 +151,7 @@ func redeemShortLink(ctx context.Context, short ShortLink, opts RedeemOptions) (
 
 	doer := opts.Doer
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = defaultHTTP
 	}
 
 	endpoint := base + "/j/" + short.Code + "/redeem"

@@ -235,3 +235,21 @@ func TestAVoteRequestMatchesTheSurfaceItArrivesOn(t *testing.T) {
 		}
 	}
 }
+
+// An agent shares only what its person asks it to share: everything it shares appears
+// under the person's name (2026-09-29, found rehearsing a scripted two-harness session,
+// where one agent posted a finding its person had not asked it to post).
+func TestBothInstructionVariantsShareOnlyWhenThePersonAsks(t *testing.T) {
+	for name, text := range map[string]string{"bridge": BridgeAgentInstructions, "direct": EdgeAgentInstructions} {
+		for _, want := range []string{"only what the person asks you to", "appears under their name", "say so in one\n  line and offer to"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s instructions: missing %q", name, want)
+			}
+		}
+		for _, banned := range []string{"When you find something worth sharing, call share_with_room", "Publish concise results as you go"} {
+			if strings.Contains(text, banned) {
+				t.Errorf("%s instructions: still say %q", name, banned)
+			}
+		}
+	}
+}

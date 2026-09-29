@@ -111,7 +111,9 @@ How to work:
 - First call get_brief for the current incident context. Call get_updates at task
   boundaries and before you conclude to pull what other investigators have found
   (durable cursor — only what is new since you last looked).
-- Publish concise results as you go: post_finding for findings, propose_action for
+- Publish to the room only what the person asks you to publish: everything you post
+  appears under their name. When you find something the room would want, say so in one
+  line and offer to post it. When they ask: post_finding for findings, propose_action for
   remediations, post_widget to add a widget (stat, chart, table, logView, timeline, a geo
   world map keyed by region, an events audit trail, or a graph of how things connect) to
   your own sub-investigation dashboard; describe_widget_types lists what each type is for.
@@ -556,11 +558,24 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 		b.sess.NoteFrame(frame)
 		briefLine = "\n\n" + narrate.RenderFrame(frame)
 	}
-	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. "+
+	// The room by the name people see ("Acme 42 · Checkout 5xx"), never its
+	// UUID, which the model otherwise repeats back to the person verbatim.
+	room := "incident " + cfg.IncidentID
+	if n := narrate.RoomNameOf(frame); frameErr == nil && !n.IsZero() {
+		switch {
+		case n.DisplayID != "" && n.Title != "":
+			room = n.DisplayID + " · " + n.Title
+		case n.DisplayID != "":
+			room = n.DisplayID
+		default:
+			room = n.Title
+		}
+	}
+	return fmt.Sprintf("Joined the war room for %s (workspace %s) as %s. "+
 		"You are in the room from this session; the brief is below. Now go back to what the person was doing — "+
 		"room news reaches you through your host's hooks and status line. Do not spawn a subagent for this room "+
 		"unless the person asks for a deep investigation.%s",
-		cfg.IncidentID, cfg.Slug, quote(b.sess.AgentLabel()), briefLine), nil
+		room, cfg.Slug, quote(b.sess.AgentLabel()), briefLine), nil
 }
 
 func (b *bridge) getUpdates(ctx context.Context, args map[string]any, _ string, cl session.EdgeClient) (string, error) {

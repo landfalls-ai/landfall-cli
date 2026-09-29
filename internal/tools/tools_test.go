@@ -497,7 +497,8 @@ func TestJoinWarRoomIncludesTheBriefInlineAndUnlocksTheOtherTools(t *testing.T) 
 	out := callTool(t, list, "join_war_room", map[string]any{"shareUrl": "http://api.test/o/acme/incidents/inc-2/agent?ticket=t"})
 
 	for _, want := range []string{
-		"Joined war room for incident inc-2", `as "Claude Code"`,
+		// The room by the name people see, not its id (2026-09-29).
+		"Joined the war room for CloudFront 5xx spike", `as "Claude Code"`,
 		"CloudFront 5xx spike", "Established:", "Origin misconfigured",
 	} {
 		if !strings.Contains(out, want) {
@@ -520,7 +521,7 @@ func TestJoinWarRoomStillSucceedsIfTheInlineBriefFetchFails(t *testing.T) {
 	list := Build(joinableSession(c, "inc-3"))
 	out := callTool(t, list, "join_war_room", map[string]any{"shareUrl": "http://api.test/o/acme/incidents/inc-3/agent?ticket=t"})
 
-	if !strings.Contains(out, "Joined war room for incident inc-3") {
+	if !strings.Contains(out, "Joined the war room for incident inc-3") {
 		t.Errorf("the join itself must not fail: %q", out)
 	}
 	if !strings.Contains(out, "call get_brief") {

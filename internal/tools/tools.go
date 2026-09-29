@@ -558,11 +558,24 @@ func (b *bridge) joinWarRoom(ctx context.Context, args map[string]any) (string, 
 		b.sess.NoteFrame(frame)
 		briefLine = "\n\n" + narrate.RenderFrame(frame)
 	}
-	return fmt.Sprintf("Joined war room for incident %s (workspace %s) as %s. "+
+	// The room by the name people see ("Acme 42 · Checkout 5xx"), never its
+	// UUID, which the model otherwise repeats back to the person verbatim.
+	room := "incident " + cfg.IncidentID
+	if n := narrate.RoomNameOf(frame); frameErr == nil && !n.IsZero() {
+		switch {
+		case n.DisplayID != "" && n.Title != "":
+			room = n.DisplayID + " · " + n.Title
+		case n.DisplayID != "":
+			room = n.DisplayID
+		default:
+			room = n.Title
+		}
+	}
+	return fmt.Sprintf("Joined the war room for %s (workspace %s) as %s. "+
 		"You are in the room from this session; the brief is below. Now go back to what the person was doing — "+
 		"room news reaches you through your host's hooks and status line. Do not spawn a subagent for this room "+
 		"unless the person asks for a deep investigation.%s",
-		cfg.IncidentID, cfg.Slug, quote(b.sess.AgentLabel()), briefLine), nil
+		room, cfg.Slug, quote(b.sess.AgentLabel()), briefLine), nil
 }
 
 func (b *bridge) getUpdates(ctx context.Context, args map[string]any, _ string, cl session.EdgeClient) (string, error) {

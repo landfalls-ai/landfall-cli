@@ -71,3 +71,22 @@ test("the mod never approves a share it did not raise: the agent's own share_wit
   } as never)
   expect(verdict.decision).toBe('ask')
 })
+
+test('pressing 4 needs no second approval: the mod allows exactly its own share while it is in flight', async ($, on) => {
+  const verdicts: string[] = []
+  on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'cloudwatch getMetricData: 1 series, 60 points, 17:00 to 18:00Z.' }] } }))
+  on('tool.check', () => ({ decision: 'ask' }))
+  on('ui.toast', () => ({ value: undefined }))
+  on('ui.render', () => ({ type: 'Text', props: {}, children: [''] }))
+  on('mcp.call', async ($m, e) => {
+    // Claude Code asks tool.check about the plugin's call before running it.
+    const args = (e as { args?: Record<string, unknown> }).args ?? (e as Record<string, unknown>)
+    const v = await $.tool.check({ tool: 'mcp__landfall__share_with_room', input: args } as never)
+    verdicts.push(v.decision)
+    return { value: { content: [{ type: 'text', text: 'shared' }], isError: false } }
+  })
+  await $.tool.call({ tool: 'mcp__landfall__query_signals', tool_use_id: 't4', source: 'cloudwatch', operation: 'getMetricData', params: { MetricName: 'DbCpuUtilization' } } as never)
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  await band.press({ key: 'pin' })
+  expect(verdicts).toEqual(['allow'])
+})

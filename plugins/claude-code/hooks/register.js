@@ -54,6 +54,8 @@ let watching = false
 let chartReady = null
 // Set while a chart is being added, so a double press adds one.
 let pinning = false
+// The text of the share a press is making, so tool.check approves that call alone.
+let pinText = ''
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -112,7 +114,11 @@ export function register(on) {
   // and an organization's ceiling, always stand; every other call is untouched.
   on('tool.check', { tool: 'mcp__landfall__share_with_room' }, async ($, e, next) => {
     const verdict = await next(e)
-    const ours = next.origin?.plugin === 'landfall' && pinning && e.input && e.input.fromQuery
+    // The call this press is making: a chart in flight, carrying fromQuery, with
+    // the exact text pinChart sent. (origin.plugin names this mod too, spelled
+    // "landfall" from a directory and "landfall@landfall" once installed, so the
+    // call itself is what is matched.)
+    const ours = pinning && pinText !== '' && e.input && e.input.fromQuery && e.input.text === pinText
     if (ours && verdict.decision === 'ask' && !e.ceiling) {
       return { decision: 'allow', reason: 'The person pressed 4 to add this chart to the room.' }
     }
@@ -345,11 +351,12 @@ async function pinChart($) {
   const chart = chartReady
   if (!chart || pinning) return
   pinning = true
+  pinText = 'Chart: ' + chart.label
   chartReady = null
   $.ui.invalidate('ui.render')
   try {
     const res = await $.mcp.call(MCP_SERVER, 'share_with_room', {
-      text: 'Chart: ' + chart.label,
+      text: pinText,
       kind: 'widget',
       // The metric the person saw offered is the title; left to the read, a
       // per-region query was titled by its first series ("Global and 5 more").
@@ -362,6 +369,7 @@ async function pinChart($) {
     $.ui.toast('Chart not added: ' + String(err).slice(0, 200), { timeoutMs: 8000 })
   }
   pinning = false
+  pinText = ''
 }
 
 // chartLabel names a read by the metric it asked for, wherever the source keeps it.

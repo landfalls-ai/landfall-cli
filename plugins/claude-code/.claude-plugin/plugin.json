@@ -1,6 +1,6 @@
 {
   "name": "landfall",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Keeps a Claude Code session current on its Landfall war room without taking a turn",
   "author": { "name": "Landfall", "email": "jhonny@landfalls.ai" }
 }

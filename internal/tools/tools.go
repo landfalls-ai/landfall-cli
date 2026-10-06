@@ -475,7 +475,9 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 				"if the room refuses it, your next room tool result says why. " +
 				"To add a widget to your sub-investigation dashboard, include `widget` with the values you computed. " +
 				"It is checked against the room's shape for that type before anything is queued, and a mismatch comes back " +
-				"in this result with what to fix. Without `widget`, the text is shared as words, never as an empty widget.",
+				"in this result with what to fix. Without `widget`, the text is shared as words, never as an empty widget. " +
+				"To chart a metric you read with query_signals, pass `fromQuery` with the same source, operation and params " +
+				"instead of `widget`: the chart is built from the read, so you do not copy any points.",
 			InputSchema: obj(map[string]any{
 				"text": strProp("What you found, in your own words."),
 				"refs": map[string]any{
@@ -488,6 +490,14 @@ func BuildWithAccepter(sess *session.Session, acc Accepter) []mcp.Tool {
 					"title":      strProp(""),
 					"data":       map[string]any{"type": "object", "description": widgetShapes},
 				}, "widgetType", "title", "data"),
+				"fromQuery": obj(map[string]any{
+					"source":     strProp("The source you gave query_signals."),
+					"operation":  strProp("The operation you gave query_signals."),
+					"params":     map[string]any{"type": "object", "description": "The params you gave query_signals."},
+					"connection": strProp("The connection you gave query_signals, if any."),
+					"account":    strProp("The account you gave query_signals, if any."),
+					"title":      strProp("The chart's title; the first series' name when absent."),
+				}, "source", "operation"),
 				"kind": map[string]any{
 					"type": "string",
 					"enum": ShareKinds,

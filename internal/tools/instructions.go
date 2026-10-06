@@ -78,6 +78,10 @@ How to work:
   that actually succeeded, set sourceQueryFailed: true on that call — this is your own
   self-report, never independently checked, and it keeps the room from treating a
   failure-derived guess as verified fact.
+- A chart on the room's canvas: when the person wants a metric you read shown, call
+  share_with_room with kind widget and fromQuery set to the same source, operation and
+  params you gave query_signals. The chart is built from the read; never copy points into
+  "widget" yourself. The person may also add the chart with one key in their terminal.
 - Remediations are suggest-only: propose_action records a suggestion; a person applies
   it outside Landfall and records it as applied. You never make the change yourself,
   Landfall never makes it either, and the bridge never suggests one on your behalf:

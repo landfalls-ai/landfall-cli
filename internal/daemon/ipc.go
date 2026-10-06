@@ -57,6 +57,9 @@ const RequestTimeout = 2 * time.Second
 // AttachTimeout bounds an attach, which may perform a /edge/join.
 const AttachTimeout = 15 * time.Second
 
+// QueryTimeout bounds a query: one signal read through the room's session.
+const QueryTimeout = 30 * time.Second
+
 // Request is one line on the daemon socket.
 type Request struct {
 	Op string `json:"op"`
@@ -84,6 +87,14 @@ type Request struct {
 	// right to redeem it; `link-redeemed` records what the redeem gave (Room);
 	// `link-failed` releases the claim.
 	Link string `json:"link,omitempty"`
+
+	// query (the Claude Code mod's chart key, through `landfall chart`): one
+	// signal read with the room's own session, as query_signals makes it.
+	Source     string         `json:"source,omitempty"`
+	Operation  string         `json:"operation,omitempty"`
+	Params     map[string]any `json:"params,omitempty"`
+	Connection string         `json:"connection,omitempty"`
+	Account    string         `json:"account,omitempty"`
 
 	// share
 	Text              string         `json:"text,omitempty"`
@@ -148,6 +159,8 @@ type Response struct {
 	Claimed bool `json:"claimed,omitempty"`
 	// Allowed (match): the person has allowed working-directory content for the room.
 	Allowed bool `json:"allowed,omitempty"`
+	// Signals (query) is the read's result, as query_signals receives it.
+	Signals map[string]any `json:"signals,omitempty"`
 }
 
 // RoomView is a room as `rooms`, `peek` and `status` describe it.
@@ -326,6 +339,26 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 
 	case "peek":
 		return d.peek(req)
+
+	case "query":
+		room := d.room(req.RoomKey)
+		if room == nil {
+			return fail("no such room")
+		}
+		if strings.TrimSpace(req.Source) == "" || strings.TrimSpace(req.Operation) == "" {
+			return fail("query needs a source and an operation")
+		}
+		cl, instance := room.ClientAndInstance()
+		if cl == nil {
+			return fail("the room is not connected yet")
+		}
+		result, err := cl.QuerySignals(ctx, req.Source, req.Operation, req.Params, req.Connection, req.Account)
+		if err != nil {
+			return fail("the signal read was refused or unavailable: " + err.Error())
+		}
+		res := ok()
+		res.RoomKey, res.Signals, res.AgentInstanceID = room.Key, result, instance
+		return res
 
 	case "consume":
 		room := d.room(req.RoomKey)
@@ -562,6 +595,10 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 		switch req.Op {
 		case "attach":
 			_ = conn.SetDeadline(time.Now().Add(AttachTimeout))
+		case "query":
+			// A signal read goes to the room's source through the credential
+			// proxy; the two-second budget is for the status line's reads.
+			_ = conn.SetDeadline(time.Now().Add(QueryTimeout))
 		case "link":
 			_ = conn.SetDeadline(time.Now().Add(LinkWait + 2*time.Second))
 		}

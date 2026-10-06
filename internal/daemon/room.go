@@ -968,6 +968,15 @@ func (r *Room) Client() session.EdgeClient {
 	return r.client
 }
 
+// ClientAndInstance is Client plus the primary seat's agent instance id, read
+// together: a `query` answers both, so `landfall chart` can queue what it built
+// under the seat the room knows.
+func (r *Room) ClientAndInstance() (session.EdgeClient, string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.client, r.AgentInstanceID
+}
+
 // Close stops presence and live watch and leaves the room.
 func (r *Room) Close(ctx context.Context) {
 	if r.stopWatch != nil {

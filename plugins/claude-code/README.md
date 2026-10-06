@@ -27,9 +27,11 @@ On Claude Code 2.1.287+ that installs this mod (`landfall@landfall`) beside the 
 | `/chart` | the same, as a command | when typed |
 
 **4 add it to the room** puts that read on the war room's canvas as a chart, on your own
-dashboard, with no model call: the mod asks your agent's Landfall connection to build the chart
-from the same read (`share_with_room` with `fromQuery`), so nobody copies a data point. Your
-agent can do the same when you ask it to chart something.
+dashboard, with no model call and nothing more to approve: the mod runs `landfall chart`, which has
+your room daemon make the same read with the room's own session and queues the chart for your
+session to publish, so nobody copies a data point. (It is a local command rather than an MCP call
+because Claude Code puts a plugin's MCP call made from a key press to its permission dialog.) Your
+agent can do the same through `share_with_room` with `fromQuery` when you ask it to chart something.
 
 **1 catch up** only drafts the prompt; the person sends it. The agent hears the room on the person's
 next message, exactly as it did with the settings hooks: the mod runs `landfall hooks

@@ -8,15 +8,24 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 6, bodyColumns: 90, scroll: { offset: 0, bodyRows: 6 }, view: {} },
 } as const
 
-test("an agent's metric read becomes a chart in the room with one key, no turn", async ($, on) => {
-  const calls: unknown[] = []
+function ran(stdout: string) {
+  return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+}
+
+test("an agent's metric read becomes a chart in the room with one key: a local command, no MCP call, no turn", async ($, on) => {
+  const runs: Array<readonly string[]> = []
   const toasts: string[] = []
+  let mcpCalls = 0
   on('tool.call', () => ({
     result: { content: [{ type: 'text', text: 'cloudwatch getMetricData: 1 series, 60 points, 17:00 to 18:00Z.' }] },
   }))
-  on('mcp.call', ($, e) => {
-    calls.push(e)
-    return { value: { content: [{ type: 'text', text: 'shared' }], isError: false } }
+  on('process.run', ($, e) => {
+    runs.push(e.argv)
+    return ran('{"ok":true,"title":"DbCpuUtilization"}\n')
+  })
+  on('mcp.call', () => {
+    mcpCalls += 1
+    return { value: { content: [], isError: false } }
   })
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
@@ -31,9 +40,10 @@ test("an agent's metric read becomes a chart in the room with one key, no turn",
   expect(await band.find({ type: 'Text', text: 'Chart ready: DbCpuUtilization' })).toBeDefined()
   await band.press({ key: 'pin' })
 
-  const sent = JSON.stringify(calls[0])
-  expect(sent).toContain('share_with_room')
-  expect(sent).toContain('"fromQuery":{"source":"cloudwatch","operation":"getMetricData"')
+  expect(runs[0].slice(0, 4)).toEqual(['landfall', 'chart', '--host', 'claude-code'])
+  const query = JSON.parse(runs[0][5] as string)
+  expect(query).toEqual({ source: 'cloudwatch', operation: 'getMetricData', params, title: 'DbCpuUtilization' })
+  expect(mcpCalls).toBe(0)
   expect(toasts).toEqual(['Chart added to your dashboard in the room: DbCpuUtilization'])
   await band.unmount()
   // Added once: the offer goes away.
@@ -49,10 +59,10 @@ test('a log read offers no chart', async ($, on) => {
   expect(await band.find({ type: 'Text', text: /^Chart ready/ })).toBeUndefined()
 })
 
-test('a refused chart says why', async ($, on) => {
+test('a refused chart says why, from /chart too', async ($, on) => {
   const toasts: string[] = []
   on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'cloudwatch getMetricStatistics: 1 series, 5 points, 17:00 to 17:05Z.' }] } }))
-  on('mcp.call', () => ({ value: { content: [{ type: 'text', text: 'not joined to a war room yet' }], isError: true } }))
+  on('process.run', () => ran('{"ok":false,"error":"this checkout is not reading any room right now"}\n'))
   on('ui.toast', ($, e) => {
     toasts.push(e.text)
     return { value: undefined }
@@ -60,33 +70,5 @@ test('a refused chart says why', async ($, on) => {
   on('command.register', () => ({ value: undefined }))
   await $.tool.call({ tool: 'mcp__landfall__query_signals', tool_use_id: 't3', source: 'cloudwatch', operation: 'getMetricStatistics', params: { MetricName: 'CacheHitRate' } } as never)
   await $.command.run({ command: 'chart', args: '' })
-  expect(toasts).toEqual(['Chart not added: not joined to a war room yet'])
-})
-
-test("the mod never approves a share it did not raise: the agent's own share_with_room still asks", async ($, on) => {
-  on('tool.check', () => ({ decision: 'ask' }))
-  const verdict = await $.tool.check({
-    tool: 'mcp__landfall__share_with_room',
-    input: { text: 'x', kind: 'widget', fromQuery: { source: 'cloudwatch', operation: 'getMetricData' } },
-  } as never)
-  expect(verdict.decision).toBe('ask')
-})
-
-test('pressing 4 needs no second approval: the mod allows exactly its own share while it is in flight', async ($, on) => {
-  const verdicts: string[] = []
-  on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'cloudwatch getMetricData: 1 series, 60 points, 17:00 to 18:00Z.' }] } }))
-  on('tool.check', () => ({ decision: 'ask' }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.render', () => ({ type: 'Text', props: {}, children: [''] }))
-  on('mcp.call', async ($m, e) => {
-    // Claude Code asks tool.check about the plugin's call before running it.
-    const args = (e as { args?: Record<string, unknown> }).args ?? (e as Record<string, unknown>)
-    const v = await $.tool.check({ tool: 'mcp__landfall__share_with_room', input: args } as never)
-    verdicts.push(v.decision)
-    return { value: { content: [{ type: 'text', text: 'shared' }], isError: false } }
-  })
-  await $.tool.call({ tool: 'mcp__landfall__query_signals', tool_use_id: 't4', source: 'cloudwatch', operation: 'getMetricData', params: { MetricName: 'DbCpuUtilization' } } as never)
-  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  await band.press({ key: 'pin' })
-  expect(verdicts).toEqual(['allow'])
+  expect(toasts).toEqual(['Chart not added: this checkout is not reading any room right now'])
 })

@@ -13,7 +13,8 @@
 //   dim suggestion         after a turn, when the room has news (Tab takes it)
 //   /room                  the room in a pane, with no model call
 //   chart ready            after the agent reads a metric, key 4 (or /chart) puts
-//                          that read on the room's canvas as a chart, no turn
+//                          that read on the room's canvas as a chart: no turn,
+//                          no model call, no permission dialog
 //
 // DELIVERY TO THE AGENT IS UNCHANGED. On the person's next message the mod runs
 // the same `landfall hooks user-prompt-submit` the settings hook ran, with
@@ -33,8 +34,6 @@
 // again a few seconds later.
 
 const PANE = 'landfall-room'
-// The Landfall MCP server's name, as `landfall install` and the share link register it.
-const MCP_SERVER = 'landfall'
 const HOST = 'claude-code'
 const RESTART_MS = 3000
 const CATCH_UP = 'Catch me up on what changed in the war room.'
@@ -54,8 +53,6 @@ let watching = false
 let chartReady = null
 // Set while a chart is being added, so a double press adds one.
 let pinning = false
-// The text of the share a press is making, so tool.check approves that call alone.
-let pinText = ''
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -84,9 +81,9 @@ export function register(on) {
 
   // Widgets without a turn: when the agent reads a metric through the room,
   // the band offers to put that read on the room's canvas as a chart. One key,
-  // no model call: the mod asks the agent's own Landfall connection to build the
-  // chart from the same read (share_with_room fromQuery), so no points are
-  // copied by anyone.
+  // no model call, nothing more to approve: `landfall chart` has the person's
+  // room daemon make the same read and queues the chart (pinChart), so no
+  // points are copied by anyone.
   on('tool.call', { tool: 'mcp__landfall__query_signals' }, async ($, e, next) => {
     const result = await next(e)
     try {
@@ -105,25 +102,6 @@ export function register(on) {
     }
     return result
   })
-
-  // The key press is the consent. Claude Code puts a plugin's own MCP call to
-  // the permission dialog in default mode, so pressing 4 would be followed by a
-  // second "Do you want to proceed?" for the same share. Approve exactly that
-  // call: raised by this mod, while a chart the person asked for is in flight,
-  // carrying fromQuery, and only where Claude Code would otherwise ask. A deny,
-  // and an organization's ceiling, always stand; every other call is untouched.
-  on('tool.check', { tool: 'mcp__landfall__share_with_room' }, async ($, e, next) => {
-    const verdict = await next(e)
-    // The call this press is making: a chart in flight, carrying fromQuery, with
-    // the exact text pinChart sent. (origin.plugin names this mod too, spelled
-    // "landfall" from a directory and "landfall@landfall" once installed, so the
-    // call itself is what is matched.)
-    const ours = pinning && pinText !== '' && e.input && e.input.fromQuery && e.input.text === pinText
-    if (ours && verdict.decision === 'ask' && !e.ceiling) {
-      return { decision: 'allow', reason: 'The person pressed 4 to add this chart to the room.' }
-    }
-    return verdict
-  }).catch(async ($, e, next) => next(e)) // a failure leaves the decision to Claude Code
 
   // Delivery: the same Go hook the settings file used to run, on the person's
   // own message, so the agent hears the room exactly when it did before.
@@ -345,31 +323,33 @@ function newestLine(digest) {
   return best
 }
 
-// pinChart puts the agent's latest metric read on the room's canvas as a chart,
-// through the agent's own Landfall connection (no model call, no prompt).
+// pinChart puts the agent's latest metric read on the room's canvas as a chart.
+// It runs `landfall chart`, which asks the person's room daemon to make the same
+// read and queues the chart for their session to publish. A local command, not
+// an MCP call: Claude Code puts a plugin's MCP call made from a key press to the
+// permission dialog, and the key press is all the asking this needs.
 async function pinChart($) {
   const chart = chartReady
   if (!chart || pinning) return
   pinning = true
-  pinText = 'Chart: ' + chart.label
   chartReady = null
   $.ui.invalidate('ui.render')
   try {
-    const res = await $.mcp.call(MCP_SERVER, 'share_with_room', {
-      text: pinText,
-      kind: 'widget',
-      // The metric the person saw offered is the title; left to the read, a
-      // per-region query was titled by its first series ("Global and 5 more").
-      fromQuery: { ...chart.query, title: chart.label },
+    const run = await $.process.run([bin, 'chart', '--host', HOST, '--query', JSON.stringify({ ...chart.query, title: chart.label })], {
+      timeoutMs: 40000,
     })
-    const said = (res.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join(' ')
-    if (res.isError) $.ui.toast('Chart not added: ' + clip(said, 200), { timeoutMs: 8000 })
-    else $.ui.toast('Chart added to your dashboard in the room: ' + chart.label, { timeoutMs: 6000 })
+    let answer = {}
+    try {
+      answer = JSON.parse((run.stdout || '').trim().split('\n').pop() || '{}')
+    } catch {
+      answer = { ok: false, error: (run.stderr || run.stdout || 'no answer').trim().slice(0, 200) }
+    }
+    if (answer.ok) $.ui.toast('Chart added to your dashboard in the room: ' + (answer.title || chart.label), { timeoutMs: 6000 })
+    else $.ui.toast('Chart not added: ' + clip(String(answer.error || 'no answer'), 200), { timeoutMs: 8000 })
   } catch (err) {
     $.ui.toast('Chart not added: ' + String(err).slice(0, 200), { timeoutMs: 8000 })
   }
   pinning = false
-  pinText = ''
 }
 
 // chartLabel names a read by the metric it asked for, wherever the source keeps it.

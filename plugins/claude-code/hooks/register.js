@@ -68,6 +68,9 @@ export function register(on) {
   // Delivery: the same Go hook the settings file used to run, on the person's
   // own message, so the agent hears the room exactly when it did before.
   on('prompt.submit', async ($, e, next) => {
+    // The person has moved on: a room pane left open would keep the keyboard
+    // and eat the first keys of their next message.
+    $.ui.close({ id: PANE }).catch(() => {})
     let context = ''
     try {
       const payload = JSON.stringify({
@@ -112,7 +115,7 @@ export function register(on) {
     if (room.votesAwaited === 1) head.push('1 vote awaited')
     if (room.votesAwaited > 1) head.push(room.votesAwaited + ' votes awaited')
     if (room.connection && room.connection !== 'live') head.push(room.connection)
-    const newest = clip(plainLine(room.digest?.[0] ?? ''), width)
+    const newest = clip(plainLine(newestLine(room.digest ?? [])), width)
     const mine = await next(e)
     return Box({
       flexDirection: 'column',
@@ -249,6 +252,24 @@ function applySnapshot($, line) {
   // Claude Code already puts the mod's name in front of its status line.
   $.ui.status(snapshot.line ? snapshot.line.replace(/^🔴 landfall: /, '🔴 ') : undefined)
   $.ui.invalidate('ui.render')
+}
+
+// newestLine is the most recent untold line. The digest lists @-mentions
+// first, and the daemon cannot tell whose name a mention carries, so the first
+// line can be an older message to somebody else; the band shows what just
+// happened, and the toast already covered the mention.
+function newestLine(digest) {
+  let best = ''
+  let bestSeq = -1
+  for (const line of digest) {
+    const m = /^#(\d+) /.exec(line)
+    const seq = m ? Number(m[1]) : -1
+    if (seq >= bestSeq) {
+      best = line
+      bestSeq = seq
+    }
+  }
+  return best
 }
 
 // pending is the rooms with untold news the person has not set aside.

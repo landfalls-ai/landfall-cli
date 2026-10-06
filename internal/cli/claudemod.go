@@ -54,6 +54,9 @@ type ClaudeMod interface {
 	// Installed reports whether the mod is installed and enabled for the user.
 	Installed() (bool, error)
 	Install() error
+	// Update pulls the marketplace and moves an installed mod to its latest
+	// version, so a CLI upgrade brings the mod's fixes with it.
+	Update() error
 	Uninstall() error
 }
 
@@ -160,6 +163,14 @@ func (m execClaudeMod) Install() error {
 	return err
 }
 
+func (m execClaudeMod) Update() error {
+	if _, err := m.run("plugin", "marketplace", "update", "landfall"); err != nil {
+		return err
+	}
+	_, err := m.run("plugin", "update", ClaudeModID)
+	return err
+}
+
 func (m execClaudeMod) Uninstall() error {
 	_, err := m.run("plugin", "uninstall", ClaudeModID)
 	return err
@@ -221,6 +232,13 @@ func installClaudeMod(mod ClaudeMod, dryRun bool) install.Outcome {
 	}
 	if installed {
 		o.Status, o.Detail = "already-installed", ClaudeModID
+		if !dryRun {
+			if err := mod.Update(); err != nil {
+				o.Detail = ClaudeModID + " (could not check for a newer version: " + err.Error() + ")"
+			} else {
+				o.Detail = ClaudeModID + ", at its latest version (a session picks up an update when it restarts)"
+			}
+		}
 		return o
 	}
 	if dryRun {

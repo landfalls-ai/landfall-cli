@@ -12,6 +12,7 @@ type fakeClaudeMod struct {
 	installed  bool
 	installErr error
 	installs   int
+	updates    int
 	uninstalls int
 }
 
@@ -24,6 +25,7 @@ func (f *fakeClaudeMod) Install() error {
 	}
 	return f.installErr
 }
+func (f *fakeClaudeMod) Update() error    { f.updates++; return nil }
 func (f *fakeClaudeMod) Uninstall() error { f.uninstalls++; f.installed = false; return nil }
 
 func TestVersionAtLeast(t *testing.T) {
@@ -59,6 +61,10 @@ func TestInstallClaudeModInstallsOnceAndIsIdempotent(t *testing.T) {
 	}
 	if mod.installs != 1 {
 		t.Fatalf("installed %d times, want once", mod.installs)
+	}
+	// An installed mod is moved to its latest version, so a CLI upgrade carries its fixes.
+	if mod.updates != 1 {
+		t.Fatalf("updated %d times, want once on the second run", mod.updates)
 	}
 }
 

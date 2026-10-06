@@ -87,18 +87,37 @@ export function register(on) {
   // copied by anyone.
   on('tool.call', { tool: 'mcp__landfall__query_signals' }, async ($, e, next) => {
     const result = await next(e)
-    if (!result || result.deny || result.isError) return result
-    const m = /: (\d+) series, (\d+) points?/.exec(JSON.stringify(result.result ?? ''))
-    if (m && Number(m[2]) > 0 && e.source && e.operation) {
-      const query = { source: e.source, operation: e.operation }
-      if (e.params) query.params = e.params
-      if (e.connection) query.connection = e.connection
-      if (e.account) query.account = e.account
-      chartReady = { query, label: chartLabel(e) }
-      $.ui.invalidate('ui.render')
+    try {
+      if (!result || result.deny || result.isError) return result
+      const m = /: (\d+) series, (\d+) points?/.exec(JSON.stringify(result.result ?? ''))
+      if (m && Number(m[2]) > 0 && e.source && e.operation) {
+        const query = { source: e.source, operation: e.operation }
+        if (e.params) query.params = e.params
+        if (e.connection) query.connection = e.connection
+        if (e.account) query.account = e.account
+        chartReady = { query, label: chartLabel(e) }
+        $.ui.invalidate('ui.render')
+      }
+    } catch {
+      // Reading the result for a chart offer must never change the tool's answer.
     }
     return result
   })
+
+  // The key press is the consent. Claude Code puts a plugin's own MCP call to
+  // the permission dialog in default mode, so pressing 4 would be followed by a
+  // second "Do you want to proceed?" for the same share. Approve exactly that
+  // call: raised by this mod, while a chart the person asked for is in flight,
+  // carrying fromQuery, and only where Claude Code would otherwise ask. A deny,
+  // and an organization's ceiling, always stand; every other call is untouched.
+  on('tool.check', { tool: 'mcp__landfall__share_with_room' }, async ($, e, next) => {
+    const verdict = await next(e)
+    const ours = next.origin?.plugin === 'landfall' && pinning && e.input && e.input.fromQuery
+    if (ours && verdict.decision === 'ask' && !e.ceiling) {
+      return { decision: 'allow', reason: 'The person pressed 4 to add this chart to the room.' }
+    }
+    return verdict
+  }).catch(async ($, e, next) => next(e)) // a failure leaves the decision to Claude Code
 
   // Delivery: the same Go hook the settings file used to run, on the person's
   // own message, so the agent hears the room exactly when it did before.
@@ -332,7 +351,9 @@ async function pinChart($) {
     const res = await $.mcp.call(MCP_SERVER, 'share_with_room', {
       text: 'Chart: ' + chart.label,
       kind: 'widget',
-      fromQuery: chart.query,
+      // The metric the person saw offered is the title; left to the read, a
+      // per-region query was titled by its first series ("Global and 5 more").
+      fromQuery: { ...chart.query, title: chart.label },
     })
     const said = (res.content ?? []).filter((c) => c.type === 'text').map((c) => c.text).join(' ')
     if (res.isError) $.ui.toast('Chart not added: ' + clip(said, 200), { timeoutMs: 8000 })

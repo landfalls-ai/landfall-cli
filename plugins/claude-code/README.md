@@ -23,6 +23,13 @@ On Claude Code 2.1.287+ that installs this mod (`landfall@landfall`) beside the 
 | Under the prompt | the room's status line (`🔴 Landfall 166 · 2 new · 1 held`) | always, while the folder is in a room |
 | Prompt box | a dim "Catch me up on what changed in the war room." after a turn, Tab to take it | only when the room has news |
 | `/room` | every untold line in a pane, with no model call | when typed, even mid-turn |
+| Band, second row | `Chart ready: <metric> · 4: add it to the room` | after your agent reads a metric through the room (`query_signals`) |
+| `/chart` | the same, as a command | when typed |
+
+**4 add it to the room** puts that read on the war room's canvas as a chart, on your own
+dashboard, with no model call: the mod asks your agent's Landfall connection to build the chart
+from the same read (`share_with_room` with `fromQuery`), so nobody copies a data point. Your
+agent can do the same when you ask it to chart something.
 
 **1 catch up** only drafts the prompt; the person sends it. The agent hears the room on the person's
 next message, exactly as it did with the settings hooks: the mod runs `landfall hooks

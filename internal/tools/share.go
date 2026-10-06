@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/landfalls-ai/landfall-cli/internal/mcp"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
+	"github.com/landfalls-ai/landfall-cli/internal/session"
 )
 
 // Accepter is the durable outbound queue, as this package needs it. An
@@ -84,7 +86,7 @@ var ErrQueueFull = errors.New("outbound queue is full")
 // is in the queue instead — but a hand-off is not a delivery vehicle, so this
 // result is one line and nothing else.
 func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
-	return func(_ context.Context, args map[string]any) (string, error) {
+	return func(ctx context.Context, args map[string]any) (string, error) {
 		text, _ := args["text"].(string)
 		if text == "" {
 			return "", errors.New("share_with_room needs `text` — what you found, in your own words")
@@ -96,6 +98,20 @@ func (b *bridge) shareWithRoom(acc Accepter) mcp.Handler {
 			// room we have not joined would strand the finding somewhere the
 			// responder never looks.
 			return "", errors.New("not joined to a war room yet — call join_war_room first")
+		}
+
+		// fromQuery: the chart is built from the read itself, so nobody copies
+		// points by hand (narrate/chart.go). A read with no time series is
+		// refused here, with the reason, and nothing is shared.
+		if fq, isMap := args["fromQuery"].(map[string]any); isMap && args["widget"] == nil {
+			widget, problem := widgetFromQuery(ctx, cl, fq)
+			if widget == nil {
+				return "", errors.New(problem)
+			}
+			args["widget"] = widget
+			if _, set := args["kind"]; !set {
+				args["kind"] = "widget"
+			}
 		}
 
 		cfg := cl.Config()
@@ -410,4 +426,28 @@ func refsOf(args map[string]any) []string {
 	default:
 		return nil
 	}
+}
+
+// widgetFromQuery runs the read fromQuery describes (the arguments query_signals
+// takes) and returns a chart widget of it, or nil and the reason.
+func widgetFromQuery(ctx context.Context, cl session.EdgeClient, fq map[string]any) (map[string]any, string) {
+	source := strings.TrimSpace(str(fq, "source"))
+	operation := strings.TrimSpace(str(fq, "operation"))
+	if source == "" || operation == "" {
+		return nil, "share_with_room: fromQuery needs the source and operation you gave query_signals. Nothing was shared"
+	}
+	params, _ := fq["params"].(map[string]any)
+	result, err := cl.QuerySignals(ctx, source, operation, params, strings.TrimSpace(str(fq, "connection")), strings.TrimSpace(str(fq, "account")))
+	if err != nil {
+		return nil, fmt.Sprintf("share_with_room: the read for fromQuery was refused or unavailable (%v). Nothing was shared", err)
+	}
+	data, label, ok := narrate.ChartFromSignalRead(result)
+	if !ok {
+		return nil, "share_with_room: that read has no time series to chart (only metric reads can be pinned this way). Nothing was shared"
+	}
+	title := strings.TrimSpace(str(fq, "title"))
+	if title == "" {
+		title = label
+	}
+	return map[string]any{"widgetType": "chart", "title": title, "data": data}, ""
 }

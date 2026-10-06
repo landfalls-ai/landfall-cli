@@ -240,6 +240,7 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newUninstallCommand(ui),
 		newHooksCommand(ui),
 		newStatusCommand(ui),
+		newWatchCommand(ui),
 		newDaemonCommand(ui),
 		newRoomsCommand(ui),
 		newHeldCommand(ui),

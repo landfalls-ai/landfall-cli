@@ -41,8 +41,12 @@ type hookFlags struct {
 	// refusal (hooks.ResolveStopMode). Written by a person into their own
 	// registered command, never by the installer.
 	block bool
-	host  string
-	only  []string
+	// fromMod is `--from-mod`: the Claude Code mod (plugins/claude-code) runs
+	// this hook itself. Without it, a hook that finds LANDFALL_MOD set yields
+	// to the mod (see modOwnsEvent), so a session never hears the room twice.
+	fromMod bool
+	host    string
+	only    []string
 	// rest is argv with every recognized flag (and its value) removed, so
 	// rest[0] is the subcommand.
 	rest []string
@@ -79,6 +83,7 @@ func parseHookFlags(argv []string) hookFlags {
 	f.dryRun = takeFlag("--dry-run")
 	f.uninstall = takeFlag("--uninstall")
 	f.block = takeFlag("--block")
+	f.fromMod = takeFlag("--from-mod")
 	f.host = takeValue("--host")
 	for i, a := range args {
 		if a != "--only" {

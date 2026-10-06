@@ -64,6 +64,23 @@ func dispatchHookSubcommand(ui *UI, sub string, argv []string) (bool, error) {
 	return true, runHookEventCommand(context.Background(), ui, sub, argv)
 }
 
+// ModEnv is the variable the Claude Code mod (plugins/claude-code) sets in its
+// own session at start. Claude Code passes it to every settings hook and status
+// line it starts after that, which is how they learn a mod is speaking for the
+// room in this session.
+const ModEnv = "LANDFALL_MOD"
+
+// modYields lists the events the mod delivers itself. pre-tool-use is not on it:
+// that hook is the person's own opt-in policy, and the mod leaves it alone.
+var modYields = map[string]bool{"stop": true, "file-changed": true, "user-prompt-submit": true}
+
+// modOwnsEvent reports whether a settings hook for eventID should do nothing
+// because the mod in this session handles it. A run the mod makes itself
+// carries --from-mod and is never skipped.
+func modOwnsEvent(eventID string, fromMod bool, getenv func(string) string) bool {
+	return !fromMod && modYields[eventID] && getenv(ModEnv) != ""
+}
+
 // hookEmitter writes one protocol output on the channel the protocol names.
 func hookEmitter() func(text, channel string) {
 	return func(text, channel string) {
@@ -80,6 +97,12 @@ func hookEmitter() func(text, channel string) {
 // runHookEventCommand is one `landfall hooks <event> [--host <id>]` invocation.
 func runHookEventCommand(ctx context.Context, ui *UI, eventID string, argv []string) error {
 	f := parseHookFlags(argv)
+
+	// The settings hook yields to the mod: it has the same room, and two
+	// deliveries of one update is the duplicate this rule exists to prevent.
+	if modOwnsEvent(eventID, f.fromMod, os.Getenv) {
+		return nil
+	}
 
 	// stdout belongs to the protocol from here on. Anything a command
 	// accidentally routes through ui.Out would corrupt a stream the host is

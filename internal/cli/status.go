@@ -140,6 +140,15 @@ func FormatStatusLine(status *hooks.SocketResponse) string {
 // The line goes to ui.Out, which for this command is the real stdout: the
 // statusline IS this command's machine-readable output.
 func RunStatus(ui *UI, ws hooks.Workspace) int {
+	if line := StatusLine(ws); line != "" {
+		_, _ = ui.Out.Write([]byte(line))
+	}
+	return 0
+}
+
+// StatusLine is the one line RunStatus prints, or "" when this workspace reads
+// no room. `landfall watch` streams the same line to the Claude Code mod.
+func StatusLine(ws hooks.Workspace) string {
 	// The room daemon first (feature 20260922-local-room-daemon): one call,
 	// the person's own untold count. A daemon that is not running, or has no
 	// room for this workspace, falls through to the per-pid sockets a
@@ -149,15 +158,14 @@ func RunStatus(ui *UI, ws hooks.Workspace) int {
 		for _, r := range res.Rooms {
 			ids = append(ids, r.IncidentID)
 		}
-		_, _ = ui.Out.Write([]byte(res.Line + spoolSuffix(ws, ids, time.Now())))
-		return 0
+		return res.Line + spoolSuffix(ws, ids, time.Now())
 	}
 	status := QueryStatus(ws)
 	line := FormatStatusLine(status)
-	if line != "" {
-		_, _ = ui.Out.Write([]byte(line + spoolSuffix(ws, []string{status.IncidentID}, time.Now())))
+	if line == "" {
+		return ""
 	}
-	return 0
+	return line + spoolSuffix(ws, []string{status.IncidentID}, time.Now())
 }
 
 // spoolSuffix is what only this checkout's spool (the worker's, not the
@@ -216,6 +224,11 @@ func spoolSuffix(ws hooks.Workspace, incidentIDs []string, now time.Time) string
 // Workspace every time.
 func newStatusCommand(ui *UI) *cobra.Command {
 	c := newCommand(ui, "status", func(*cobra.Command, []string) error {
+		// A session the Claude Code mod speaks for draws the room in its own
+		// band and status line; this one stays blank rather than repeat it.
+		if os.Getenv(ModEnv) != "" {
+			return nil
+		}
 		// The status line is drawn by one host (Claude Code sets CLAUDECODE
 		// for it), so it counts what that harness's person-reader was not told.
 		RunStatus(ui, hooks.Workspace{Harness: hooks.DetectHookHarness("", "", os.Getenv)})

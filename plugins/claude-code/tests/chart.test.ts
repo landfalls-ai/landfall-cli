@@ -62,3 +62,12 @@ test('a refused chart says why', async ($, on) => {
   await $.command.run({ command: 'chart', args: '' })
   expect(toasts).toEqual(['Chart not added: not joined to a war room yet'])
 })
+
+test("the mod never approves a share it did not raise: the agent's own share_with_room still asks", async ($, on) => {
+  on('tool.check', () => ({ decision: 'ask' }))
+  const verdict = await $.tool.check({
+    tool: 'mcp__landfall__share_with_room',
+    input: { text: 'x', kind: 'widget', fromQuery: { source: 'cloudwatch', operation: 'getMetricData' } },
+  } as never)
+  expect(verdict.decision).toBe('ask')
+})

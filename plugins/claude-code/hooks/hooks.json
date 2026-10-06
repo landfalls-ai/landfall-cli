@@ -1,0 +1,4 @@
+{
+  "description": "The Landfall mod",
+  "modules": ["./register.js"]
+}

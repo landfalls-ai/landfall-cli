@@ -20,6 +20,7 @@ package cli
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
@@ -41,8 +42,12 @@ type hookFlags struct {
 	// refusal (hooks.ResolveStopMode). Written by a person into their own
 	// registered command, never by the installer.
 	block bool
-	host  string
-	only  []string
+	// fromMod is `--from-mod`: the Claude Code mod (plugins/claude-code) runs
+	// this hook itself. Without it, a hook that finds LANDFALL_MOD set yields
+	// to the mod (see modOwnsEvent), so a session never hears the room twice.
+	fromMod bool
+	host    string
+	only    []string
 	// rest is argv with every recognized flag (and its value) removed, so
 	// rest[0] is the subcommand.
 	rest []string
@@ -79,6 +84,7 @@ func parseHookFlags(argv []string) hookFlags {
 	f.dryRun = takeFlag("--dry-run")
 	f.uninstall = takeFlag("--uninstall")
 	f.block = takeFlag("--block")
+	f.fromMod = takeFlag("--from-mod")
 	f.host = takeValue("--host")
 	for i, a := range args {
 		if a != "--only" {
@@ -150,14 +156,24 @@ type HooksDeps struct {
 	Log      func(format string, args ...any)
 	Hosts    []hosts.Host
 	IsOnPath func(string) bool
+	// ClaudeMod is Claude Code's plugin manager (claudemod.go). Nil skips the
+	// mod, which is what a test that injects its own Hosts gets.
+	ClaudeMod ClaudeMod
+	Getenv    func(string) string
 }
 
 func (d *HooksDeps) fill() {
 	if d.Log == nil {
 		d.Log = func(string, ...any) {}
 	}
+	if d.Getenv == nil {
+		d.Getenv = os.Getenv
+	}
 	if d.Hosts == nil {
 		d.Hosts = hosts.Hosts()
+		if d.ClaudeMod == nil {
+			d.ClaudeMod = newExecClaudeMod(d.Getenv)
+		}
 	}
 	if d.IsOnPath == nil {
 		d.IsOnPath = install.IsOnPath
@@ -209,6 +225,10 @@ func RunHooksInstall(_ context.Context, argv []string, deps HooksDeps) InstallRe
 			DisplayName: h.DisplayName(), Status: status,
 			Detail: detail, ConfigPath: h.ConfigPath(),
 		})
+		// Claude Code 2.1.287+ also gets the mod, beside its hooks.
+		if h.ID() == "claude-code" && deps.ClaudeMod != nil && claudeModEnabled(deps.Getenv) {
+			outcomes = append(outcomes, installClaudeMod(deps.ClaudeMod, f.dryRun))
+		}
 	}
 
 	// `--block` belongs to the hook invocation, not to the installer: the
@@ -268,6 +288,13 @@ func RunHooksUninstall(_ context.Context, argv []string, deps HooksDeps) Install
 		outcomes = append(outcomes, install.Outcome{
 			DisplayName: h.DisplayName(), Status: status, ConfigPath: h.ConfigPath(),
 		})
+	}
+	for _, h := range candidates {
+		if h.ID() == "claude-code" && deps.ClaudeMod != nil {
+			if o, acted := uninstallClaudeMod(deps.ClaudeMod); acted {
+				outcomes = append(outcomes, o)
+			}
+		}
 	}
 
 	return InstallResult{Outcomes: outcomes, ExitCode: install.ExitCodeForOutcomes(outcomes)}

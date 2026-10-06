@@ -39,6 +39,11 @@ function processResult(stdout: string) {
 
 test('a prompt carries what the Go hook delivers, run with --from-mod', async ($, on) => {
   const runs: { argv: readonly string[]; stdin?: string }[] = []
+  const closed: string[] = []
+  on('ui.close', ($, e) => {
+    closed.push(e.id)
+    return { value: undefined }
+  })
   on('session.id', () => ({ value: 's1' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('process.run', ($, e) => {
@@ -50,6 +55,8 @@ test('a prompt carries what the Go hook delivers, run with --from-mod', async ($
   const out = await $.prompt.submit({ text: 'what broke?', wait: false, origin: { kind: 'user' } } as never)
 
   expect(out.context).toEqual(['Room update: pool exhausted'])
+  // Sending a message closes the room pane, so it cannot keep the keyboard.
+  expect(closed).toEqual(['landfall-room'])
   expect(runs[0].argv).toEqual(['landfall', 'hooks', 'user-prompt-submit', '--host', 'claude-code', '--from-mod'])
   expect(JSON.parse(runs[0].stdin ?? '{}')).toMatchObject({ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: '/work', prompt: 'what broke?' })
 })
@@ -114,7 +121,8 @@ test('the session announces the mod, and the room stream draws the band', async 
 
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
   expect(await band.find({ type: 'Text', text: 'Landfall · Landfall 166 · Checkout 5xx · 3 new' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: 'maya: @alex can you check the pool?' })).toBeDefined()
+  // The newest item, not the @-mention the digest lists first.
+  expect(await band.find({ type: 'Text', text: 'finding admitted: #41 corroborated and admitted' })).toBeDefined()
   await band.press({ key: 'catch-up' })
   expect(filled).toEqual(['Catch me up on what changed in the war room.'])
 

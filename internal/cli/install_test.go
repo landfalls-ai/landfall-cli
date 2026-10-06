@@ -556,7 +556,9 @@ func TestCommandTree_HooksInstallRunsEndToEndAndReportsOnStdout(t *testing.T) {
 	ui := &UI{Out: &out, Err: &errOut}
 
 	// `hooks install` has no login gate, so this goes all the way to a real
-	// file write.
+	// file write. The Claude Code mod would run the machine's own `claude`;
+	// claudemod_test.go covers it with a fake instead.
+	t.Setenv("LANDFALL_CLAUDE_MOD", "0")
 	code := run(ui, []string{"hooks", "install", "--only", "claude-code"}, func(string) string { return "" })
 	if code != 0 {
 		t.Fatalf("exit %d (stderr %q)", code, errOut.String())

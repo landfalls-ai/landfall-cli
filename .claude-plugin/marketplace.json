@@ -7,6 +7,11 @@
       "name": "landfall-edge-bridge",
       "source": "./",
       "description": "Landfall Edge Bridge — join a war room and expose its MCP tools locally over stdio (no manual MCP config, no global npm install). Ships an agent that recognizes a war-room join prompt and maintains the investigation dashboard."
+    },
+    {
+      "name": "landfall",
+      "source": "./plugins/claude-code",
+      "description": "Keeps a Claude Code session current on its Landfall war room without taking a turn: a band above the prompt with who said what, a toast for an @-mention, and /room. Needs Claude Code 2.1.287 or later and `landfall hooks install`."
     }
   ]
 }

@@ -2,8 +2,17 @@
 
 Keeps a Claude Code session current on its Landfall war room without ever taking a turn.
 
-Requires Claude Code **2.1.287 or later** (mods are on by default from that version) and a `landfall`
-CLI that has `landfall watch` (this branch). Tested with Claude Code 2.1.291.
+Requires Claude Code **2.1.287 or later** (mods are on by default from that version) and `landfall`
+v0.9.0 or later. Tested with Claude Code 2.1.291.
+
+## Install
+
+```sh
+landfall hooks install
+```
+
+On Claude Code 2.1.287+ that installs this mod (`landfall@landfall`) beside the hooks. By hand:
+`claude plugin marketplace add landfalls-ai/landfall-cli`, then `claude plugin install landfall@landfall`.
 
 ## What it does
 
@@ -27,7 +36,7 @@ to every settings hook and status line it starts after that, and Landfall's own 
 hears the room once. `pre-tool-use` (the opt-in intent policy) is unaffected. Codex, Cursor, older
 Claude Code and organizations that only allow managed mods keep the settings hooks as before.
 
-## Try it
+## Try a checkout without installing
 
 ```sh
 claude --plugin-dir /path/to/landfall-cli/plugins/claude-code

@@ -141,6 +141,26 @@ Three hosts have a lifecycle-hook surface, and each gets what it supports:
 | Codex CLI | `~/.codex/hooks.json` (+ `codex_hooks = true` in `config.toml`) | `Stop`, `UserPromptSubmit`, `PreToolUse` (`Bash` only) |
 | Cursor | `~/.cursor/hooks.json` | `stop` |
 
+### Claude Code 2.1.287 and later: the Landfall mod
+
+On a Claude Code that loads mods (2.1.287 and later), `landfall hooks install` also
+installs the **Landfall mod** (`landfall@landfall`, from this repository's plugin
+marketplace). The hooks can only speak when you send a message; the mod draws the room
+in the session the moment something happens, and still never takes a turn:
+
+- a band above the prompt: the room, how many updates you have not seen, the newest one
+  in words, and keys **1** catch up (drafts the prompt; you send it), **2** show the room,
+  **3** later
+- a toast when someone in the room names a person
+- the room's status line under the prompt, and `/room` to see every update in a pane
+
+Your agent still hears the room with your next message, exactly as with the hooks. While
+the mod is loaded, landfall's own `Stop`, `FileChanged` and `UserPromptSubmit` hooks and
+`landfall status` stay quiet, so nothing reaches you twice; `PreToolUse` is unchanged. An
+older Claude Code, and an organization that only allows managed mods, keep the hooks.
+`LANDFALL_CLAUDE_MOD=0 landfall hooks install` skips the mod; `/plugin` or `landfall hooks
+uninstall` removes it. Details: [`plugins/claude-code/README.md`](plugins/claude-code/README.md).
+
 No sign-in needed — this edits local config, so it also works from a provisioning
 script. Every write is an append into the host's own hook list: your existing hooks
 are preserved, re-running is a no-op, and an entry you've hand-edited since is

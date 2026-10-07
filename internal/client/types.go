@@ -126,10 +126,18 @@ type Incident struct {
 // Participant is one member of the room, with a three-state presence: `Active`
 // is a pointer because `undefined` on the wire means the server's presence
 // store could not be read — "unknown", never fabricated as active or away.
+//
+// Kind is `member` for a person's browser tab and `agent` for an agent session
+// (an older server leaves it out); HumanActorID groups a person's tabs and
+// agents into one person; Doing is the agent's own activity line.
 type Participant struct {
-	DisplayName    string `json:"displayName"`
-	EdgeAgentLabel string `json:"edgeAgentLabel"`
-	Active         *bool  `json:"active"`
+	DisplayName     string `json:"displayName"`
+	EdgeAgentLabel  string `json:"edgeAgentLabel"`
+	Active          *bool  `json:"active"`
+	Kind            string `json:"kind,omitempty"`
+	HumanActorID    string `json:"humanActorId,omitempty"`
+	AgentInstanceID string `json:"agentInstanceId,omitempty"`
+	Doing           string `json:"doing,omitempty"`
 }
 
 // WidgetCatalogEntry is one canvas widget type, as the server describes it

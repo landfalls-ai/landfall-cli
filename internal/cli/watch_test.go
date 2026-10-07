@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 )
 
 // outLines splits what the watch loop wrote into its lines.
@@ -106,6 +108,38 @@ func TestWatchEndsWhenOrphaned(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("watch kept running after its parent was gone")
+	}
+}
+
+// TestWatchAsksAgainSoonWhileTheFrameIsRefreshing: a status change arrives
+// as the daemon reads the room's frame again behind its answer. The loop must
+// not wait out its tick to draw the new status, and the flag itself is never
+// written to the stream.
+func TestWatchAsksAgainSoonWhileTheFrameIsRefreshing(t *testing.T) {
+	var mu sync.Mutex
+	reads := 0
+	out := &lockedBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		_ = Watch(ctx, WatchDeps{
+			Snapshot: func() WatchSnapshot {
+				mu.Lock()
+				defer mu.Unlock()
+				reads++
+				st := &narrate.RoomStatus{Status: "open", Refreshing: true}
+				if reads > 1 {
+					st = &narrate.RoomStatus{Status: "resolved"}
+				}
+				return WatchSnapshot{Type: "rooms", Rooms: []WatchRoom{{RoomKey: "r1", Status: st}}}
+			},
+			Out:  out,
+			Tick: time.Hour, // only the refresh poll can bring the second read
+		})
+	}()
+	waitFor(t, func() bool { return strings.Contains(out.String(), `"resolved"`) }, "the resolved status")
+	if strings.Contains(out.String(), "refreshing") {
+		t.Fatalf("the refreshing flag reached the stream: %s", out.String())
 	}
 }
 

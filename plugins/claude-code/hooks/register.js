@@ -15,6 +15,12 @@
 //   chart ready            after the agent reads a metric, key 4 (or /chart) puts
 //                          that read on the room's canvas as a chart: no turn,
 //                          no model call, no permission dialog
+//   status line            the room, its status and severity, how many are
+//                          here, Beacon's run, the untold count
+//   under the prompt       who else is in the room, and with what
+//   /room                  opens on the room at a glance: status, the leading
+//                          theory, everyone in it with their agents
+//   toast                  when the incident's status changes, or Beacon ends
 //
 // DELIVERY TO THE AGENT IS UNCHANGED. On the person's next message the mod runs
 // the same `landfall hooks user-prompt-submit` the settings hook ran, with
@@ -43,7 +49,7 @@ const ADDRESSED = '  ← addressed to a person'
 let snapshot = { line: '', rooms: [] }
 // The newest seq per room the person set aside with "later".
 let laterAt = {}
-// The newest addressed seq per room already shown as a toast.
+// The seq of the newest addressed message per room already shown as a toast.
 let toastedAt = {}
 // The landfall binary, read once at start.
 let bin = 'landfall'
@@ -53,6 +59,9 @@ let watching = false
 let chartReady = null
 // Set while a chart is being added, so a double press adds one.
 let pinning = false
+// The status and Beacon run each room had at the last snapshot, so a change
+// is told once, and the first sight of a room is not told as a change.
+let seenStatus = {}
 
 export function register(on) {
   on('session.start', async ($, e, next) => {
@@ -213,16 +222,42 @@ export function register(on) {
     return Box({ flexDirection: 'column', children: rows.filter(Boolean) })
   })
 
-  // The room, in a pane: every untold line, addressed lines first.
+  // Under the prompt: who else is in the room, while the person is not typing.
+  // The engine's own hint stays; this is added dim at its end.
+  on('ui.render', { component: 'PromptHint' }, async ($, e, next) => {
+    if (e.props.isDraft) return next(e)
+    const tail = whoIsHere()
+    if (!tail) return next(e)
+    return next({ ...e, props: { ...e.props, tail: (e.props.tail ? e.props.tail + '  ' : '') + tail } })
+  })
+
+  // The room, in a pane: the room at a glance, then every untold line,
+  // addressed lines first.
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e)
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, (e.props.bodyColumns ?? 80) - 2)
     const rows = []
     for (const room of snapshot.rooms) {
-      const head = [roomName(room), room.count === 1 ? '1 new' : room.count + ' new']
-      if (room.connection && room.connection !== 'live') head.push(room.connection)
-      rows.push(Text({ key: 'h-' + room.roomKey, bold: true, children: [head.join(' · ')] }))
+      rows.push(Text({ key: 'h-' + room.roomKey, bold: true, children: [clip(roomName(room), width)] }))
+      const st = room.status
+      if (st) {
+        const state = statusWords(st)
+        if (state.length > 0) rows.push(Text({ key: 'st-' + room.roomKey, children: [clip(state.join(' · '), width)] }))
+        if (st.theory) rows.push(Text({ key: 'th-' + room.roomKey, dimColor: true, children: [clip('Leading theory: ' + st.theory, width)] }))
+        const people = st.people ?? []
+        if (people.length > 0) {
+          rows.push(Text({ key: 'ps-' + room.roomKey, children: [' '] }))
+          rows.push(Text({ key: 'ph-' + room.roomKey, bold: true, children: ['In the room (' + people.filter((p) => p.here).length + ' here)'] }))
+          people.forEach((p, i) => {
+            rows.push(Text({ key: room.roomKey + '-p' + i, dimColor: !p.here, children: [clip(personLine(p), width)] }))
+          })
+        }
+        rows.push(Text({ key: 'pe-' + room.roomKey, children: [' '] }))
+      }
+      const news = [room.count === 1 ? '1 new' : room.count + ' new']
+      if (room.connection && room.connection !== 'live') news.push(room.connection)
+      rows.push(Text({ key: 'nh-' + room.roomKey, bold: true, children: ['News · ' + news.join(' · ')] }))
       const lines = room.digest ?? []
       if (lines.length === 0) rows.push(Text({ key: 'n-' + room.roomKey, dimColor: true, children: ['Nothing new since you last spoke.'] }))
       lines.forEach((line, i) => {
@@ -231,7 +266,8 @@ export function register(on) {
       })
       rows.push(Text({ key: 's-' + room.roomKey, children: [' '] }))
     }
-    if (snapshot.line) rows.push(Text({ key: 'line', dimColor: true, children: [clip(snapshot.line, width)] }))
+    const line = statusLine(snapshot)
+    if (line) rows.push(Text({ key: 'line', dimColor: true, children: [clip(line, width)] }))
     rows.push(
       Box({
         key: 'actions',
@@ -293,16 +329,108 @@ function applySnapshot($, line) {
   }
   if (!next || next.type !== 'rooms' || !Array.isArray(next.rooms)) return
   snapshot = { line: next.line || '', rooms: next.rooms }
+  // One toast per message: keyed by the message's own seq, not the room's
+  // newest, which every later event moves while the mention is still untold.
   for (const room of snapshot.rooms) {
-    if (room.addressed > 0 && room.maxSeq > (toastedAt[room.roomKey] ?? -1)) {
-      toastedAt[room.roomKey] = room.maxSeq
-      const said = (room.digest ?? []).find((l) => l.endsWith(ADDRESSED))
-      if (said) $.ui.toast(roomName(room) + ': ' + plainLine(said), { timeoutMs: 8000 })
+    if (room.addressed === 0) continue
+    let said = ''
+    let saidSeq = -1
+    for (const line of room.digest ?? []) {
+      if (!line.endsWith(ADDRESSED)) continue
+      const m = /^#(\d+) /.exec(line)
+      const seq = m ? Number(m[1]) : room.maxSeq
+      if (seq > saidSeq) {
+        said = line
+        saidSeq = seq
+      }
+    }
+    if (said && saidSeq > (toastedAt[room.roomKey] ?? -1)) {
+      toastedAt[room.roomKey] = saidSeq
+      $.ui.toast(roomName(room) + ': ' + plainLine(said), { timeoutMs: 8000 })
     }
   }
-  // Claude Code already puts the mod's name in front of its status line.
-  $.ui.status(snapshot.line ? snapshot.line.replace(/^🔴 landfall: /, '🔴 ') : undefined)
+  for (const room of snapshot.rooms) {
+    const st = room.status
+    if (!st) continue
+    const was = seenStatus[room.roomKey]
+    seenStatus[room.roomKey] = { status: st.status || '', beacon: st.beacon || '' }
+    if (!was) continue
+    if (st.status && was.status && st.status !== was.status) {
+      $.ui.toast(roomName(room) + ' is now ' + st.status, { timeoutMs: 8000 })
+    }
+    if (st.beacon && st.beacon !== was.beacon && st.beacon !== 'investigating') {
+      $.ui.toast(roomName(room) + ': Beacon ' + st.beacon, { timeoutMs: 6000 })
+    }
+  }
+  $.ui.status(statusLine(snapshot) || undefined)
   $.ui.invalidate('ui.render')
+}
+
+// statusLine is the daemon's line with the room at a glance after the room's
+// name: "🟡 Acme 82 · mitigated · SEV2 · 4 here · Beacon concluded · 3 new".
+// Claude Code already puts the mod's name in front of it. More than one room,
+// or a daemon too old to send a status, keeps the daemon's line as it is.
+function statusLine(snap) {
+  const line = (snap.line || '').replace(/^🔴 landfall: /, '🔴 ')
+  const room = snap.rooms.length === 1 ? snap.rooms[0] : null
+  if (!line || !room || !room.status) return line
+  const head = '🔴 ' + (room.displayId || room.title || 'landfall')
+  if (!line.startsWith(head)) return line
+  const st = room.status
+  const parts = [st.status, st.severity].filter(Boolean)
+  const here = (st.people ?? []).filter((p) => p.here).length
+  if (here > 0) parts.push(here + ' here')
+  if (st.beacon) parts.push('Beacon ' + st.beacon)
+  if (parts.length === 0) return line
+  return dot(st.status) + head.slice('🔴'.length) + ' · ' + parts.join(' · ') + line.slice(head.length)
+}
+
+// dot is the status line's lead: red while the incident is live, yellow once
+// it is mitigated, green once it is over.
+function dot(status) {
+  const s = (status || '').toLowerCase()
+  if (/resolved|closed|postmortem|done/.test(s)) return '🟢'
+  if (/mitigat|monitor|stable/.test(s)) return '🟡'
+  return '🔴'
+}
+
+// statusWords is a room's state in words: status, severity, Beacon's run.
+function statusWords(st) {
+  const out = []
+  if (st.status) out.push(st.status)
+  if (st.severity) out.push(st.severity)
+  if (st.beacon) out.push('Beacon ' + st.beacon)
+  return out
+}
+
+// personLine is one person in the pane ("● bob · Claude Code: querying ALB
+// healthy hosts"): where they are, each agent with what it is doing.
+function personLine(p) {
+  const name = p.name + (p.you ? ' (you)' : '')
+  const tools = []
+  if (p.browser) tools.push('war room')
+  for (const a of p.agents ?? []) {
+    tools.push(a.tool + (a.here ? '' : ' (away)') + (a.doing ? ': ' + a.doing : ''))
+  }
+  return (p.here ? '● ' : '○ ') + name + (tools.length > 0 ? ' · ' + tools.join(' · ') : '') + (p.here ? '' : ' · away')
+}
+
+// whoIsHere is the line under the prompt: the other people who are here, each
+// with where they are ("Here: carol (war room) · bob (Claude Code)"). The
+// engine cuts it where the row ends, so it is kept short.
+function whoIsHere() {
+  if (snapshot.rooms.length !== 1) return ''
+  const st = snapshot.rooms[0].status
+  if (!st) return ''
+  const others = (st.people ?? []).filter((p) => p.here && !p.you)
+  if (others.length === 0) return ''
+  const shown = others.slice(0, 4).map((p) => {
+    const where = (p.agents ?? []).filter((a) => a.here).map((a) => a.tool)
+    if (p.browser) where.unshift('war room')
+    return where.length > 0 ? p.name + ' (' + [...new Set(where)].join(', ') + ')' : p.name
+  })
+  const more = others.length > 4 ? ' · ' + (others.length - 4) + ' more' : ''
+  return 'Here: ' + shown.join(' · ') + more
 }
 
 // newestLine is the most recent untold line. The digest lists @-mentions
@@ -417,6 +545,13 @@ function roomText() {
   const out = []
   for (const room of snapshot.rooms) {
     out.push(roomName(room) + ' · ' + room.count + ' new')
+    const st = room.status
+    if (st) {
+      const state = statusWords(st)
+      if (state.length > 0) out.push('  ' + state.join(' · '))
+      if (st.theory) out.push('  Leading theory: ' + st.theory)
+      for (const p of st.people ?? []) out.push('  ' + personLine(p))
+    }
     for (const line of room.digest ?? []) out.push('  ' + plainLine(line))
   }
   return out.join('\n')

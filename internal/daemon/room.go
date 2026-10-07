@@ -140,6 +140,15 @@ type Room struct {
 	events  []client.Event
 	frame   *client.ContextFrame
 	frameAt time.Time
+	// frameStale is set by an event that changes what the frame says (a
+	// status change, a join or leave, an admitted claim), so the next read
+	// fetches it again rather than waiting out FrameTTL. frameLoading is set
+	// while a background refresh (StatusView) is in flight.
+	frameStale   bool
+	frameLoading bool
+	// frameGen counts stale marks, so a read that started before the latest
+	// one cannot clear it with an answer from before the change.
+	frameGen int
 	// name is what the person knows the room as (its display id, its title),
 	// kept from the last frame read, never expired with it: a name does not go
 	// stale in 30 seconds, and the status line must not fall back to nothing
@@ -623,6 +632,15 @@ func (r *Room) enqueue(evt client.Event) {
 		}
 		r.mu.Unlock()
 	}
+	if touchesFrame(evt.Type) {
+		r.mu.Lock()
+		r.frameStale = true
+		r.frameGen++
+		r.mu.Unlock()
+		// Read it now rather than at the next peek, so the status line has
+		// the new answer by the time anyone asks.
+		r.refreshFrameAsync()
+	}
 	if r.deps.OnEvent != nil {
 		r.deps.OnEvent(r, evt)
 	}
@@ -897,12 +915,13 @@ func (r *Room) Advance(name string, caller Kind, upTo int64) (int64, error) {
 // Frame is the ranked context frame, cached for FrameTTL.
 func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 	r.mu.Lock()
-	if r.frame != nil && r.deps.now().Sub(r.frameAt) < FrameTTL {
+	if r.frame != nil && !r.frameStale && r.deps.now().Sub(r.frameAt) < FrameTTL {
 		f := r.frame
 		r.mu.Unlock()
 		return f, nil
 	}
 	cl := r.client
+	gen := r.frameGen
 	r.mu.Unlock()
 	f, err := cl.GetContextFrame(ctx)
 	if err != nil {
@@ -911,11 +930,77 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 	r.mu.Lock()
 	r.frame = f
 	r.frameAt = r.deps.now()
+	if r.frameGen == gen {
+		r.frameStale = false
+	}
 	if n := narrate.RoomNameOf(f); !n.IsZero() {
 		r.name = n
 	}
 	r.mu.Unlock()
 	return f, nil
+}
+
+// StatusView is the room at a glance (status, people, Beacon, theory) from the
+// cached frame, for the peek a hook or status line makes. It never waits on
+// the network: a stale or missing frame is refreshed in the background, and
+// this read returns what is cached (nothing, the first time).
+func (r *Room) StatusView() narrate.RoomStatus {
+	r.refreshFrameAsync()
+	r.mu.Lock()
+	f := r.frame
+	events := append([]client.Event(nil), r.events...)
+	me := r.Config.HumanActorID
+	loading := r.frameLoading
+	r.mu.Unlock()
+	st := narrate.StatusOf(f, me, narrate.BeaconState(events))
+	st.Refreshing = loading
+	return st
+}
+
+// refreshFrameAsync reads the frame again in the background when the cached
+// one is stale or expired and no read is already going. A read that comes
+// back while a newer change has marked the frame stale reads once more.
+func (r *Room) refreshFrameAsync() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	fresh := r.frame != nil && !r.frameStale && r.deps.now().Sub(r.frameAt) < FrameTTL
+	if fresh || r.frameLoading || r.client == nil {
+		return
+	}
+	r.frameLoading = true
+	go func() {
+		for i := 0; i < 2; i++ {
+			ctx, cancel := context.WithTimeout(context.Background(), statusFrameBudget)
+			_, err := r.Frame(ctx)
+			cancel()
+			r.mu.Lock()
+			again := err == nil && r.frameStale
+			r.mu.Unlock()
+			if !again {
+				break
+			}
+		}
+		r.mu.Lock()
+		r.frameLoading = false
+		r.mu.Unlock()
+	}()
+}
+
+// statusFrameBudget bounds a background frame refresh.
+const statusFrameBudget = 10 * time.Second
+
+// frameEventPrefixes are the event types after which the frame says something
+// different: the incident's status or severity, who is in the room, what is
+// established, Beacon's run.
+var frameEventPrefixes = []string{"status.", "severity.", "incident.", "edge.participant.", "claim.", "agent.run.", "finding."}
+
+func touchesFrame(eventType string) bool {
+	for _, p := range frameEventPrefixes {
+		if strings.HasPrefix(eventType, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // Name is what the person knows the room as, from the last frame read (or

@@ -61,10 +61,19 @@ func (f *fakeEdge) GetUpdates(_ context.Context, since int64) ([]client.Event, e
 	return nil, nil
 }
 func (f *fakeEdge) GetContextFrame(context.Context) (*client.ContextFrame, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	if f.frame != nil {
 		return f.frame, nil
 	}
 	return &client.ContextFrame{}, nil
+}
+
+// setFrame changes what GetContextFrame answers, safely against a background read.
+func (f *fakeEdge) setFrame(fr *client.ContextFrame) {
+	f.mu.Lock()
+	f.frame = fr
+	f.mu.Unlock()
 }
 func (f *fakeEdge) GetContextDelta(_ context.Context, since int64) (*client.FrameDelta, error) {
 	if f.delta != nil {

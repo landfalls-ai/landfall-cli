@@ -190,6 +190,9 @@ type RoomView struct {
 	// Events is the untold set itself (peek only), so a front end's per-pid
 	// hook socket can answer protocol-1 hooks from the daemon's view.
 	Events []client.Event `json:"events,omitempty"`
+	// Status (peek only) is the room at a glance: status, severity, people,
+	// Beacon, the leading theory. From the cached frame; never a network wait.
+	Status *narrate.RoomStatus `json:"status,omitempty"`
 }
 
 // SeatView is one agent session as `rooms` lists it.
@@ -470,6 +473,8 @@ func (d *Daemon) peek(req Request) Response {
 			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: cursor, Digest: digest, Events: untold,
 			Attention: attention, VotesAwaited: votes,
 		})
+		st := room.StatusView()
+		res.Rooms[len(res.Rooms)-1].Status = &st
 	}
 	return res
 }

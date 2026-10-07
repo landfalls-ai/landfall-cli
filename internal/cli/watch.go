@@ -44,11 +44,17 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
 	"github.com/landfalls-ai/landfall-cli/internal/hooks"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 	"github.com/spf13/cobra"
 )
 
 // WatchTick is the slow wake between pushes.
 const WatchTick = 2 * time.Second
+
+// watchRefreshPoll is how soon the loop asks again while the daemon is
+// reading a room's frame behind its answer (a status change, a join), so the
+// new status is drawn within a moment of arriving, not a tick later.
+const watchRefreshPoll = 250 * time.Millisecond
 
 // watchResubscribe is how long a lost subscribe stream waits to retry.
 const watchResubscribe = 2 * time.Second
@@ -68,6 +74,10 @@ type WatchRoom struct {
 	// Digest is the untold set, one line each, addressed lines first, as the
 	// user-prompt-submit hook would hand them to the agent.
 	Digest []string `json:"digest,omitempty"`
+	// Status is the room at a glance: the incident's status and severity, who
+	// is in it with their agents, Beacon's run, the leading theory. Absent from
+	// a daemon of an older build.
+	Status *narrate.RoomStatus `json:"status,omitempty"`
 }
 
 // WatchSnapshot is one line of the stream.
@@ -152,6 +162,19 @@ func Watch(ctx context.Context, deps WatchDeps) error {
 			snap.Rooms = []WatchRoom{}
 		}
 		follow(snap.Rooms)
+		// The refreshing flag decides when to ask again; it is not something
+		// the reader draws, so it stays off the stream.
+		refreshing := false
+		for _, r := range snap.Rooms {
+			if r.Status != nil && r.Status.Refreshing {
+				refreshing = true
+				r.Status.Refreshing = false
+			}
+		}
+		var soon <-chan time.Time
+		if refreshing {
+			soon = time.After(watchRefreshPoll)
+		}
 		body, err := json.Marshal(snap)
 		if err == nil && string(body) != last {
 			if _, werr := deps.Out.Write(append(body, '\n')); werr != nil {
@@ -164,6 +187,7 @@ func Watch(ctx context.Context, deps WatchDeps) error {
 			return nil
 		case <-ticker.C:
 		case <-wakeCh:
+		case <-soon:
 		}
 		if deps.Orphaned != nil && deps.Orphaned() {
 			return nil
@@ -189,7 +213,7 @@ func watchSnapshot(ws hooks.Workspace) WatchSnapshot {
 		snap.Rooms = append(snap.Rooms, WatchRoom{
 			RoomKey: r.RoomKey, IncidentID: r.IncidentID, DisplayID: r.DisplayID, Title: r.Title,
 			Slug: r.Slug, Connection: string(r.Connection), Count: r.Count, Addressed: addressed,
-			VotesAwaited: r.VotesAwaited, MaxSeq: r.MaxSeq, Digest: r.Digest,
+			VotesAwaited: r.VotesAwaited, MaxSeq: r.MaxSeq, Digest: r.Digest, Status: r.Status,
 		})
 	}
 	return snap

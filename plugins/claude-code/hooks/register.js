@@ -42,6 +42,7 @@ import { install as installWall, band as bandWall, onSnapshot as onSnapshotWall,
 import { install as installLb, band as bandLb, onSnapshot as onSnapshotLb, start as startLb, tick as tickLb } from './components/lb.js'
 import { install as installTimeline, band as bandTimeline, onSnapshot as onSnapshotTimeline, start as startTimeline, tick as tickTimeline } from './components/timeline.js'
 import { install as installContext, band as bandContext, onSnapshot as onSnapshotContext, start as startContext, tick as tickContext } from './components/context.js'
+import { install as installMore, band as bandMore, onSnapshot as onSnapshotMore, start as startMore, tick as tickMore } from './components/more.js'
 import { install as installConsole, band as bandConsole, onSnapshot as onSnapshotConsole, start as startConsole, tick as tickConsole } from './console.js'
 
 export function register(on, options) {
@@ -64,6 +65,7 @@ export function register(on, options) {
   installLb(on)
   installTimeline(on)
   installContext(on)
+  installMore(on)
   installConsole(on)
 
   on('session.start', async ($, e, next) => {
@@ -175,6 +177,11 @@ async function startAll($) {
     // One component's start never stops the session's.
   }
   try {
+    await startMore(io)
+  } catch {
+    // One component's start never stops the session's.
+  }
+  try {
     await startConsole(io)
   } catch {
     // One component's start never stops the session's.
@@ -190,7 +197,9 @@ async function bandAll($, e, k) {
   const body = []
   try {
     const got = await bandVote(io, e, k)
-    if (got && got.length > 0) body.push(...got)
+    // The vote's head and positions rows are the head's label now (§5.1: the head says
+    // `● vote waiting 4m 10s`; the band is the statement and the keys), so they are left out here.
+    if (got && got.length > 0) body.push(...got.filter((row) => !(row && row.props && (row.props.key === 'vote-h' || row.props.key === 'vote-p'))))
   } catch {
     // One section failing never takes the band down.
   }
@@ -213,7 +222,7 @@ async function bandAll($, e, k) {
     // No room news is no band.
   }
   const r = roomOfBand()
-  if (!any || !r) return []
+  if (!any) return []
   let head = []
   let keys = []
   try {
@@ -228,8 +237,8 @@ async function bandAll($, e, k) {
   }
   const rows = [...head, ...body, ...keys]
   if (k.terminal || k.mobile) return rows
-  const sev1 = severityTone(r.status && r.status.severity) === 'critical'
-  return [k.card(rows, { key: 'band-card', tone: sev1 ? 'critical' : notLive(r) ? 'warning' : undefined })]
+  const sev1 = !!r && severityTone(r.status && r.status.severity) === 'critical'
+  return [k.card(rows, { key: 'band-card', tone: sev1 ? 'critical' : r && notLive(r) ? 'warning' : undefined })]
 }
 
 // startWatch runs `landfall watch` for the session's life and starts it again
@@ -355,6 +364,11 @@ async function tickAll($) {
     // One component's tick never stops the others.
   }
   try {
+    await tickMore(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
     await tickConsole(io, nowMs)
   } catch {
     // One component's tick never stops the others.
@@ -459,6 +473,11 @@ function applySnapshot($, line) {
     // One component's listener never stops the others.
   }
   try {
+    onSnapshotMore(io, room.snapshot, prev)
+  } catch {
+    // One component's listener never stops the others.
+  }
+  try {
     onSnapshotConsole(io, room.snapshot, prev)
   } catch {
     // One component's listener never stops the others.
@@ -471,7 +490,7 @@ function applySnapshot($, line) {
 function makeIo($, surface) {
   return {
     surface: surface || 'terminal',
-    fill: (text, mode) => $.prompt.fill(mode ? { text, mode } : { text }),
+    fill: (text, mode) => $.prompt.fill({ text, ...(mode ? { mode } : {}) }),
     suggest: (text) => $.prompt.suggest({ text }),
     toast: (text, ms) => $.ui.toast(text, ms ? { timeoutMs: ms } : undefined),
     status: (text) => $.ui.status(text),

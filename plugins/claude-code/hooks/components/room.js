@@ -139,10 +139,10 @@ export async function bandNews(io, e, k) {
 // `4: add chart <metric>` while a chart is ready.
 export function bandKeys(io, e, k) {
   const r = bandRoom()
-  if (!r) return null
+  if (!r && !chart.ready) return null
   const rooms = pending()
   const news = rooms.length > 0
-  const votes = waiting(r).length > 0
+  const votes = !!r && waiting(r).length > 0
   const open = consoleState.open
   const keys = [
     news ? k.button({ key: 'catch-up', label: k.terminal ? 'catch up' : 'Catch up', hotkey: '1', primary: k.terminal || !votes, onPress: async () => void (await io.fill(CATCH_UP)) }) : null,

@@ -423,6 +423,26 @@ function wallFeed() {
   }
 }
 
+// lbFeed and timelineFeed are Home's load balancer and Latest blocks: the tab's last good answer
+// and its live read (lb.js answerOf/readState, timeline.js latestRows/readState).
+function lbFeed() {
+  try {
+    if (typeof lbNs.answerOf !== 'function') return homeFeedOf(lbNs)
+    return { lp: typeof lbNs.readState === 'function' ? lbNs.readState() : null, data: lbNs.answerOf() }
+  } catch {
+    return null
+  }
+}
+
+function timelineFeed() {
+  try {
+    if (typeof timelineNs.latestRows !== 'function') return homeFeedOf(timelineNs)
+    return { lp: typeof timelineNs.readState === 'function' ? timelineNs.readState() : null, data: timelineNs.latestRows(3) }
+  } catch {
+    return null
+  }
+}
+
 // stillReading: a warm source that has not answered yet. A source with no live read of its own
 // (the shared wall) counts as reading for its first 30 s, then as quiet.
 function stillReading(f, nowMs) {
@@ -697,7 +717,7 @@ function drawHome(k, io, nowMs, e, r) {
   if (!r) {
     return { rows: [Text({ key: 'home-none', children: [NO_ROOM] })], keys: [], live: null, footer: null, refresh: null }
   }
-  const feeds = { wall: wallFeed(), lb: homeFeedOf(lbNs), timeline: homeFeedOf(timelineNs) }
+  const feeds = { wall: wallFeed(), lb: lbFeed(), timeline: timelineFeed() }
   const cells = Number((e.props && e.props.bodyColumns) || k.width + 2)
   const two = k.terminal ? cells >= TWO_COLUMNS : k.width >= 118
   const st = r.status || {}

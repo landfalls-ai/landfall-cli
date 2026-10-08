@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, ran, setRoom, textsOf, watchRoom } from './_tabhook'
+import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, ran, setRoom, textsOf, watchRoom } from './_tabd'
 import * as voteMod from '../hooks/components/vote.js'
 
 // The Vote tab (spec 4.1): the component's own tab(k, io, nowMs, args), as console.js draws it.

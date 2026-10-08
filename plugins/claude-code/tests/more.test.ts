@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabhook'
+import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import { consoleState } from '../hooks/core.js'
 import * as moreMod from '../hooks/components/more.js'
 

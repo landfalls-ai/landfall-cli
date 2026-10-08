@@ -328,7 +328,8 @@ export async function openConsole(io, tab, args, opts) {
   consoleState.args = args || null
   consoleState.open = true
   consoleState.closed = false
-  const asked = !!(opts && opts.focus)
+  // A band key passes `{ asked: true }` as the args: the person asked, so it takes the keyboard.
+  const asked = !!(opts && opts.focus) || !!(args && typeof args === 'object' && args.asked === true)
   let got = { isPlaced: true }
   try {
     got = (await io.open(CONSOLE, 'Landfall', { columns: CONSOLE_COLUMNS, closeOnEscape: true, ...(asked ? { focus: true } : {}) })) || got

@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabhook'
+import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import * as brainMod from '../hooks/components/brain.js'
 
 // `landfall brain` as the Go CLI prints it (internal/cli/brain.go brainMatch, brain_test.go's

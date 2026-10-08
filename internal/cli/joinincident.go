@@ -133,20 +133,29 @@ func runJoinIncident(ctx context.Context, ui *UI, incidentID, host string) error
 	harness := hooks.HarnessFromClientName(hooks.DetectHookHarness(host, "", os.Getenv))
 	ws := hooks.Workspace{Harness: harness.Key}
 	log := func(msg string) { ui.Log("%s", msg) }
-	fe := newFrontEnd(ws, log)
 	read := defaultReadDeps(ws)
-	ans := RunJoinIncident(ctx, incidentID, JoinIncidentDeps{
-		Org:          read.Org,
-		Rooms:        read.Rooms,
+	deps := joinIncidentRoomDeps(ws, harness, log, func(ctx context.Context, link string) (*client.Config, error) {
+		cfg, err := client.RedeemShareLink(ctx, link, client.RedeemOptions{BaseURL: os.Getenv("LANDFALL_BASE_URL")})
+		if err != nil {
+			return nil, err
+		}
+		return &cfg, nil
+	})
+	deps.Org, deps.Rooms = read.Org, read.Rooms
+	return printAnswer(stdout, RunJoinIncident(ctx, incidentID, deps))
+}
+
+// joinIncidentRoomDeps is the daemon half of the production wiring: the redeem
+// through the daemon's link book and the terminal reader's attach. The attach
+// is what puts the room on offer to this folder's agent (adopt.go): a
+// `landfall serve` of the same workspace and harness joins it with this
+// session, without redeeming the link again.
+func joinIncidentRoomDeps(ws hooks.Workspace, harness hooks.Harness, log func(string), redeem func(context.Context, string) (*client.Config, error)) JoinIncidentDeps {
+	fe := newFrontEnd(ws, log)
+	return JoinIncidentDeps{
 		EnsureDaemon: func() bool { return daemon.EnsureRunning(ws, nil, log) },
 		Redeem: func(ctx context.Context, link string) (*client.Config, error) {
-			return fe.redeemLink(ctx, link, func(ctx context.Context, link string) (*client.Config, error) {
-				cfg, err := client.RedeemShareLink(ctx, link, client.RedeemOptions{BaseURL: os.Getenv("LANDFALL_BASE_URL")})
-				if err != nil {
-					return nil, err
-				}
-				return &cfg, nil
-			})
+			return fe.redeemLink(ctx, link, redeem)
 		},
 		Attach: func(cfg client.Config, linkHash string) (*daemon.Response, error) {
 			label := harness.Label
@@ -169,6 +178,5 @@ func runJoinIncident(ctx context.Context, ui *UI, incidentID, host string) error
 				Fingerprints: computeFingerprints(ws.Dir()),
 			}, daemon.AttachTimeout+5*time.Second)
 		},
-	})
-	return printAnswer(stdout, ans)
+	}
 }

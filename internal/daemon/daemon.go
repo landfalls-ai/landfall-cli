@@ -53,6 +53,9 @@ type Daemon struct {
 	loggedOnce map[string]bool
 	stopCh     chan struct{}
 	stopOnce   sync.Once
+	// offered wakes every `await-room` when a person joins a room from the
+	// mod (live.go).
+	offered chan struct{}
 }
 
 // New builds a daemon (does not start it).

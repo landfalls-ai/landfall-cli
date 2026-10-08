@@ -256,6 +256,9 @@ type serveOptions struct {
 	EnsureDaemon func(ws hooks.Workspace, log func(string)) bool
 	// HeartbeatInterval is keepLive's beat. Zero means HEARTBEAT_MS.
 	HeartbeatInterval time.Duration
+	// noAdoptWatch leaves the dual connection to tool calls alone (adopt.go):
+	// a test of the tool-call path must not race the background adoption.
+	noAdoptWatch bool
 }
 
 func (o serveOptions) withDefaults(ui *UI) serveOptions {
@@ -487,6 +490,14 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 		ui.Log("not joined yet — the agent should call join_war_room with a Landfall share link.")
 	}
 
+	// The dual connection (adopt.go, live.md FR-L5): in daemon mode, a serve
+	// in no room joins the room the person put this folder in from the mod,
+	// through the daemon's link book, with no second redeem.
+	var adopt *adopter
+	if fe != nil {
+		adopt = &adopter{fe: fe, sess: sess, gate: gate, noWatch: opts.noAdoptWatch, log: func(msg string) { ui.Log("%s", msg) }}
+	}
+
 	// Which agent host this process serves, once MCP initialize says so. The
 	// hook socket uses it to answer only its own harness's hooks.
 	var harnessMu sync.Mutex
@@ -524,7 +535,7 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 
 	ui.Log("MCP stdio server ready — connect your agent. Every tool call narrates to the war room.")
 	serveErr := serveStdio(stopCtx, opts.In, opts.Out, mcp.Options{
-		Tools:      gate.wrap(tools.BuildWithAccepter(sess, toolAccepter)),
+		Tools:      adopt.wrap(gate.wrap(tools.BuildWithAccepter(sess, toolAccepter))),
 		ServerInfo: &mcp.ServerInfo{Name: "landfall", Version: opts.Version},
 		OnInitialize: func(ci mcp.ClientInfo) {
 			h := hooks.HarnessFromClientName(ci.Name)
@@ -544,6 +555,9 @@ func runServe(ctx context.Context, ui *UI, link string, opts serveOptions) error
 			if gate != nil {
 				gate.start()
 			}
+			// After initialize: the harness is known, so the offer this
+			// session waits for is the one for its own host.
+			adopt.startWatch(stopCtx)
 		},
 		// Must match the surface actually registered — instructions naming
 		// tools that do not exist send the agent hunting for them mid-incident.

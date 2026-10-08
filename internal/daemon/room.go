@@ -165,12 +165,22 @@ type Room struct {
 	// list, the claims projection, the line claims, Beacon's last answer.
 	person personState
 
+	// wall is what the room remembers of its wall (live.go); lastHeard is
+	// when the daemon last heard from the room (an event or a frame read).
+	wall      wallState
+	lastHeard time.Time
+
 	lastReaderLeftAt time.Time
 	openedAt         time.Time
 	deps             Deps
 	cancel           context.CancelFunc
 	stopWatch        func()
 	subscribers      map[chan client.Event]struct{}
+	// wakers are subscribers that asked for every change (a watch): every
+	// event that enters the ring, plumbing and this machine's own writes
+	// included, and a reader arriving or leaving. A watch redraws from the
+	// peek, so what it needs is the moment, not the filtered event.
+	wakers map[chan client.Event]struct{}
 }
 
 // OpenRoom joins the incident for the first harness on this machine and
@@ -540,6 +550,8 @@ func (r *Room) enqueueQuiet(evt client.Event) {
 	for len(r.events) > RingMax {
 		r.events = r.events[1:]
 	}
+	r.noteHeardLocked()
+	r.noteWallLocked(evt)
 }
 
 func (r *Room) start(ctx context.Context) {
@@ -616,11 +628,16 @@ func (r *Room) enqueue(evt client.Event) {
 		r.events = r.events[1:]
 	}
 	r.Connection = Live
-	subs := make([]chan client.Event, 0, len(r.subscribers))
+	r.noteHeardLocked()
+	r.noteWallLocked(evt)
+	subs := make([]chan client.Event, 0, len(r.subscribers)+len(r.wakers))
 	if !isPlumbing(evt.Type) && !isOwn(evt, r.ownIDsLocked(nil)) {
 		for ch := range r.subscribers {
 			subs = append(subs, ch)
 		}
+	}
+	for ch := range r.wakers {
+		subs = append(subs, ch)
 	}
 	r.mu.Unlock()
 	for _, ch := range subs {
@@ -713,6 +730,39 @@ func (r *Room) Subscribe() (<-chan client.Event, func()) {
 	}
 }
 
+// SubscribeAll registers a stream of every change a watcher redraws for:
+// each event that enters the ring (no plumbing or own-write filter), and a
+// reader arriving or leaving (an event with no seq and type ReaderChanged).
+func (r *Room) SubscribeAll() (<-chan client.Event, func()) {
+	ch := make(chan client.Event, 64)
+	r.mu.Lock()
+	if r.wakers == nil {
+		r.wakers = map[chan client.Event]struct{}{}
+	}
+	r.wakers[ch] = struct{}{}
+	r.mu.Unlock()
+	return ch, func() {
+		r.mu.Lock()
+		delete(r.wakers, ch)
+		r.mu.Unlock()
+	}
+}
+
+// ReaderChanged is the type of the seq-less line SubscribeAll sends when a
+// reader attaches or detaches (the agent arriving is news to the band).
+const ReaderChanged = "landfall.reader.changed"
+
+// wakeAllLocked tells every SubscribeAll stream that a reader changed. Never
+// blocks: a stream that is full has a wake pending already.
+func (r *Room) wakeAllLocked() {
+	for ch := range r.wakers {
+		select {
+		case ch <- client.Event{Type: ReaderChanged}:
+		default:
+		}
+	}
+}
+
 // MaxSeq is the newest seq the room has seen (from the ring or the frame).
 func (r *Room) MaxSeq() int64 {
 	r.mu.Lock()
@@ -746,9 +796,13 @@ func (r *Room) Attach(rd Reader) *Reader {
 			s.idleSince = time.Time{}
 		}
 	}
+	defer r.wakeAllLocked()
 	if existing, ok := r.readers[rd.Name]; ok {
 		existing.Connected = true
 		existing.LastSeenAt = now
+		if rd.PersonJoined {
+			existing.PersonJoined = true
+		}
 		if rd.Host != "" {
 			existing.Host = rd.Host
 		}
@@ -773,6 +827,7 @@ func (r *Room) Attach(rd Reader) *Reader {
 func (r *Room) Detach(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.wakeAllLocked()
 	rd, ok := r.readers[name]
 	if ok {
 		rd.Connected = false
@@ -937,6 +992,7 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 	r.mu.Lock()
 	r.frame = f
 	r.frameAt = r.deps.now()
+	r.noteHeardLocked()
 	if r.frameGen == gen {
 		r.frameStale = false
 	}

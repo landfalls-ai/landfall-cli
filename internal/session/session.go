@@ -633,6 +633,26 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 	if err != nil {
 		return client.Config{}, err
 	}
+	cfg, _, err = s.joinConfig(ctx, cfg, false)
+	return cfg, err
+}
+
+// AdoptRoom joins a room this machine already holds a session for (serve's
+// daemon mode: the room the person joined this folder to from the mod), with
+// that config and no redeem. It joins only a session that is in no room yet:
+// one that joined meanwhile (join_war_room, a startup link) keeps its room,
+// the adopted join is left again, and joined is false.
+func (s *Session) AdoptRoom(ctx context.Context, cfg client.Config) (joined bool, err error) {
+	if s.Client() != nil {
+		return false, nil
+	}
+	_, joined, err = s.joinConfig(ctx, cfg, true)
+	return joined, err
+}
+
+// joinConfig is a join with a config in hand: the shared tail of
+// JoinWarRoom and AdoptRoom.
+func (s *Session) joinConfig(ctx context.Context, cfg client.Config, onlyIfIdle bool) (client.Config, bool, error) {
 	s.mu.Lock()
 	label := s.agentLabel
 	s.mu.Unlock()
@@ -642,10 +662,15 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 
 	next := s.clientFactory(cfg)
 	if _, err := next.Join(ctx); err != nil {
-		return client.Config{}, err
+		return client.Config{}, false, err
 	}
 
 	s.mu.Lock()
+	if onlyIfIdle && s.client != nil {
+		s.mu.Unlock()
+		_ = next.Leave(ctx)
+		return cfg, false, nil
+	}
 	prev := s.client
 	s.client = next
 	s.cursor = -1
@@ -675,10 +700,10 @@ func (s *Session) JoinWarRoom(ctx context.Context, shareURL string) (client.Conf
 
 	if s.onJoined != nil {
 		if err := s.onJoined(s, cfg); err != nil {
-			return cfg, err
+			return cfg, true, err
 		}
 	}
-	return cfg, nil
+	return cfg, true, nil
 }
 
 // Redeemer is how join_war_room turns a share link into a config.

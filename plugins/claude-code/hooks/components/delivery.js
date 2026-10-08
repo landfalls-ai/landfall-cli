@@ -5,12 +5,16 @@
 
 import { CATCH_UP, HOST, pending, room } from '../core.js'
 import { PANE } from './room.js'
+import { scopeChanged } from './scope.js'
 
 export function install(on) {
   on('prompt.submit', async ($, e, next) => {
     // The person has moved on: a room pane left open would keep the keyboard
     // and eat the first keys of their next message.
     $.ui.close({ id: PANE }).catch(() => {})
+    // The room's scope block (scope.js) is refreshed when it changed, so this
+    // message's request carries the room as it is now.
+    if (scopeChanged()) await $.ui.invalidate('prompt.context').catch(() => {})
     let context = ''
     try {
       const payload = JSON.stringify({

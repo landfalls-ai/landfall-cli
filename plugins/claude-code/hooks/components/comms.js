@@ -10,7 +10,7 @@
 // failed read keeps the last good list and says it is stale. More draws the chip row and calls
 // `tab` for the body; the chip's count is `count()`.
 
-import { HOST, consoleState, currentRoom } from '../core.js'
+import { HOST, consoleState, currentRoom, reading } from '../core.js'
 import { closed, drawn, due, LIST_MS, livePane, readLive, opened as markOpen } from '../live.js'
 import { centerRow, footerOf, nowOf, resetLive } from './tabparts.js'
 
@@ -43,11 +43,11 @@ export function start(io) {}
 
 // tick: a shown list reads again every 30 s; closing the console stops the reads.
 export async function tick(io, nowMs) {
-  if (lp.open && !consoleState.open) closed(lp)
+  if (lp.open && !reading('more')) closed(lp)
   const r = currentRoom()
   const moved = (r ? r.roomKey : '') !== view.roomKey
   forRoom(r)
-  if (!lp.open) return
+  if (!lp.open || !reading('more')) return
   if (r && (moved || due(lp, nowMs, LIST_MS))) void load(io, r.roomKey)
 }
 
@@ -90,7 +90,7 @@ export function keys(k, io, nowMs, args) {
 
 // tab is the Comms body (spec 4.7), under More's chip row: `Stakeholder updates` bold, one block
 // per update (the state label, `simulated` in violet, dim meta, the text), at most 6, the dim
-// note, the footer.
+// note. The console draws the footer.
 export function tab(k, io, nowMs, args) {
   const { Box, Text } = k.els
   drawn(lp)
@@ -127,9 +127,12 @@ export function tab(k, io, nowMs, args) {
   })
 
   rows.push(Text({ key: 'cm-note', dimColor: true, children: [APPROVAL_NOTE] }))
-  const foot = footerOf(k, lp, nowMs, r, 'cm-live')
-  if (foot) rows.push(foot)
   return rows
+}
+
+// footer is the console's footer for this tab: `live · updated 4s ago`, or null before the first read.
+export function footer(k, nowMs) {
+  return footerOf(k, lp, nowMs, currentRoom(), 'cm-live')
 }
 
 // text is the Comms answer where no pane can be placed (`claude -p`): it reads the list and

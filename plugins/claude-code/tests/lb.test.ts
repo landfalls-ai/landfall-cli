@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
+import { NOW, chromed, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import { consoleState } from '../hooks/core.js'
 import * as lbMod from '../hooks/components/lb.js'
 
@@ -165,7 +165,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the engine draws each target group with its targets by zone and 5xx per target group per minute`, async ($, on) => {
     NEW_ROOM()
     await readBoard(LB)
-    hookTab(on, 'd-lb', (k, io, now, args) => lbMod.tab(k, io, now, args))
+    hookTab(on, 'd-lb', (k, io, now, args) => chromed(lbMod, k, io, now, args))
     const pane = await $.ui.mount({ ...paneProps('d-lb', { viewport: { columns: 140, rows: 50 } }), surface } as never)
     expect(await pane.find({ type: 'Text', text: 'web-edge-alb' })).toBeDefined()
     expect((await pane.find({ type: 'Text', text: '● healthy 5 of 7' }))?.props.color).toBe('#fab219')
@@ -276,7 +276,7 @@ test('the keys are none while the board cannot be read', async ($, on) => {
   await readBoard({ ok: false, error: "The room's AWS connection lists no Application Load Balancers in this region." })
   const k = fakeKit('terminal')
   expect(lbMod.keys(k, fakeIo().io, NOW, null)).toEqual([])
-  hookTab(on, 'd-lb-err', (kk, io, now, args) => lbMod.tab(kk, io, now, args))
+  hookTab(on, 'd-lb-err', (kk, io, now, args) => chromed(lbMod, kk, io, now, args))
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ ...paneProps('d-lb-err'), surface } as never)
     expect(await pane.find({ type: 'Text', text: "The room's AWS connection lists no Application Load Balancers in this region." })).toBeDefined()
@@ -298,7 +298,7 @@ test('a asks about a target group returning 5xx when every target is healthy', a
 test('health or metrics that could not be read, and a cut list, are said in sentences', async ($, on) => {
   NEW_ROOM()
   await readBoard(PARTIAL)
-  hookTab(on, 'd-lb-partial', (k, io, now, args) => lbMod.tab(k, io, now, args))
+  hookTab(on, 'd-lb-partial', (k, io, now, args) => chromed(lbMod, k, io, now, args))
   for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ ...paneProps('d-lb-partial'), surface } as never)
     expect(await pane.find({ type: 'Text', text: "The room's AWS connection could not read load balancers. Try again shortly." })).toBeDefined()
@@ -317,11 +317,11 @@ test('first read says it is reading, a failed refresh keeps the board and the fo
   const k = fakeKit('terminal')
   let answer: unknown = LB
   const f = fakeIo({ run: async () => answer })
-  expect(textsOf(lbMod.tab(k, f.io, NOW, null))).toEqual(['Reading the room’s AWS connection…'])
+  expect(textsOf(chromed(lbMod, k, f.io, NOW, null))).toEqual(['Reading the room’s AWS connection…'])
   await lbMod.warm(f.io)
   answer = { ok: false, error: 'Your sign-in expired. Run landfall login.' }
   await lbMod.refresh(f.io)
-  const texts = textsOf(lbMod.tab(k, f.io, NOW + 120000, null))
+  const texts = textsOf(chromed(lbMod, k, f.io, NOW + 120000, null))
   expect(texts).toContain('web-edge-alb')
   expect(texts).toContain('stale · updated 2m ago · Your sign-in expired. Run landfall login.')
 })
@@ -329,7 +329,7 @@ test('first read says it is reading, a failed refresh keeps the board and the fo
 test('with no load balancer the tab says so', async () => {
   NEW_ROOM()
   await readBoard({ ok: true, region: 'us-east-1', loadBalancers: [] })
-  expect(textsOf(lbMod.tab(fakeKit('terminal'), fakeIo().io, NOW, null))).toContain('No load balancers in scope.')
+  expect(textsOf(chromed(lbMod, fakeKit('terminal'), fakeIo().io, NOW, null))).toContain('No load balancers in scope.')
 })
 
 test('/landfall lb <name> reads that load balancer once and offers to show them all', async () => {
@@ -337,17 +337,17 @@ test('/landfall lb <name> reads that load balancer once and offers to show them 
   const k = fakeKit('terminal')
   const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), LB) })
   consoleState.args = 'web-edge-alb'
-  const tree = lbMod.tab(k, f.io, NOW, 'web-edge-alb')
+  const tree = chromed(lbMod, k, f.io, NOW, 'web-edge-alb')
   expect(consoleState.args).toBeNull()
   await new Promise((r) => setTimeout(r, 0))
   expect(f.log.runs).toEqual([['lb', '--host', 'claude-code', '--room', room.roomKey, '--lb', 'web-edge-alb']])
   expect(textsOf(tree)).toContain('Showing web-edge-alb only.')
   // Drawn again with the same words, it does not read again.
-  lbMod.tab(k, f.io, NOW, 'web-edge-alb')
+  chromed(lbMod, k, f.io, NOW, 'web-edge-alb')
   await new Promise((r) => setTimeout(r, 0))
   expect(f.log.runs).toHaveLength(1)
   // The person shows them all.
-  buttonOf(lbMod.tab(k, f.io, NOW, null), 'lb-all')!.props.onPress()
+  buttonOf(chromed(lbMod, k, f.io, NOW, null), 'lb-all')!.props.onPress()
   await new Promise((r) => setTimeout(r, 0))
   expect(f.log.runs.at(-1)).toEqual(['lb', '--host', 'claude-code', '--room', room.roomKey])
 })
@@ -356,6 +356,7 @@ test('the board reads every 60 s while the console is open, and stops when it cl
   NEW_ROOM()
   const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), LB) })
   consoleState.open = true
+  consoleState.warm.add('lb')
   await lbMod.warm(f.io)
   expect(f.log.runs).toHaveLength(1)
   await lbMod.tick(f.io, NOW + 30000)
@@ -374,9 +375,9 @@ test('every read names the room this session is in with --room, and a different 
   const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), LB) })
   await lbMod.warm(f.io)
   expect(f.log.runs[0]).toContain(room.roomKey)
-  expect(textsOf(lbMod.tab(fakeKit('terminal'), f.io, NOW, null))).toContain('web-edge-alb')
+  expect(textsOf(chromed(lbMod, fakeKit('terminal'), f.io, NOW, null))).toContain('web-edge-alb')
   NEW_ROOM()
-  expect(textsOf(lbMod.tab(fakeKit('terminal'), f.io, NOW, null))).toEqual(['Reading the room’s AWS connection…'])
+  expect(textsOf(chromed(lbMod, fakeKit('terminal'), f.io, NOW, null))).toEqual(['Reading the room’s AWS connection…'])
 })
 
 test('text answers in words, with the sentence when there is no ALB, and says what could not be read', async () => {
@@ -418,7 +419,7 @@ test('no standalone pane or command is left behind, and the tab has no badge', (
 test('the mobile tab draws the board and a share key', async () => {
   NEW_ROOM()
   await readBoard(LB)
-  const tree = lbMod.tab(fakeKit('mobile'), fakeIo().io, NOW, null)
+  const tree = chromed(lbMod, fakeKit('mobile'), fakeIo().io, NOW, null)
   expect(textsOf(tree)).toContain('● healthy 5 of 7')
   expect(nodes(tree, 'Button').map((b) => b.props.key)).toEqual(['lb-share', 'lb-ask'])
 })
@@ -426,6 +427,6 @@ test('the mobile tab draws the board and a share key', async () => {
 test('on the desktop the health and 5xx labels sit on the text baseline of their rows', async () => {
   NEW_ROOM()
   await readBoard(LB)
-  const boxes = nodes(lbMod.tab(fakeKit('desktop'), fakeIo().io, NOW, null), 'Box')
+  const boxes = nodes(chromed(lbMod, fakeKit('desktop'), fakeIo().io, NOW, null), 'Box')
   for (const key of ['lb0-h', 'lb0-tg0-n', 'lb0-hr0']) expect(boxes.find((b) => b.props.key === key)?.props.alignItems).toBe('center')
 })

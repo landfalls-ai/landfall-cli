@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
+import { NOW, chromed, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import { consoleState } from '../hooks/core.js'
 import * as tlMod from '../hooks/components/timeline.js'
 
@@ -45,7 +45,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the engine draws the chips, one row per event oldest first, glyphs in their tone`, async ($, on) => {
     const { io } = setup()
     await tlMod.warm(io)
-    hookTab(on, 'd-tl', (k, i, now, args) => tlMod.tab(k, i, now, args))
+    hookTab(on, 'd-tl', (k, i, now, args) => chromed(tlMod, k, i, now, args))
     const pane = await $.ui.mount({ ...paneProps('d-tl'), surface } as never)
     // The chips: letters, the active one `▸ <kind>` at full strength, the others dim.
     const chips = (await pane.findAll({ type: 'Button' })).filter((b: any) => /^kind-/.test(String(b.key)))
@@ -81,7 +81,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await tlMod.warm(io)
     expect(log.runs[0].slice(0, 2)).toEqual(['timeline', '--host'])
     expect(log.runs[0]).toContain('--limit')
-    const draw = () => tlMod.tab(k, io, NOW, null)
+    const draw = () => chromed(tlMod, k, io, NOW, null)
 
     await buttonOf(draw(), 'ev-201')!.props.onPress()
     expect(log.filled).toEqual([{ text: '> 15:52 Triggered by Datadog: 5xx over 2% for 5 minutes\n\n', mode: 'insert' }])
@@ -114,16 +114,16 @@ test('/landfall timeline <chip> chooses that chip once; the person\'s own chip w
   const { io, log } = setup()
   const k = fakeKit('terminal')
   consoleState.args = 'findings'
-  tlMod.tab(k, io, NOW, 'findings')
+  chromed(tlMod, k, io, NOW, 'findings')
   expect(consoleState.args).toBeNull()
   await new Promise((r) => setTimeout(r, 0))
   expect(log.runs.filter((a) => a.includes('--kind')).map((a) => a[a.indexOf('--kind') + 1])).toEqual(['findings'])
-  expect(buttonOf(tlMod.tab(k, io, NOW, null), 'kind-findings')!.props.label).toBe('▸ findings')
+  expect(buttonOf(chromed(tlMod, k, io, NOW, null), 'kind-findings')!.props.label).toBe('▸ findings')
   // The same words drawn again (a console that passes them on every draw) change nothing.
-  await buttonOf(tlMod.tab(k, io, NOW, 'findings'), 'kind-status')!.props.onPress()
-  tlMod.tab(k, io, NOW, 'findings')
+  await buttonOf(chromed(tlMod, k, io, NOW, 'findings'), 'kind-status')!.props.onPress()
+  chromed(tlMod, k, io, NOW, 'findings')
   await new Promise((r) => setTimeout(r, 0))
-  expect(buttonOf(tlMod.tab(k, io, NOW, 'findings'), 'kind-status')!.props.label).toBe('▸ status')
+  expect(buttonOf(chromed(tlMod, k, io, NOW, 'findings'), 'kind-status')!.props.label).toBe('▸ status')
 })
 
 test('a new room event reads the newest page and lays it over the rows shown', async () => {
@@ -134,8 +134,9 @@ test('a new room event reads the newest page and lays it over the rows shown', a
   const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), { ok: true, events: page, hasMore: false, oldestSeq: page[0].seq }) })
   const k = fakeKit('terminal')
   consoleState.open = true
+  consoleState.warm.add('timeline')
   await tlMod.warm(f.io)
-  expect(eventButtons(tlMod.tab(k, f.io, NOW, null)).map((b) => b.props.key)).toEqual(['ev-201', 'ev-204'])
+  expect(eventButtons(chromed(tlMod, k, f.io, NOW, null)).map((b) => b.props.key)).toEqual(['ev-201', 'ev-204'])
   // Ticks with no new event read nothing.
   await tlMod.tick(f.io, NOW + 20000)
   expect(f.log.runs).toHaveLength(1)
@@ -144,7 +145,7 @@ test('a new room event reads the newest page and lays it over the rows shown', a
   tlMod.onSnapshot(f.io, { rooms: [{ ...room, maxSeq: 240 }] })
   await new Promise((r) => setTimeout(r, 0))
   expect(f.log.runs).toHaveLength(2)
-  expect(eventButtons(tlMod.tab(k, f.io, NOW, null)).map((b) => b.props.key)).toEqual(['ev-201', 'ev-238', 'ev-240'])
+  expect(eventButtons(chromed(tlMod, k, f.io, NOW, null)).map((b) => b.props.key)).toEqual(['ev-201', 'ev-238', 'ev-240'])
   // The console closing stops it.
   consoleState.open = false
   await tlMod.tick(f.io, NOW + 30000)
@@ -157,7 +158,7 @@ test('the badge counts news past the seq the tab was last drawn at, and drawing 
   const k = fakeKit('terminal')
   await tlMod.warm(io)
   expect(tlMod.badge()).toBe(2)
-  tlMod.tab(k, io, NOW, null)
+  chromed(tlMod, k, io, NOW, null)
   expect(tlMod.badge()).toBeNull()
   // News newer than what was drawn counts again.
   setRoom([{ ...room, maxSeq: 220, count: 1, digest: ['#220 chat.message [bob@acme.com] — more'] }])
@@ -172,17 +173,18 @@ test('the first read says it is reading; a failed first read shows its sentence;
   let answer: unknown = { ok: false, error: 'Your sign-in expired. Run landfall login.' }
   const f = fakeIo({ run: async () => answer })
   const k = fakeKit('terminal')
-  expect(textsOf(tlMod.tab(k, f.io, NOW, null))).toContain('Reading the timeline…')
+  expect(textsOf(chromed(tlMod, k, f.io, NOW, null))).toContain('Reading the timeline…')
   await tlMod.warm(f.io)
-  expect(textsOf(tlMod.tab(k, f.io, NOW, null))).toContain('Your sign-in expired. Run landfall login.')
+  expect(textsOf(chromed(tlMod, k, f.io, NOW, null))).toContain('Your sign-in expired. Run landfall login.')
   answer = { ok: true, events: EVENTS, hasMore: false, oldestSeq: 201 }
   await tlMod.refresh(f.io)
-  expect(eventButtons(tlMod.tab(k, f.io, NOW, null))).toHaveLength(7)
+  expect(eventButtons(chromed(tlMod, k, f.io, NOW, null))).toHaveLength(7)
   answer = { ok: false, error: 'The room did not answer.' }
   consoleState.open = true
+  consoleState.warm.add('timeline')
   tlMod.onSnapshot(f.io, { rooms: [{ ...room, maxSeq: 999 }] })
   await new Promise((r) => setTimeout(r, 0))
-  const tree = tlMod.tab(k, f.io, NOW + 90000, null)
+  const tree = chromed(tlMod, k, f.io, NOW + 90000, null)
   expect(eventButtons(tree)).toHaveLength(7)
   expect(textsOf(tree).some((t) => t.startsWith('stale · updated 1m ago · The room did not answer.'))).toBe(true)
   consoleState.open = false
@@ -192,7 +194,7 @@ test('an empty timeline says so', async () => {
   setRoom([watchRoom()])
   const f = fakeIo({ run: async () => ({ ok: true, events: [], hasMore: false }) })
   await tlMod.warm(f.io)
-  expect(textsOf(tlMod.tab(fakeKit('terminal'), f.io, NOW, null))).toContain('Nothing on the timeline yet.')
+  expect(textsOf(chromed(tlMod, fakeKit('terminal'), f.io, NOW, null))).toContain('Nothing on the timeline yet.')
 })
 
 test('Home\'s Latest is the newest unfiltered rows, even while a chip filters the tab', async () => {
@@ -200,7 +202,7 @@ test('Home\'s Latest is the newest unfiltered rows, even while a chip filters th
   const k = fakeKit('terminal')
   await tlMod.warm(io)
   expect(tlMod.latestRows(3).map((e: any) => e.seq)).toEqual([209, 212, 214])
-  await buttonOf(tlMod.tab(k, io, NOW, null), 'kind-findings')!.props.onPress()
+  await buttonOf(chromed(tlMod, k, io, NOW, null), 'kind-findings')!.props.onPress()
   await new Promise((r) => setTimeout(r, 0))
   expect(tlMod.latestRows(3).map((e: any) => e.seq)).toEqual([209, 212, 214])
 })
@@ -209,9 +211,9 @@ test('a different room starts the timeline over', async () => {
   const { io } = setup()
   const k = fakeKit('terminal')
   await tlMod.warm(io)
-  await buttonOf(tlMod.tab(k, io, NOW, null), 'kind-findings')!.props.onPress()
+  await buttonOf(chromed(tlMod, k, io, NOW, null), 'kind-findings')!.props.onPress()
   setRoom([watchRoom()])
-  const tree = tlMod.tab(k, io, NOW, null)
+  const tree = chromed(tlMod, k, io, NOW, null)
   expect(textsOf(tree)).toContain('Reading the timeline…')
   expect(buttonOf(tree, 'kind-all')!.props.label).toBe('▸ all')
 })
@@ -236,5 +238,5 @@ test('no standalone pane or command is left behind', () => {
 test('the timeline draws on mobile too', async () => {
   const { io } = setup()
   await tlMod.warm(io)
-  expect(buttonOf(tlMod.tab(fakeKit('mobile'), io, NOW, null), 'ev-201')).toBeDefined()
+  expect(buttonOf(chromed(tlMod, fakeKit('mobile'), io, NOW, null), 'ev-201')).toBeDefined()
 })

@@ -114,10 +114,10 @@ export function clip(text, width) {
 }
 
 // plainLine is a digest line as a person reads it: "bob: @alice can you…"
-// rather than "#12 chat.message [bob@acme.com] — @alice can you…".
+// rather than the CLI's "#12 chat.message [bob@acme.com] <em dash> @alice can you…".
 export function plainLine(line) {
   const text = line.endsWith(ADDRESSED) ? line.slice(0, -ADDRESSED.length) : line
-  const m = /^#\d+ (\S+)(?: \[([^\]]*)\])? — (.*)$/.exec(text)
+  const m = /^#\d+ (\S+)(?: \[([^\]]*)\])? \u2014 (.*)$/.exec(text)
   if (!m) {
     const bare = /^#\d+ ([a-z_.]+)$/.exec(text)
     return bare ? KINDS[bare[1]] || bare[1].replace(/[._]/g, ' ') : text
@@ -350,6 +350,12 @@ export const CONSOLE_COLUMNS = 84
 //   closed   the person closed it since it was last opened: a late draw does not reopen it
 // A warm tab reads only while `consoleState.open && consoleState.warm.has('<tab>')`; the
 // person's close clears both, which is what stops every tab's reads (spec §2.5).
+// reading says a tab may read now: the console is open and the tab is warm. Every tab's tick and
+// stream handler asks it before a read (round 7), so a read never runs for a console nobody sees.
+export function reading(tab) {
+  return !!consoleState.open && consoleState.warm.has(tab)
+}
+
 consoleState.focus = ''
 consoleState.offset = 0
 consoleState.closed = false

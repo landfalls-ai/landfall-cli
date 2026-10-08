@@ -93,6 +93,7 @@ export function fakeIo(answer: (argv: string[]) => unknown = () => ({ ok: false,
     toasts: [] as string[],
     filled: [] as string[],
     opened: [] as string[],
+    openedWith: [] as unknown[],
     appended: [] as string[],
     invalidated: 0,
     surface: 'terminal',
@@ -103,8 +104,9 @@ export function fakeIo(answer: (argv: string[]) => unknown = () => ({ ok: false,
     toast: (text: string) => {
       f.toasts.push(text)
     },
-    open: async (id: string) => {
+    open: async (id: string, title?: string, opts?: unknown) => {
       f.opened.push(id)
+      f.openedWith.push(opts)
       return { isPlaced: true }
     },
     close: async () => {},
@@ -137,6 +139,7 @@ export function setRooms(rooms: unknown[]) {
 export function openConsoleOn(tab: string, args: string | null = null) {
   consoleState.tab = tab
   consoleState.open = true
+  consoleState.warm.add(tab) // the console warms the shown tab (console.js warmOnce)
   consoleState.args = args
 }
 

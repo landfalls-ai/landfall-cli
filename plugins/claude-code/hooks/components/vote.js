@@ -67,7 +67,6 @@ export async function band(io, e, k) {
   const rows = [
     head,
     Text({ key: 'vote-s', children: [clip(author(v) + ': “' + v.statement + '”', k.width)] }),
-    Text({ key: 'vote-p', dimColor: true, children: [positionsText(v)] }),
     k.row(
       [
         k.button({ key: 'vote-corroborate', label: 'corroborate', hotkey: '5', primary: true, onPress: () => castVote(io, r.roomKey, v, 'corroborate') }),
@@ -155,7 +154,7 @@ function showVote(io, r, v, contesting) {
   openConsole(io, 'vote', { asked: true })
 }
 
-function setAside(io, r) {
+export function setAside(io, r) {
   aside[r.roomKey] = new Set((r.votes ?? []).map((v) => v.claimSeq))
   view = null
   io.invalidate()
@@ -172,8 +171,8 @@ function current(r, nowMs) {
   return { list, v, recorded }
 }
 
-// tab is the Vote tab's body (spec 4.1): the whole card, then `Also waiting`, then the footer-less
-// keys row. Console.js draws the header, the switcher and `r: refresh`, `close (esc)`.
+// tab is the Vote tab's body (spec 4.1): the whole card, then `Also waiting`. Console.js draws the header,
+// the switcher, the keys() row, `r: refresh` and `close (esc)`.
 export function tab(k, io, nowMs, args) {
   const { Text } = k.els
   const r = currentRoom()
@@ -235,8 +234,6 @@ export function tab(k, io, nowMs, args) {
       )
     }
   }
-  const keyRow = keys(k, io, nowMs, args)
-  if (keyRow.length > 0) rows.push(k.row(keyRow, 'vt-keys', 2))
   return rows
 }
 

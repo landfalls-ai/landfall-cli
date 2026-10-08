@@ -13,7 +13,7 @@
 // minute. A failed read keeps the last good board and says it is stale; the footer says how old
 // what it shows is. `/landfall lb <name>` shows one load balancer.
 
-import { HOST, consoleState, currentRoom, roomArgs, roomName } from '../core.js'
+import { HOST, consoleState, currentRoom, reading, roomArgs, roomName } from '../core.js'
 import { TONE } from '../kit.js'
 import { closed, drawn, due, LB_MS, livePane, readLive, opened as markOpen } from '../live.js'
 import { byZone, clipText, fiveXxTone, fmt, healthTone, healthyTone, hhmm, lastPct, pctCell, toneColor } from '../views.js'
@@ -54,14 +54,14 @@ export function start(io) {}
 // tick: an open board reads again every 60 s; closing the console stops the reads and forgets
 // the name the person asked for.
 export async function tick(io, nowMs) {
-  if (lp.open && !consoleState.open) {
+  if (lp.open && !reading('lb')) {
     closed(lp)
     lb.name = ''
     lb.argsApplied = ''
   }
   const moved = roomKeyOf(currentRoom()) !== lb.roomKey
   forRoom(currentRoom())
-  if (!lp.open) return
+  if (!lp.open || !reading('lb')) return
   if (moved || due(lp, nowMs, LB_MS)) void loadLb(io)
 }
 
@@ -92,7 +92,7 @@ export function answerOf() {
 }
 
 // tab is the Load balancers tab's body (spec 4.5): each load balancer as lbView draws it, then
-// the answer's notes, the footer and the keys row. `args` is `/landfall lb <name>`.
+// the answer's notes. `args` is `/landfall lb <name>`.
 export function tab(k, io, nowMs, args) {
   drawn(lp)
   const r = currentRoom()
@@ -118,11 +118,12 @@ export function tab(k, io, nowMs, args) {
     if ((a.loadBalancers || []).length === 0) rows.push(k.text('No load balancers in scope.', { key: 'lb-none', dimColor: true }))
     for (const [i, line] of notes(a).entries()) rows.push(k.text(line, { key: 'lb-note' + i, dimColor: true }))
   }
-  const foot = footerOf(k, lp, nowMs, r, 'lb-live')
-  if (foot) rows.push(foot)
-  const keyRow = keys(k, io, nowMs, args)
-  if (keyRow.length > 0) rows.push(k.row(keyRow, 'lb-keys', 2))
   return rows
+}
+
+// footer is the console's footer for this tab: `live · updated 4s ago`, or null before the first read.
+export function footer(k, nowMs) {
+  return footerOf(k, lp, nowMs, currentRoom(), 'lb-live')
 }
 
 // keys are the tab's letters: `s: share as widget` (primary while a query exists), `a: ask about

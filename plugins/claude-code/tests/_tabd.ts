@@ -157,3 +157,13 @@ export function fakeIo(over: Record<string, unknown> = {}) {
   }
   return { io, log }
 }
+
+// What the console draws for a tab: its body, then the footer() and the keys() it exports. The tab's
+// own body draws neither (round 7: one footer and one keys row, the console's).
+export function chromed(mod: any, k: any, io: any, now: number, args?: unknown): any[] {
+  const out = [...mod.tab(k, io, now, args)]
+  const foot = typeof mod.footer === 'function' ? mod.footer(k, now) : null
+  if (foot) out.push(foot)
+  if (typeof mod.keys === 'function') out.push(...mod.keys(k, io, now, args))
+  return out
+}

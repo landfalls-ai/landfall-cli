@@ -114,9 +114,12 @@ export function tab(k, io, nowMs, args) {
       Input({ key: 'brain-q', label: 'Search', placeholder: 'origin pool exhaustion', submitLabel: k.terminal ? 'search' : 'Search', value: view.q, onSubmit: (value) => search(io, value) }),
     )
   }
-  const foot = footerOf(k, lp, nowMs, r, 'br-live')
-  if (foot) rows.push(foot)
   return rows
+}
+
+// footer is the console's footer for this tab: `live · updated 4s ago`, or null before the first read.
+export function footer(k, nowMs) {
+  return footerOf(k, lp, nowMs, currentRoom(), 'br-live')
 }
 
 // quote drafts a match into the prompt (the console stays where it is).

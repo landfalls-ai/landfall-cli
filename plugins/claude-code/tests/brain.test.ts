@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
+import { NOW, chromed, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import * as brainMod from '../hooks/components/brain.js'
 
 // `landfall brain` as the Go CLI prints it (internal/cli/brain.go brainMatch, brain_test.go's
@@ -42,7 +42,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the engine draws title, two labels at most, summary, and the kind folded into the source line`, async ($, on) => {
     const { io } = setup(MIXED)
     await brainMod.warm(io)
-    hookTab(on, 'd-brain', (k, i, now, args) => brainMod.tab(k, i, now, args))
+    hookTab(on, 'd-brain', (k, i, now, args) => chromed(brainMod, k, i, now, args))
     const p = await $.ui.mount({ ...paneProps('d-brain'), surface } as never)
     expect((await p.find({ type: 'Text', text: 'Company second brain' }))?.props.bold).toBe(true)
     expect(await p.find({ type: 'Text', text: 'like Acme 168' })).toBeDefined()
@@ -70,7 +70,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a match with ids only says how many past incidents; a conflicted entry says so`, async () => {
     const { io } = setup(BRAIN)
     await brainMod.warm(io)
-    const texts = textsOf(brainMod.tab(fakeKit(surface), io, NOW, null))
+    const texts = textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))
     expect(texts).toContain('lesson · settled · from Acme 91, Acme 95')
     expect(texts).toContain('from 1 past incident')
     expect(texts).toContain('● established confidence')
@@ -81,7 +81,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a press quotes a match into the prompt as a draft, and the console stays`, async () => {
     const { io, log } = setup(BRAIN)
     await brainMod.warm(io)
-    await buttonOf(brainMod.tab(fakeKit(surface), io, NOW, null), 'quote-0')!.props.onPress()
+    await buttonOf(chromed(brainMod, fakeKit(surface), io, NOW, null), 'quote-0')!.props.onPress()
     expect(log.filled).toEqual([
       { text: '> From the company second brain: cdn origin pool exhaustion\n> Rolled back web-edge and raised the pool to 64.\n> From Acme 91, Acme 95\n> lesson · settled · confidence established\n\n', mode: undefined },
     ])
@@ -92,33 +92,33 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const { io, log, room } = setup(BRAIN)
     await brainMod.warm(io)
     expect(log.runs[0]).toEqual(['brain', '--room', room.roomKey, '--host', 'claude-code'])
-    const field = nodes(brainMod.tab(fakeKit(surface), io, NOW, null), 'Input')[0]
+    const field = nodes(chromed(brainMod, fakeKit(surface), io, NOW, null), 'Input')[0]
     const pending = field.props.onSubmit('cert renewal')
-    expect(textsOf(brainMod.tab(fakeKit(surface), io, NOW, null))).toContain('Asking the company second brain…')
+    expect(textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))).toContain('Asking the company second brain…')
     await pending
     expect(log.runs[1]).toEqual(['brain', '--room', room.roomKey, '--q', 'cert renewal', '--host', 'claude-code'])
-    expect(textsOf(brainMod.tab(fakeKit(surface), io, NOW, null))).toContain('for "cert renewal"')
+    expect(textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))).toContain('for "cert renewal"')
   })
 }
 
 test('the CLI sentence shows when it cannot reach the brain', async () => {
   const { io } = setup({ ok: false, error: 'The company second brain is not available to the CLI yet.' })
   await brainMod.warm(io)
-  expect(textsOf(brainMod.tab(fakeKit('terminal'), io, NOW, null))).toContain('The company second brain is not available to the CLI yet.')
+  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('The company second brain is not available to the CLI yet.')
 })
 
 test('nothing found says so, for the incident and for a text', async () => {
   const { io } = setup({ ok: true, matches: [] })
   await brainMod.warm(io)
-  expect(textsOf(brainMod.tab(fakeKit('terminal'), io, NOW, null))).toContain('The company second brain holds nothing on this incident yet.')
+  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('The company second brain holds nothing on this incident yet.')
   await brainMod.search(io, 'origin pool')
-  expect(textsOf(brainMod.tab(fakeKit('terminal'), io, NOW, null))).toContain('The company second brain has nothing on "origin pool" yet.')
+  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('The company second brain has nothing on "origin pool" yet.')
 })
 
 test('on mobile there is no search field but a match still quotes', async () => {
   const { io, log } = setup(BRAIN)
   await brainMod.warm(io)
-  const tree = brainMod.tab(fakeKit('mobile'), io, NOW, null)
+  const tree = chromed(brainMod, fakeKit('mobile'), io, NOW, null)
   expect(nodes(tree, 'Input')).toEqual([])
   await buttonOf(tree, 'quote-1')!.props.onPress()
   expect(log.filled[0].text).toBe('> From the company second brain: dns ttl too long\n> From 1 past incident\n> confidence unconfirmed · conflicted\n\n')
@@ -139,7 +139,7 @@ test('a different room starts the brain over; the tab has no badge, no letters a
   await brainMod.warm(io)
   await brainMod.search(io, 'pool')
   setRoom([watchRoom()])
-  const texts = textsOf(brainMod.tab(fakeKit('terminal'), io, NOW, null))
+  const texts = textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))
   expect(texts).toContain('Asking the company second brain…')
   expect(texts).toContain('like Acme 168')
   expect(brainMod.badge()).toBeNull()
@@ -152,6 +152,6 @@ test('a different room starts the brain over; the tab has no badge, no letters a
 test('on the desktop the confidence and status labels sit on the text baseline', async () => {
   const { io } = setup(MIXED)
   await brainMod.warm(io)
-  const labels = nodes(brainMod.tab(fakeKit('desktop'), io, NOW, null), 'Box').find((b) => b.props.key === 'bl-m0')
+  const labels = nodes(chromed(brainMod, fakeKit('desktop'), io, NOW, null), 'Box').find((b) => b.props.key === 'bl-m0')
   expect(labels?.props.alignItems).toBe('center')
 })

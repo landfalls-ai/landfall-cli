@@ -21,7 +21,7 @@
 // artifactRow(k, a, opts), artifactPreview(k, io, a, opts), addArtifact(io, a),
 // addSharedContext(io, opts).
 
-import { CONSOLE, HOST, ago, appendNote, clip, consoleState, currentOf, currentRoom, parseAnswer, room as coreRoom, roomArgs, whereIs } from '../core.js'
+import { CONSOLE, HOST, ago, appendNote, clip, consoleState, currentOf, currentRoom, parseAnswer, reading, room as coreRoom, roomArgs, whereIs } from '../core.js'
 import { TONE } from '../kit.js'
 import { keep, liveWords, livePane, refresh as refreshLive } from '../live.js'
 import { hhmm } from '../views.js'
@@ -148,11 +148,12 @@ export function onSnapshot(io, snap, prev) {
   }
 }
 
-// tick: the shown tab reads again every 30 s; while the console is open on another tab the
-// artifact list is read every minute so the badge stays current.
+// tick: the shown tab reads again every 30 s; while the console is open on another tab and this one
+// has been shown (it is warm), the artifact list is read every minute so the badge stays current.
+// A console that is closed, or a tab never shown, reads nothing.
 export async function tick(io, nowMs) {
   const r = currentRoom()
-  if (!r || !consoleState.open) return
+  if (!r || !reading('context')) return
   syncRoom(r.roomKey)
   const shown = consoleState.tab === 'context'
   if (shown) {
@@ -178,7 +179,7 @@ export function refresh(io) {
 }
 
 // newestArtifactSeq is the newest `artifact.shared` seq in a room's untold digest lines
-// ("#215 artifact.shared [bob@acme.com] — runbook.md"), or null.
+// ("#215 artifact.shared [bob@acme.com] <em dash> runbook.md"), or null.
 export function newestArtifactSeq(digest) {
   let best = null
   for (const line of digest || []) {

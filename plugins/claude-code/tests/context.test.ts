@@ -156,6 +156,7 @@ async function open(answers: Answers, over: Record<string, unknown> = {}, surfac
   const r = mkRoom(over)
   room.snapshot = { line: '', rooms: [r] } as any
   consoleState.open = true
+  consoleState.warm.add('context')
   consoleState.tab = 'context'
   const world = mkIo({ brief: BRIEF, artifacts: ARTS, 'artifact:a1': RUNBOOK, ...answers })
   const k = kitFor(surface, columns)

@@ -25,11 +25,14 @@ function vote(over: Record<string, unknown> = {}) {
 const SECOND = vote({ claimSeq: 214, statement: 'Pool sits at 41%', authoredBy: 'carol', authorIsAgent: false, authorHuman: undefined, expiresInMs: 400000, evidence: undefined, needed: undefined, shortfall: 2, positionsSoFar: 0 })
 const MINE = vote({ claimSeq: 210, statement: 'My own finding', mine: true })
 
+// The console draws the keys() row itself, below the body; the tab's body draws none (round 7).
+const drawTab = (k: any, io: any, now: number): any[] => [...voteMod.tab(k, io, now, null), ...voteMod.keys(k, io, now, null)]
+
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: the engine draws the card, the keys c x l, and the other votes waiting`, async ($, on) => {
     const room = watchRoom({ votes: [vote(), SECOND, MINE] })
     setRoom([room])
-    hookTab(on, 'd-vote', (k, io, now, args) => voteMod.tab(k, io, now, args))
+    hookTab(on, 'd-vote', (k, io, now) => drawTab(k, io, now))
     const pane = await $.ui.mount({ ...paneProps('d-vote'), surface } as never)
     expect(await pane.find({ type: 'Text', text: 'Your vote is waiting' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: '● 4m 10s left' })).toBeDefined()
@@ -57,9 +60,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     setRoom([room])
     const k = fakeKit(surface)
     const { io } = fakeIo()
-    expect(textsOf(voteMod.tab(k, io, NOW, null))).toContain("bob's agent · staged #212")
-    buttonOf(voteMod.tab(k, io, NOW, null), 'vt-also-214')!.props.onPress()
-    const texts = textsOf(voteMod.tab(k, io, NOW, null))
+    expect(textsOf(drawTab(k, io, NOW))).toContain("bob's agent · staged #212")
+    buttonOf(drawTab(k, io, NOW), 'vt-also-214')!.props.onPress()
+    const texts = textsOf(drawTab(k, io, NOW))
     expect(texts).toContain('carol · staged #214')
     expect(texts).toContain('No evidence is attached to this claim.')
     expect(texts).toContain('Your position counts toward admitting it to the shared context.')
@@ -77,7 +80,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const runs: string[][] = []
     let now = NOW
     const { io, log } = fakeIo({ run, now: () => now })
-    const draw = () => voteMod.tab(k, io, now, null)
+    const draw = () => drawTab(k, io, now)
     expect(nodes(draw(), 'Input')).toEqual([])
     expect(buttonOf(draw(), 'vt-contest')?.props.label).toBe(surface === 'terminal' ? 'contest…' : 'Contest…')
     buttonOf(draw(), 'vt-contest')!.props.onPress()
@@ -106,8 +109,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     setRoom([watchRoom({ votes: [vote()] })])
     const k = fakeKit(surface)
     const { io } = fakeIo()
-    buttonOf(voteMod.tab(k, io, NOW, null), 'vt-later')!.props.onPress()
-    const tree = voteMod.tab(k, io, NOW, null)
+    buttonOf(drawTab(k, io, NOW), 'vt-later')!.props.onPress()
+    const tree = drawTab(k, io, NOW)
     expect(textsOf(tree)).toEqual(['No vote is waiting on you.'])
     expect(nodes(tree, 'Button')).toEqual([])
   })
@@ -117,10 +120,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
     setRoom([room])
     const k = fakeKit(surface)
     const { io, log } = fakeIo({ run: async (args: string[]) => (log.runs.push(args), { ok: true, admitted: true }) })
-    await buttonOf(voteMod.tab(k, io, NOW, null), 'vt-corroborate')!.props.onPress()
+    await buttonOf(drawTab(k, io, NOW), 'vt-corroborate')!.props.onPress()
     expect(log.runs).toEqual([['vote', '--room', room.roomKey, '--claim', '212', '--position', 'corroborate']])
     expect(log.toasts).toEqual(['Corroborated #212 · admitted'])
-    expect(textsOf(voteMod.tab(k, io, NOW, null))).toContain('Your vote on #212 is recorded.')
+    expect(textsOf(drawTab(k, io, NOW))).toContain('Your vote on #212 is recorded.')
   })
 }
 

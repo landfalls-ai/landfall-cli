@@ -11,7 +11,7 @@
 // further back with `m` stay. A failed read keeps the rows and says they are stale; the footer
 // says how old they are. The Timeline badge counts what is new since the tab was last drawn.
 
-import { HOST, consoleState, currentOf, currentRoom, roomName } from '../core.js'
+import { HOST, consoleState, currentOf, currentRoom, reading, roomName } from '../core.js'
 import { closed, drawn, keep, livePane, opened as markOpen } from '../live.js'
 import { clipText, hhmm, toneColor } from '../views.js'
 import { chipRow, footerOf, keyButton, nowOf, resetLive, roomKeyOf } from './tabparts.js'
@@ -67,7 +67,7 @@ export async function band(io, e, k) {
 export function onSnapshot(io, snap, prev) {
   const r = currentOf(snap)
   forRoom(r)
-  if (!lp.open || !tl.loaded) return
+  if (!lp.open || !tl.loaded || !reading('timeline')) return
   if (r && typeof r.maxSeq === 'number' && r.maxSeq > tl.seenSeq) void loadTimeline(io, false, true)
 }
 
@@ -76,11 +76,11 @@ export function start(io) {}
 // tick stops the reads once the console is closed, and reads an event the snapshot could not (a
 // read was running).
 export async function tick(io, nowMs) {
-  if (lp.open && !consoleState.open) closed(lp)
+  if (lp.open && !reading('timeline')) closed(lp)
   const r = currentRoom()
   const moved = roomKeyOf(r) !== tl.roomKey
   forRoom(r)
-  if (!lp.open) return
+  if (!lp.open || !reading('timeline')) return
   if (moved) return loadTimeline(io, false)
   if (tl.loaded && !tl.loading && r && typeof r.maxSeq === 'number' && r.maxSeq > tl.seenSeq) void loadTimeline(io, false, true)
 }
@@ -129,7 +129,7 @@ export function keys(k, io, nowMs, args) {
 }
 
 // tab is the Timeline tab's body (spec 4.4): the chips, `m: earlier events` while there is more,
-// one row per event, the hint and the footer. `args` is `/landfall timeline <chip>`.
+// one row per event and the hint. The console draws the footer and keys. `args` is `/landfall timeline <chip>`.
 export function tab(k, io, nowMs, args) {
   const { Text } = k.els
   drawn(lp)
@@ -161,9 +161,12 @@ export function tab(k, io, nowMs, args) {
     else rows.push(line)
   }
   if (tl.events.length > 0) rows.push(k.text('Enter on a row quotes it into your prompt', { key: 'tl-hint', dimColor: true }))
-  const foot = footerOf(k, lp, nowMs, r, 'tl-live')
-  if (foot) rows.push(foot)
   return rows
+}
+
+// footer is the console's footer for this tab: `live · updated 4s ago`, or null before the first read.
+export function footer(k, nowMs) {
+  return footerOf(k, lp, nowMs, currentRoom(), 'tl-live')
 }
 
 // applyArgs takes `/landfall timeline <chip>` once: the chip is chosen and read, then not chosen

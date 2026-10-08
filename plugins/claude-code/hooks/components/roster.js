@@ -25,7 +25,7 @@
 // The pure helpers below (viaLine, latestWords, stateWord) are shared with the
 // Home block and the band.
 
-import { ago, clip, consoleState, currentRoom, quoteDraft, roomName, whereIs } from '../core.js'
+import { ago, clip, consoleState, currentRoom, quoteDraft, reading, roomName, whereIs } from '../core.js'
 import { TONE } from '../kit.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, opened as markOpen } from '../live.js'
 import { clipText, hhmm } from '../views.js'
@@ -63,8 +63,8 @@ export function start(io) {}
 
 // tick: the person view shown reads again every 15 s; closing the console stops it.
 export async function tick(io, nowMs) {
-  if (pv.open && !consoleState.open) closed(pv)
-  if (!ui.person || !pv.open || consoleState.tab !== 'people') return
+  if (pv.open && !reading('people')) closed(pv)
+  if (!ui.person || !pv.open || !reading('people') || consoleState.tab !== 'people') return
   io.invalidate()
   if (due(pv, nowMs, WALL_MS)) void loadPerson(io)
 }

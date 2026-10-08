@@ -37,7 +37,7 @@
 // the wall holds more widgets than the CLI reads at once, `totalWidgets` says
 // how many there are and the tab says so.
 
-import { HOST, ago, clip, consoleState, currentOf, currentRoom, openConsole, room, roomName } from '../core.js'
+import { HOST, ago, clip, consoleState, currentOf, currentRoom, openConsole, reading, room, roomName } from '../core.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, widgetSeqOf, opened as markOpen } from '../live.js'
 import {
   chartAlt,
@@ -570,7 +570,7 @@ export function onSnapshot(io, snap, prev) {
     news.pending = { title: nw.title || nw.type || 'a widget', by: nw.by || '' }
   }
   if (news.pending) void announce(io)
-  if (!lp.open) return
+  if (!lp.open || !reading('wall')) return
   const r = wallRoom(snap)
   const ws = widgetSeqOf(r)
   if (movedRoom(r) || (ws != null && ws > lp.seq)) void loadWall(io)
@@ -588,11 +588,11 @@ export async function tick(io, nowMs) {
     io.invalidate()
   }
   // The console closed: the wall stops reading.
-  if (lp.open && !consoleState.open) {
+  if ((lp.open || pp.open) && !reading('wall')) {
     closed(lp)
     closed(pp)
   }
-  if (!lp.open) return
+  if (!lp.open || !reading('wall')) return
   io.invalidate()
   const r = wallRoom(room.snapshot)
   const ws = widgetSeqOf(r)
@@ -632,10 +632,10 @@ export function wallHint(nowMs) {
   return { title: news.hintTitle }
 }
 
-// openWall opens the console on the Wall, from the band's `w`.
+// openWall is the `w` key and the new-widget offer: the person asked, so the console takes the keyboard.
 export async function openWall(io) {
   news.hintUntil = 0
-  openConsole(io, 'wall')
+  await openConsole(io, 'wall', null, { focus: true })
 }
 
 async function ioNow(io, p = lp) {

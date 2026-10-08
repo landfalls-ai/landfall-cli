@@ -754,6 +754,8 @@ test('a new widget is told once per 10 s, and the wall hint offers w for a minut
   // w opens the console on the Wall, and spends the hint.
   await wallTab.openWall(io as never)
   expect(io.opened).toEqual(['landfall'])
+  // The person pressed w, so the console takes the keyboard.
+  expect((io.openedWith[0] as any).focus).toBe(true)
   expect(consoleState.tab).toBe('wall')
   expect(wallTab.wallHint(io.clock.t)).toBeNull()
 })

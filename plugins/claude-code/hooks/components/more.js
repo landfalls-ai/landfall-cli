@@ -74,6 +74,11 @@ export function tab(k, io, nowMs, args) {
   return rows
 }
 
+// footer is the shown chip's footer; the console draws it once, under the body.
+export function footer(k, nowMs) {
+  return more.chip === 'brain' ? brain.footer(k, nowMs) : comms.footer(k, nowMs)
+}
+
 // text is More's answer where no pane can be placed (`claude -p`): the chip's own text.
 export async function text(io, args) {
   const asked = parse(args)

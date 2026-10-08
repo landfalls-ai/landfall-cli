@@ -147,7 +147,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // The head says how many wait (spec §5.1); the statement is the most urgent one's.
     expect(await band.find({ type: 'Text', text: '● 2 votes waiting' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: "bob's agent: “The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”" })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: 'positions 1 of 2 · your vote would admit it' })).toBeDefined()
+    // The positions row is not in the band: the head label says the vote waits (round 7).
+    expect(await band.find({ type: 'Text', text: 'positions 1 of 2 · your vote would admit it' })).toBeUndefined()
     expect(await band.find({ type: 'Text', text: /My own finding/ })).toBeUndefined()
     for (const key of ['vote-corroborate', 'vote-contest', 'vote-evidence', 'vote-later']) {
       expect(await band.find({ type: 'Button', key })).toBeDefined()
@@ -159,7 +160,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(w.toasts.at(-1)).toBe('Corroborated #212 · admitted')
     // The next vote waiting takes the card.
     expect(await band.find({ type: 'Text', text: 'carol: “Pool sits at 41%”' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: 'positions 0 · needs 2 more' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /^positions / })).toBeUndefined()
   })
 
   test(`${surface}: a guest's recorded vote carries the CLI's note in its toast`, async ($, on) => {

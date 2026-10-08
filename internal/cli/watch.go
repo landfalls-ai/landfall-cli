@@ -41,8 +41,12 @@ package cli
 // does not run on from a stale value.
 //
 // WHAT IT COSTS. Nothing on the network per tick: the peek answers from the
-// daemon's cache, and the daemon reads the person's view (votes, claims,
-// lines) only when an event changes it or it is older than PersonTTL.
+// daemon's cache. The daemon reads the person's view (votes, claims, lines)
+// when an event changes it or it is older than PersonTTL, and, while this
+// watch is attached, the person's attention every PersonWatchedPoll: a
+// teammate's staged claim is never pushed to an edge socket, so that poll is
+// what makes its vote card arrive in a second and a half, not thirty. A read
+// that lands with a new answer wakes this loop (daemon.PersonChanged).
 //
 // WHEN IT ENDS. On SIGINT/SIGTERM, when stdout is closed, or when the process
 // that started it is gone (a mod's child is killed with its module, but a

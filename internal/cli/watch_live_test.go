@@ -53,14 +53,21 @@ func (w *liveWire) emit(e client.Event) {
 
 func startLiveDaemon(t *testing.T, ws hooks.Workspace) *liveWire {
 	t.Helper()
+	return startLiveDaemonWith(t, ws, func(cfg client.Config) session.EdgeClient { return liveEdge(cfg) })
+}
+
+func liveEdge(cfg client.Config) *labelledEdge {
+	return &labelledEdge{fakeEdge: &fakeEdge{cfg: cfg}, id: "inst-" + strings.ReplaceAll(strings.ToLower(cfg.AgentLabel), " ", "-")}
+}
+
+func startLiveDaemonWith(t *testing.T, ws hooks.Workspace, newClient func(client.Config) session.EdgeClient) *liveWire {
+	t.Helper()
 	wire := &liveWire{}
 	d := daemon.New(daemon.Options{
 		Workspace: ws,
 		IdleGrace: time.Hour,
 		Deps: daemon.Deps{
-			NewClient: func(cfg client.Config) session.EdgeClient {
-				return &labelledEdge{fakeEdge: &fakeEdge{cfg: cfg}, id: "inst-" + strings.ReplaceAll(strings.ToLower(cfg.AgentLabel), " ", "-")}
-			},
+			NewClient: newClient,
 			Watch:     wire.watch,
 			Heartbeat: time.Hour,
 		},
@@ -292,4 +299,172 @@ func TestWatchDoesNotWriteALineBecauseAnAgeGrew(t *testing.T) {
 	heardAt = now
 	mu.Unlock()
 	waitFor(t, func() bool { return len(outLines(out)) == 2 }, "a line for the room being heard again")
+}
+
+// eventLineBound is the most a pushed vote or Beacon step may take from the
+// event reaching the daemon to the watch line (live.md FR-L1 is 2 s from
+// append to redraw; the live run measured 10.3 s for the vote card).
+const eventLineBound = time.Second
+
+// personEdge is a room session that also answers the person's reads, with a
+// vote list the test sets.
+type personEdge struct {
+	*labelledEdge
+	mu       sync.Mutex
+	votes    []client.VoteAwaited
+	attReads int
+}
+
+func (p *personEdge) GetPersonAttention(context.Context) (*client.Attention, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.attReads++
+	return &client.Attention{VotesAwaited: append([]client.VoteAwaited(nil), p.votes...)}, nil
+}
+
+func (p *personEdge) GetClaims(context.Context) (*client.ClaimsProjection, error) {
+	return &client.ClaimsProjection{}, nil
+}
+
+func (p *personEdge) GetLines(context.Context) ([]client.LineClaim, error) { return nil, nil }
+
+func (p *personEdge) setVote(seq int64, statement string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.votes = []client.VoteAwaited{{ClaimSeq: &seq, Class: "finding", Statement: statement, AuthoredBy: "bob-claude-desktop", AuthorIsAgent: true}}
+}
+
+func startPersonDaemon(t *testing.T, ws hooks.Workspace) (*liveWire, *personEdge) {
+	t.Helper()
+	var mu sync.Mutex
+	var edge *personEdge
+	wire := startLiveDaemonWith(t, ws, func(cfg client.Config) session.EdgeClient {
+		mu.Lock()
+		defer mu.Unlock()
+		if edge == nil {
+			edge = &personEdge{labelledEdge: liveEdge(cfg)}
+		}
+		return edge
+	})
+	attachReader(t, ws, daemon.KindAgent, "1")
+	mu.Lock()
+	defer mu.Unlock()
+	if edge == nil {
+		t.Fatal("the room never made its session")
+	}
+	return wire, edge
+}
+
+// A staged claim that reaches the daemon is the person's vote card within
+// the bound. The view used to be marked stale only after the watch had been
+// woken and had peeked, so the read waited for a later peek.
+func TestWatchWritesAVoteWithinTheBound(t *testing.T) {
+	ws := liveWorkspace(t, "claude-code")
+	wire, edge := startPersonDaemon(t, ws)
+	out := startWatch(t, ws)
+	_, _, next := out.waitLine(t, 0, `"votes":[]`, 3*time.Second)
+	// Past the pacing gap of the read the attach started.
+	time.Sleep(1100 * time.Millisecond)
+
+	var took []time.Duration
+	seq := int64(300)
+	for i := 0; i < 5; i++ {
+		seq++
+		statement := fmt.Sprintf("Edge 5xx in eu-west-1 began at 14:3%d", i)
+		s := seq // the ring keeps the pointer
+		edge.setVote(s, statement)
+		began := time.Now()
+		wire.emit(client.Event{Seq: &s, Type: "claim.staged", ActorType: "agent", Payload: map[string]any{"claimSeq": float64(s)}})
+		_, at, n := out.waitLine(t, next, fmt.Sprintf(`"votes":[{"claimSeq":%d`, seq), 3*time.Second)
+		next = n
+		took = append(took, at.Sub(began))
+		// Past the pacing gap, so each claim is measured on its own.
+		time.Sleep(1100 * time.Millisecond)
+	}
+	sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+	t.Logf("claim event to vote line over %d runs: median %s, max %s", len(took), took[len(took)/2], took[len(took)-1])
+	if max := took[len(took)-1]; max > eventLineBound {
+		t.Fatalf("a vote took %s to become a line; the bound is %s", max, eventLineBound)
+	}
+}
+
+// A teammate's staged claim is never pushed to an edge socket (the server's
+// realtime vetting filter withholds unadmitted claims), so no event announces
+// the vote. While a watch is attached the daemon reads the person's attention
+// on its own, and the vote is a line within one poll and a read.
+func TestWatchWritesAWithheldVoteWithinAPoll(t *testing.T) {
+	ws := liveWorkspace(t, "claude-code")
+	_, edge := startPersonDaemon(t, ws)
+	out := startWatch(t, ws)
+	_, _, next := out.waitLine(t, 0, `"votes":[]`, 3*time.Second)
+	time.Sleep(100 * time.Millisecond)
+	edge.setVote(32, "Edge 5xx in eu-west-1 began at 14:32")
+	began := time.Now()
+	_, at, _ := out.waitLine(t, next, `"votes":[{"claimSeq":32`, 3*time.Second)
+	took := at.Sub(began)
+	t.Logf("withheld vote to line: %s", took)
+	if bound := daemon.PersonWatchedPoll + 500*time.Millisecond; took > bound {
+		t.Fatalf("a withheld vote took %s to become a line; the bound is %s", took, bound)
+	}
+}
+
+// Beacon's step line follows agent.step straight from the event, within the
+// bound, every step of a run.
+func TestWatchWritesBeaconsStepWithinTheBound(t *testing.T) {
+	ws := liveWorkspace(t, "claude-code")
+	wire := startLiveDaemon(t, ws)
+	attachReader(t, ws, daemon.KindAgent, "1")
+	out := startWatch(t, ws)
+	_, _, next := out.waitLine(t, 0, `"rooms":[{`, 3*time.Second)
+	time.Sleep(100 * time.Millisecond)
+	run := int64(400)
+	wire.emit(client.Event{Seq: &run, Type: "agent.run.started", ActorType: "agent"})
+
+	var took []time.Duration
+	seq := run
+	for i := 1; i <= 10; i++ {
+		seq++
+		s := seq
+		text := fmt.Sprintf("Querying cloudwatch getMetricData for target group %d", i)
+		began := time.Now()
+		wire.emit(client.Event{Seq: &s, Type: "agent.step", ActorType: "agent", Payload: map[string]any{"text": text, "runSeq": float64(run)}})
+		want := fmt.Sprintf(`"beaconStep":{"text":%q,"step":%d,"runSeq":%d}`, text, i, run)
+		_, at, n := out.waitLine(t, next, want, 2*time.Second)
+		next = n
+		took = append(took, at.Sub(began))
+	}
+	sort.Slice(took, func(i, j int) bool { return took[i] < took[j] })
+	t.Logf("agent.step to watch line over %d runs: median %s, max %s", len(took), took[len(took)/2], took[len(took)-1])
+	if max := took[len(took)-1]; max > eventLineBound {
+		t.Fatalf("a Beacon step took %s to become a line; the bound is %s", max, eventLineBound)
+	}
+}
+
+// A burst of claim events is not a burst of reads: one read in flight per
+// room, starts at least a second apart.
+func TestABurstOfClaimsIsPaced(t *testing.T) {
+	ws := liveWorkspace(t, "claude-code")
+	wire, edge := startPersonDaemon(t, ws)
+	time.Sleep(300 * time.Millisecond)
+	edge.mu.Lock()
+	before := edge.attReads
+	edge.mu.Unlock()
+	began := time.Now()
+	for i := int64(0); i < 50; i++ {
+		s := 500 + i
+		wire.emit(client.Event{Seq: &s, Type: "claim.positioned", ActorType: "member"})
+		time.Sleep(20 * time.Millisecond)
+	}
+	time.Sleep(200 * time.Millisecond)
+	edge.mu.Lock()
+	reads := edge.attReads - before
+	edge.mu.Unlock()
+	window := time.Since(began)
+	// One read a second at most, plus the one a burst starts with.
+	if max := int(window/time.Second) + 2; reads > max {
+		t.Fatalf("fifty claim events over %s made %d attention reads; at most %d", window, reads, max)
+	}
+	if reads < 1 {
+		t.Fatal("the burst was never read")
+	}
 }

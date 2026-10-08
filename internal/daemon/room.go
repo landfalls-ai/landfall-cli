@@ -593,6 +593,23 @@ func (r *Room) start(ctx context.Context) {
 			}
 		}
 	}()
+	// The watched poll (person.go): while a watch is attached, the person's
+	// attention is read every PersonWatchedPoll, for the teammate's claims
+	// the server never pushes to an edge socket.
+	go func() {
+		t := time.NewTicker(PersonWatchedPoll)
+		defer t.Stop()
+		for {
+			select {
+			case <-roomCtx.Done():
+				return
+			case <-t.C:
+				r.mu.Lock()
+				r.pollPersonLocked()
+				r.mu.Unlock()
+			}
+		}
+	}()
 	if r.deps.Watch != nil {
 		// No echo suppression at the socket: with a seat per harness, what is
 		// one harness's own write is a sibling harness's news. Each reader's
@@ -630,6 +647,16 @@ func (r *Room) enqueue(evt client.Event) {
 	r.Connection = Live
 	r.noteHeardLocked()
 	r.noteWallLocked(evt)
+	if narrate.TouchesAttention(evt.Type) {
+		for _, st := range r.seats {
+			st.attentionStale = true
+		}
+	}
+	// The person's view is marked, and its read started, BEFORE anyone is
+	// woken: a watch woken by this event peeks at once, and used to find the
+	// view not yet marked, so nothing read it until a later peek (person.go).
+	r.markPersonLocked(evt)
+	r.refreshPersonLocked()
 	subs := make([]chan client.Event, 0, len(r.subscribers)+len(r.wakers))
 	if !isPlumbing(evt.Type) && !isOwn(evt, r.ownIDsLocked(nil)) {
 		for ch := range r.subscribers {
@@ -646,16 +673,6 @@ func (r *Room) enqueue(evt client.Event) {
 		default: // a slow subscriber drops the event; it can `delta` for the rest
 		}
 	}
-	if narrate.TouchesAttention(evt.Type) {
-		r.mu.Lock()
-		for _, st := range r.seats {
-			st.attentionStale = true
-		}
-		r.mu.Unlock()
-	}
-	r.mu.Lock()
-	r.markPersonLocked(evt)
-	r.mu.Unlock()
 	if touchesFrame(evt.Type) {
 		r.mu.Lock()
 		r.frameStale = true
@@ -754,10 +771,14 @@ const ReaderChanged = "landfall.reader.changed"
 
 // wakeAllLocked tells every SubscribeAll stream that a reader changed. Never
 // blocks: a stream that is full has a wake pending already.
-func (r *Room) wakeAllLocked() {
+func (r *Room) wakeAllLocked() { r.wakeAllTypeLocked(ReaderChanged) }
+
+// wakeAllTypeLocked sends every SubscribeAll stream one seq-less line of the
+// given type (ReaderChanged, PersonChanged). Never blocks.
+func (r *Room) wakeAllTypeLocked(typ string) {
 	for ch := range r.wakers {
 		select {
-		case ch <- client.Event{Type: ReaderChanged}:
+		case ch <- client.Event{Type: typ}:
 		default:
 		}
 	}
@@ -1014,7 +1035,9 @@ func (r *Room) StatusView() narrate.RoomStatus {
 	f := r.frame
 	events := append([]client.Event(nil), r.events...)
 	me := r.Config.HumanActorID
-	loading := r.frameLoading || r.person.loading
+	// Only the frame: a person read that lands with a new answer wakes every
+	// watch itself (PersonChanged), so a watch need not poll for it.
+	loading := r.frameLoading
 	r.keepConclusionLocked()
 	reads := narrate.RoomReads{
 		Events:     events,

@@ -399,16 +399,20 @@ export function widgetBody(k, w, key, px, cells) {
     case 'logView': {
       const lines = (w.lines || []).slice(-8)
       if (lines.length === 0) return [k.text('No log lines in this window.', { key: key + '-none', dimColor: true })]
-      return lines.map((l, i) =>
-        k.row(
+      return lines.map((l, i) => {
+        if (!hasLevel(l)) {
+          const p = proseLine(l.text)
+          return k.text(clipText(p.text, cells), { key: key + '-ln' + i, bold: p.heading })
+        }
+        return k.row(
           [
             Text({ key: 'lv', bold: true, color: toneColor(levelTone(l.level)), children: [levelTag(l.level)] }),
             Text({ key: 'lt', children: [clipText(l.text, Math.max(10, cells - 4))] }),
           ],
           key + '-ln' + i,
           1,
-        ),
-      )
+        )
+      })
     }
     case 'table': {
       const lines = tableRows(w.columns, w.rows, cells)
@@ -564,7 +568,7 @@ function widgetLines(w) {
       return out.length ? out : ['No points in this window.']
     }
     case 'logView':
-      return (w.lines || []).slice(-8).map((l) => levelTag(l.level) + ' ' + l.text)
+      return (w.lines || []).slice(-8).map((l) => (hasLevel(l) ? levelTag(l.level) + ' ' + l.text : proseLine(l.text).text))
     case 'table':
       return tableRows(w.columns, w.rows, 100)
     case 'events':
@@ -576,4 +580,17 @@ function widgetLines(w) {
     default:
       return [(w.type ? w.type + ' widgets' : 'This widget') + ' draw in the web app.']
   }
+}
+
+// A log line with no level is prose, not a debug line: Beacon's status and
+// remediation cards are logView widgets whose lines carry only a message.
+// They draw as plain text, and a markdown heading ("## FAST FIX") as bold
+// text without its marks.
+function hasLevel(l) {
+  return String(l?.level ?? '').trim() !== ''
+}
+
+function proseLine(text) {
+  const m = /^\s{0,3}#{1,6}\s+(.*)$/.exec(String(text ?? ''))
+  return m ? { text: m[1].trim(), heading: true } : { text: String(text ?? ''), heading: false }
 }

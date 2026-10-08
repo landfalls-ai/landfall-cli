@@ -309,3 +309,55 @@ test('a wall with more widgets than one read says how many there are', async ($,
   const answer = await $.command.run({ command: 'wall', args: '' })
   expect(answer.text).toContain('Not shown here:\n  Replica lag: Sign in to read this widget as yourself: run landfall login.\n\nShowing 40 of 46 widgets.')
 })
+
+// Beacon's status and remediation cards are logView widgets whose lines carry
+// only a message. Measured live: every line drew behind "DBG". A line with no
+// level is prose; a markdown heading is bold, without its marks.
+const PROSE = {
+  ok: true,
+  widgets: [
+    {
+      id: 'w-remediation',
+      type: 'logView',
+      title: 'Remediation: fast fix and durable mitigation',
+      lines: [
+        { level: '', text: '## FAST FIX  [temporary]' },
+        { level: '', text: 'No safe fast-stabilization action found for the current event.' },
+        { level: '', text: '' },
+        { level: '', text: '## ROOT-CAUSE MITIGATION' },
+        { level: 'warn', text: 'Root cause: not yet determined' },
+      ],
+    },
+  ],
+  unavailable: [],
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: a log line with no level draws as prose, a heading as bold, never DBG`, async ($, on) => {
+    on('process.run', () => ran(JSON.stringify(PROSE) + '\n'))
+    on('ui.open', () => ({ value: { isPlaced: true } }))
+    on('command.register', () => ({ value: undefined }))
+    await $.command.run({ command: 'wall', args: '' })
+    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
+    expect(await pane.find({ type: 'Text', text: 'DBG' })).toBeUndefined()
+    expect((await pane.find({ type: 'Text', text: 'FAST FIX  [temporary]' }))?.props.bold).toBe(true)
+    expect((await pane.find({ type: 'Text', text: 'ROOT-CAUSE MITIGATION' }))?.props.bold).toBe(true)
+    // (Clipped to the card on the desktop's two-column grid.)
+    const plain = await pane.find({ type: 'Text', text: /^No safe fast-stabilization action/ })
+    expect(plain).toBeDefined()
+    expect(plain?.props.bold).toBeFalsy()
+    // A line that names its level keeps its tag.
+    expect(await pane.find({ type: 'Text', text: 'WRN' })).toBeDefined()
+  })
+}
+
+test('/wall in text draws level-less lines as prose too', async ($, on) => {
+  on('process.run', () => ran(JSON.stringify(PROSE) + '\n'))
+  on('ui.open', () => ({ value: { isPlaced: false, reason: 'headless' } }))
+  on('command.register', () => ({ value: undefined }))
+  const answer = await $.command.run({ command: 'wall', args: '' })
+  expect(answer.text).toContain('  FAST FIX  [temporary]\n  No safe fast-stabilization action found for the current event.')
+  expect(answer.text).toContain('  WRN Root cause: not yet determined')
+  expect(answer.text).not.toContain('DBG')
+  expect(answer.text).not.toContain('##')
+})

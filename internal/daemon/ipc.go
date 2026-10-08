@@ -193,6 +193,10 @@ type RoomView struct {
 	// Status (peek only) is the room at a glance: status, severity, people,
 	// Beacon, the leading theory. From the cached frame; never a network wait.
 	Status *narrate.RoomStatus `json:"status,omitempty"`
+	// Votes (peek only) is what awaits the PERSON's position: the human view
+	// of the attention projection, read with no agent instance (review
+	// finding 2). VotesAwaited above stays the agent's count.
+	Votes []narrate.Vote `json:"votes,omitempty"`
 }
 
 // SeatView is one agent session as `rooms` lists it.
@@ -416,6 +420,19 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		return res
 
+	case "session":
+		// The room's own session, for a command that acts as the person when
+		// that session IS the person's (`landfall vote`, `landfall lines`): the
+		// same config `link` hands a sibling harness, with no seat label.
+		room := d.room(req.RoomKey)
+		if room == nil {
+			return fail("no such room")
+		}
+		cfg := room.SessionConfig()
+		res := ok()
+		res.RoomKey, res.Room = room.Key, &cfg
+		return res
+
 	case "stop":
 		d.opts.Log("stop requested; rooms are kept for the next daemon")
 		d.requestStop()
@@ -475,6 +492,7 @@ func (d *Daemon) peek(req Request) Response {
 		})
 		st := room.StatusView()
 		res.Rooms[len(res.Rooms)-1].Status = &st
+		res.Rooms[len(res.Rooms)-1].Votes = room.VotesView()
 	}
 	return res
 }

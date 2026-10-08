@@ -370,3 +370,138 @@ func oneLine(s string, max int) string {
 	}
 	return string(r[:max-1]) + "…"
 }
+
+// Vote is one staged claim awaiting the PERSON's position, as `landfall
+// watch` carries it for a front end to ask about (contracts/cli-json.md §1).
+// Built from the human view of the attention projection (no agent instance,
+// review finding 2), enriched from the claims projection where it says more.
+type Vote struct {
+	ClaimSeq      int64  `json:"claimSeq"`
+	Class         string `json:"class,omitempty"`
+	Statement     string `json:"statement"`
+	AuthoredBy    string `json:"authoredBy,omitempty"`
+	AuthorIsAgent bool   `json:"authorIsAgent"`
+	// AuthorHuman is the person behind an agent author, when known.
+	AuthorHuman    string `json:"authorHuman,omitempty"`
+	PositionsSoFar int    `json:"positionsSoFar"`
+	// Needed is the positions the bar asks for, when the server says.
+	Needed *int `json:"needed,omitempty"`
+	// Shortfall is how many more positions it still needs, when that is what
+	// it is short of.
+	Shortfall   *int   `json:"shortfall,omitempty"`
+	ExpiresInMs *int64 `json:"expiresInMs,omitempty"`
+	Stale       bool   `json:"stale"`
+	// Evidence is the claim's references in short words, when it has any.
+	Evidence string `json:"evidence,omitempty"`
+	// Mine is true when the person or their agent authored it; a front end
+	// never offers those.
+	Mine bool `json:"mine"`
+}
+
+// VotesMax bounds the list one watch line carries.
+const VotesMax = 20
+
+// VotesOf turns the person's attention into the watch's vote list, in the
+// server's urgency order. claims (may be nil) adds the bar, the evidence and
+// the author's identity; parts names the human behind an agent author; me is
+// the person's humanActorId; elapsedMs is how long ago the attention was read,
+// so expiresInMs counts down between reads instead of standing still.
+func VotesOf(att *client.Attention, claims *client.ClaimsProjection, parts []client.Participant, me string, elapsedMs float64) []Vote {
+	if att == nil {
+		return nil
+	}
+	bySeq := map[int64]client.ClaimView{}
+	if claims != nil {
+		for _, c := range claims.Claims {
+			bySeq[c.Seq] = c
+		}
+	}
+	names := humanNames(parts)
+	var out []Vote
+	for _, v := range att.VotesAwaited {
+		if v.ClaimSeq == nil {
+			continue
+		}
+		vote := Vote{
+			ClaimSeq:       *v.ClaimSeq,
+			Class:          oneLine(Printable(v.Class), 40),
+			Statement:      oneLine(Printable(v.Statement), 300),
+			AuthoredBy:     oneLine(Printable(v.AuthoredBy), 60),
+			AuthorIsAgent:  v.AuthorIsAgent,
+			PositionsSoFar: v.PositionsSoFar,
+			Stale:          v.Stale,
+		}
+		if v.ExpiresInMs != nil {
+			left := int64(math.Round(*v.ExpiresInMs - elapsedMs))
+			vote.ExpiresInMs = &left
+			if left <= 0 {
+				vote.Stale = true
+			}
+		}
+		if v.Shortfall != nil && v.Shortfall.Missing != nil && v.Shortfall.Missing.Corroborators != nil {
+			n := *v.Shortfall.Missing.Corroborators
+			vote.Shortfall = &n
+		}
+		if c, ok := bySeq[*v.ClaimSeq]; ok {
+			if c.Outcome != nil && c.Outcome.RequiredBar != nil && c.Outcome.RequiredBar.Corroborators > 0 {
+				n := c.Outcome.RequiredBar.Corroborators
+				vote.Needed = &n
+			}
+			vote.Evidence = evidenceOf(c.Provenance)
+			if me != "" && c.Author.HumanActorID == me {
+				vote.Mine = true
+			}
+			if v.AuthorIsAgent && c.Author.HumanActorID != "" {
+				vote.AuthorHuman = names[c.Author.HumanActorID]
+			}
+		}
+		if vote.Needed == nil && vote.Shortfall != nil {
+			n := vote.PositionsSoFar + *vote.Shortfall
+			vote.Needed = &n
+		}
+		out = append(out, vote)
+		if len(out) == VotesMax {
+			break
+		}
+	}
+	return out
+}
+
+// evidenceOf is a claim's references in one short line: each quote, or the
+// kind and seq of a reference that carries no quote.
+func evidenceOf(refs []client.ClaimProvenance) string {
+	var parts []string
+	for _, r := range refs {
+		q := oneLine(Printable(r.Quote), 80)
+		if q == "" {
+			q = oneLine(Printable(r.SourceType), 20)
+			if r.SourceSeq != nil {
+				q = strings.TrimSpace(q + " #" + strconv.FormatInt(*r.SourceSeq, 10))
+			}
+		}
+		if q != "" {
+			parts = append(parts, q)
+		}
+	}
+	return oneLine(strings.Join(parts, " · "), 160)
+}
+
+// humanNames is each person's display name by humanActorId, preferring the
+// name their browser tab carries (an agent's is a fallback), as peopleOf does.
+func humanNames(parts []client.Participant) map[string]string {
+	out := map[string]string{}
+	for _, p := range parts {
+		if p.HumanActorID == "" {
+			continue
+		}
+		name := oneLine(Printable(p.DisplayName), 60)
+		if name == "" {
+			continue
+		}
+		tab := strings.HasPrefix(p.AgentInstanceID, "web:") || (p.AgentInstanceID == "" && p.EdgeAgentLabel == "")
+		if _, ok := out[p.HumanActorID]; !ok || tab {
+			out[p.HumanActorID] = name
+		}
+	}
+	return out
+}

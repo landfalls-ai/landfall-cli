@@ -244,6 +244,8 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newStatusCommand(ui),
 		newWatchCommand(ui),
 		newChartCommand(ui),
+		newVoteCommand(ui),
+		newLinesCommand(ui),
 		newDaemonCommand(ui),
 		newRoomsCommand(ui),
 		newHeldCommand(ui),

@@ -161,6 +161,10 @@ type Room struct {
 	// redeeming it again (which the server refuses).
 	links map[string]struct{}
 
+	// person is the room as the person reads it (person.go): their vote
+	// list, the claims projection, the line claims, Beacon's last answer.
+	person personState
+
 	lastReaderLeftAt time.Time
 	openedAt         time.Time
 	deps             Deps
@@ -632,6 +636,9 @@ func (r *Room) enqueue(evt client.Event) {
 		}
 		r.mu.Unlock()
 	}
+	r.mu.Lock()
+	r.markPersonLocked(evt)
+	r.mu.Unlock()
 	if touchesFrame(evt.Type) {
 		r.mu.Lock()
 		r.frameStale = true
@@ -946,13 +953,22 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 // this read returns what is cached (nothing, the first time).
 func (r *Room) StatusView() narrate.RoomStatus {
 	r.refreshFrameAsync()
+	r.refreshPersonAsync()
 	r.mu.Lock()
 	f := r.frame
 	events := append([]client.Event(nil), r.events...)
 	me := r.Config.HumanActorID
-	loading := r.frameLoading
+	loading := r.frameLoading || r.person.loading
+	r.keepConclusionLocked()
+	reads := narrate.RoomReads{
+		Events:     events,
+		Claims:     r.person.claims,
+		Lines:      append([]client.LineClaim(nil), r.person.lines...),
+		Conclusion: r.person.conclusion,
+		NowMs:      r.deps.now().UnixMilli(),
+	}
 	r.mu.Unlock()
-	st := narrate.StatusOf(f, me, narrate.BeaconState(events))
+	st := narrate.StatusOfRoom(f, me, reads)
 	st.Refreshing = loading
 	return st
 }

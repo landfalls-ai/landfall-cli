@@ -6,12 +6,21 @@
 // exactly as it always has; the desktop Code tab and VS Code as a branded card
 // with the Beacon mark, status and severity pills, avatars with presence and
 // real buttons; mobile as the same card, compact.
+//
+// LIVE (live.md). While the room's connection is not live the band and the
+// pane say "Reconnecting to the room…" and the status line's dot is hollow
+// (FR-L3). For a minute after a new widget lands the band offers `w` to open
+// the wall (FR-L4, wall.js). Both sides of the person's connection show: the
+// band's head says whether their agent is in the room, and /room says who
+// "you" are here and where the agent is (FR-L5). Every new field is optional:
+// an older CLI that sends none draws as before.
 
 import {
   ADDRESSED,
   addCommand,
   CATCH_UP,
   clip,
+  currentRoom,
   dot,
   newestLine,
   pending,
@@ -25,9 +34,13 @@ import {
   whereIs,
   whoIsHere,
 } from '../core.js'
-import { kit } from '../kit.js'
+import { kit, TONE } from '../kit.js'
+import { RECONNECTING, notLive } from '../live.js'
+import { openWall, wallHint } from './wall.js'
 
 export const PANE = 'landfall-room'
+export const AGENT_IN = 'agent ✓'
+export const AGENT_OUT = 'agent not in the room'
 
 // The seq of the newest addressed message per room already shown as a toast.
 let toastedAt = {}
@@ -78,6 +91,9 @@ export function install(on) {
     const rows = []
     for (const r of room.snapshot.rooms) {
       rows.push(Text({ key: 'h-' + r.roomKey, bold: true, children: [clip(roomName(r), width)] }))
+      if (notLive(r)) rows.push(Text({ key: 'conn-' + r.roomKey, color: TONE.warning, children: [RECONNECTING] }))
+      const you = youWords(r)
+      if (you) rows.push(Text({ key: 'you-' + r.roomKey, children: [clip(you, width)] }))
       const st = r.status
       if (st) {
         const state = statusWords(st)
@@ -94,7 +110,6 @@ export function install(on) {
         rows.push(Text({ key: 'pe-' + r.roomKey, children: [' '] }))
       }
       const news = [r.count === 1 ? '1 new' : r.count + ' new']
-      if (r.connection && r.connection !== 'live') news.push(r.connection)
       rows.push(Text({ key: 'nh-' + r.roomKey, bold: true, children: ['News · ' + news.join(' · ')] }))
       const lines = r.digest ?? []
       if (lines.length === 0) rows.push(Text({ key: 'n-' + r.roomKey, dimColor: true, children: ['Nothing new since you last spoke.'] }))
@@ -132,19 +147,29 @@ export function install(on) {
 }
 
 // band: the room's news, the untold count, the newest line, three keys.
+// With no news it still says when the room is reconnecting, and offers the
+// wall for a minute after a new widget.
 export async function band(io, e, k) {
   const rooms = pending()
-  if (rooms.length === 0) return null
-  if (!k.terminal) return bandRich(io, k, rooms)
+  const cur = rooms[0] || currentRoom()
+  const hint = cur ? wallHint(await nowOf(io)) : null
+  if (rooms.length === 0 && !notLive(cur) && !hint) return null
+  if (!k.terminal) return bandRich(io, k, rooms, cur, hint)
   const { Text } = k.els
-  const r = rooms[0]
+  const r = cur
+  const rows = []
+  if (notLive(r)) rows.push(Text({ key: 'news-conn', color: TONE.warning, children: [RECONNECTING] }))
   const total = rooms.reduce((n, x) => n + x.count, 0)
-  const head = [roomName(r), total === 1 ? '1 new' : total + ' new']
+  const head = [roomName(r)]
+  if (total > 0) head.push(total === 1 ? '1 new' : total + ' new')
   if (r.votesAwaited === 1) head.push('1 vote awaited')
   if (r.votesAwaited > 1) head.push(r.votesAwaited + ' votes awaited')
-  if (r.connection && r.connection !== 'live') head.push(r.connection)
+  const headText = Text({ key: 'news-h', bold: true, children: ['Landfall · ' + head.join(' · ')] })
+  const badge = agentBadge(k, r)
+  rows.push(badge ? k.row([headText, badge], 'news-hrow', 2) : headText)
+  if (hint) rows.push(hintRow(io, k, hint))
+  if (rooms.length === 0) return rows
   const newest = clip(plainLine(newestLine(r.digest ?? [])), k.width)
-  const rows = [Text({ key: 'news-h', bold: true, children: ['Landfall · ' + head.join(' · ')] })]
   if (newest) rows.push(Text({ key: 'news-l', dimColor: true, children: [newest] }))
   rows.push(
     k.row(
@@ -208,23 +233,63 @@ export function onSnapshot(io, snap) {
 
 export function start(io) {}
 
+// agentBadge is the band head's word on the person's agent (FR-L5): "agent ✓"
+// while their `landfall serve` session is in the room, dim "agent not in the
+// room" when it is not; nothing from a CLI that does not say.
+function agentBadge(k, r) {
+  const a = r && r.agent
+  if (!a || typeof a.inRoom !== 'boolean') return null
+  if (a.inRoom) return k.terminal ? k.text(AGENT_IN, { key: 'news-agent', color: TONE.good }) : k.pill(AGENT_IN, 'good', 'news-agent')
+  return k.text(AGENT_OUT, { key: 'news-agent', dimColor: true })
+}
+
+// youWords is /room's line for both sides of the person's connection:
+// "You: this session (Claude Code) · your agent: in the room".
+export function youWords(r) {
+  const a = r && r.agent
+  if (!a || typeof a.inRoom !== 'boolean') return ''
+  return 'You: this session (Claude Code) · your agent: ' + (a.inRoom ? 'in the room' : 'not in the room yet')
+}
+
+// hintRow is the band's offer after a new widget: `w` opens the wall.
+function hintRow(io, k, hint) {
+  return k.row(
+    [
+      k.button({ key: 'open-wall', label: 'open the wall', hotkey: 'w', onPress: async () => void (await openWall(io)) }),
+      k.text('New: ' + clip(hint.title, 60), { key: 'wall-new', dimColor: true }),
+    ],
+    'news-wall',
+  )
+}
+
+// nowOf reads the session clock (io.now). Where there is none it answers the
+// far future, which shows no hint rather than one that never goes.
+async function nowOf(io) {
+  try {
+    if (typeof io.now === 'function') return Number(await io.now())
+  } catch {
+    // no clock
+  }
+  return Number.MAX_SAFE_INTEGER
+}
+
 // --- off the terminal: the desktop Code tab, VS Code, mobile ---------------
 
-// roomPills is a room's severity, status and connection as pills.
+// roomPills is a room's severity and status as pills. A connection that is
+// not live is said in words above them (RECONNECTING), not as a pill.
 function roomPills(k, r, key) {
   const st = r.status || {}
   const out = []
   if (st.severity) out.push(k.pill(st.severity, severityTone(st.severity), key + '-sev'))
   if (st.status) out.push(k.pill(st.status, statusTone(st.status), key + '-st'))
-  if (r.connection && r.connection !== 'live') out.push(k.pill(r.connection, 'warning', key + '-conn'))
   return out
 }
 
 // bandRich is the band as one card: the room with its pills and who is here,
 // the newest line with Beacon's state, then Catch up, Show the room, Later.
-function bandRich(io, k, rooms) {
+// With no news it is the reconnecting line and the wall offer alone.
+function bandRich(io, k, rooms, r, hint) {
   const { Box, Text } = k.els
-  const r = rooms[0]
   const st = r.status || {}
   const total = rooms.reduce((n, x) => n + x.count, 0)
   const name = roomName(r)
@@ -238,8 +303,9 @@ function bandRich(io, k, rooms) {
       k.mark('news-mark', 18),
       Text({ key: 'news-name', bold: true, children: [k.mobile ? clip(name, 28) : name] }),
       ...roomPills(k, r, 'news'),
-      k.pill(total === 1 ? '1 new' : total + ' new', 'neutral', 'news-count'),
-    ],
+      total > 0 ? k.pill(total === 1 ? '1 new' : total + ' new', 'neutral', 'news-count') : null,
+      agentBadge(k, r),
+    ].filter(Boolean),
   })
   const people = st.people ?? []
   const here = people.filter((p) => p.here)
@@ -249,6 +315,10 @@ function bandRich(io, k, rooms) {
     if (here.length > 0) head = k.col([title, k.dim(here.length + ' here', 'news-here')], 'news-head')
   } else if (here.length > 0) {
     head = Box({ key: 'news-head', flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', columnGap: 2, children: [title, k.avatars(here, { key: 'news-avs', max: 5 })] })
+  }
+  const conn = notLive(r) ? Text({ key: 'news-conn', color: TONE.warning, children: [RECONNECTING] }) : null
+  if (rooms.length === 0) {
+    return [k.card([conn, head, hint ? hintRow(io, k, hint) : null], { key: 'news-card', tone: notLive(r) ? 'warning' : undefined })]
   }
   const said = plainLine(newestLine(r.digest ?? []))
   const tail = []
@@ -272,7 +342,7 @@ function bandRich(io, k, rooms) {
   ]
   return [
     k.card(
-      [head, line ? Text({ key: 'news-l', dimColor: true, children: [clip(line, k.mobile ? 90 : Math.max(40, k.width * 2))] }) : null, k.row(keys, 'news-keys', 1)],
+      [conn, head, line ? Text({ key: 'news-l', dimColor: true, children: [clip(line, k.mobile ? 90 : Math.max(40, k.width * 2))] }) : null, hint ? hintRow(io, k, hint) : null, k.row(keys, 'news-keys', 1)],
       { key: 'news-card', tone: severityTone(st.severity) === 'critical' ? 'critical' : undefined },
     ),
   ]
@@ -296,6 +366,9 @@ function paneRich(k, act) {
         children: [k.mark(key + '-m', 20), Text({ key: key + '-name', bold: true, children: [roomName(r)] }), ...roomPills(k, r, key)],
       }),
     ]
+    if (notLive(r)) kids.push(Text({ key: key + '-conn', color: TONE.warning, children: [RECONNECTING] }))
+    const you = youWords(r)
+    if (you) kids.push(Text({ key: key + '-you', children: [you] }))
     if (st) {
       if (st.beacon) kids.push(k.dim('Beacon ' + st.beacon, key + '-beacon'))
       if (st.theory) kids.push(k.quote('Leading theory: ' + st.theory, key + '-theory'))
@@ -306,7 +379,6 @@ function paneRich(k, act) {
       }
     }
     const news = [r.count === 1 ? '1 new' : r.count + ' new']
-    if (r.connection && r.connection !== 'live') news.push(r.connection)
     kids.push(Text({ key: key + '-nh', bold: true, children: ['News · ' + news.join(' · ')] }))
     const lines = r.digest ?? []
     if (lines.length === 0) kids.push(k.dim('Nothing new since you last spoke.', key + '-none'))
@@ -374,7 +446,14 @@ function hintRich(k, hint) {
 
 // statusLine is the daemon's line with the room at a glance after the room's
 // name: "🟡 Acme 82 · mitigated · SEV2 · 4 here · Beacon concluded · 3 new".
+// While a room's connection is not live the dot is hollow: "○ Acme 82 · …".
 export function statusLine(snap) {
+  const line = glance(snap)
+  if (!line || !(snap.rooms || []).some((r) => notLive(r))) return line
+  return line.replace(/^(🔴|🟡|🟢)/u, '○')
+}
+
+function glance(snap) {
   const line = (snap.line || '').replace(/^🔴 landfall: /, '🔴 ')
   const r = snap.rooms.length === 1 ? snap.rooms[0] : null
   if (!line || !r || !r.status) return line
@@ -394,6 +473,9 @@ export function roomText() {
   const out = []
   for (const r of room.snapshot.rooms) {
     out.push(roomName(r) + ' · ' + r.count + ' new')
+    if (notLive(r)) out.push('  ' + RECONNECTING)
+    const you = youWords(r)
+    if (you) out.push('  ' + you)
     const st = r.status
     if (st) {
       const state = statusWords(st)

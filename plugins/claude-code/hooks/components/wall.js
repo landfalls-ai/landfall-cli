@@ -4,9 +4,14 @@
 // commander shared, each with its data read through the person's own session,
 // so the per-viewer credential wall holds: nobody sees a series they could
 // not read. The pane draws every widget type natively (vector charts on the
-// desktop, cell graphics on the terminal), reads the wall again on `r`, and
-// again on its own when the room moves on, at most every 20 seconds while the
-// pane is open. `a` drafts a question about the selected widget; it never sends.
+// desktop, cell graphics on the terminal) and reads the wall again on `r`.
+// While the pane is open it is live (live.md FR-L2, FR-L3): it reads again
+// every 15 s, as the web canvas does, and right away when a widget event
+// lands (`widgetSeq` on the watch stream); a failed read keeps the last good
+// wall and says it is stale; the last line says how old what it shows is.
+// A new widget is told as a toast (FR-L4), and the band offers `w` to open
+// the wall for a minute after. `a` drafts a question about the selected
+// widget; it never sends.
 //
 // The shapes are the Go CLI's own (internal/cli/wall.go flattenWidget): a
 // widget with no data yet carries `empty: true`; a stat may carry trend,
@@ -18,6 +23,7 @@
 
 import { HOST, addCommand, currentRoom, parseAnswer, room, roomName } from '../core.js'
 import { kit } from '../kit.js'
+import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, widgetSeqOf, opened as markOpen } from '../live.js'
 import {
   chartAlt,
   chartSvg,
@@ -39,22 +45,26 @@ import {
 } from '../views.js'
 
 export const PANE = 'landfall-wall'
-export const REFRESH_MS = 20000
+// The web canvas's own cadence (useLiveWidgets intervalMs): an open wall
+// reads its data again this often, and within a tick of a widget event.
+export const REFRESH_MS = WALL_MS
+// New widgets are told at most this often; the band offers `w` this long after.
+export const NEWS_GAP_MS = 10000
+export const HINT_MS = 60000
 
-// What the pane draws from. Module state: a hot reload starts it over, and
-// the next /wall or `r` fills it again.
+// The pane's live read (live.js): the last good `landfall wall` answer, open
+// or not, stale or not. Module state: a hot reload starts it over, and the
+// next draw of the pane marks it open again.
+const lp = livePane()
 const wall = {
-  answer: null, // the last `landfall wall` answer
-  loading: false,
-  open: false,
   roomKey: '',
-  loadedSeq: -1, // the room's maxSeq when the wall was last read
-  loadedAt: 0, // $.clock time of the last read
-  seenAt: 0, // $.clock time the pane last drew
-  drawnSnap: -1, // which snapshot the pane last drew after
-  snaps: 0, // snapshots seen
   selected: 0,
 }
+
+// New widgets (FR-L4): the newest widget seq seen per room (the first sight
+// of a room is not news), one waiting while the toast gap runs, when the last
+// toast was shown and until when the band offers `w`.
+const news = { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '' }
 
 export function install(on) {
   addCommand({ name: 'wall', description: "Show the war room's investigation wall" })
@@ -63,32 +73,36 @@ export function install(on) {
     const r = currentRoom()
     const opened = await $.ui.open({ id: PANE, title: paneTitle(r), focus: true, closeOnEscape: true })
     if (!opened || !opened.isPlaced) {
-      await loadWall($)
-      return { text: wallText(wall.answer, r) }
+      await loadWall(paneIo($))
+      return { text: wallText(lp.last, r) }
     }
-    wall.open = true
-    wall.drawnSnap = wall.snaps
-    await loadWall($)
+    markOpen(lp)
+    await loadWall(paneIo($))
     return {}
+  })
+
+  // Closed by the person (esc, the close mark) or an unload: the wall stops
+  // reading. The mod's own close (closeWall) marks it itself, since a
+  // plugin's own $.ui.close is not raised to its own hooks.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    closed(lp)
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const k = kit($.ui.resolve(e), e)
-    try {
-      wall.seenAt = await $.clock.now()
-    } catch {
-      // No clock: the wall waits for r rather than reading on its own.
-    }
-    wall.drawnSnap = wall.snaps
-    wall.open = true
+    // Drawn means open: after a hot reload the engine draws the pane again
+    // and the wall goes on reading.
+    drawn(lp)
+    const nowMs = await clockNow($)
     const r = currentRoom()
-    const a = wall.answer
+    const a = lp.answer
     const rows = []
     const by = a && a.ok && a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall'
-    const dim = [r ? roomName(r) : '', a && a.ok ? windowWords(a.windowMs) : '', wall.loading ? 'reading…' : ''].filter(Boolean).join(' · ')
+    const dim = [r ? roomName(r) : '', a && a.ok ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean).join(' · ')
     rows.push(k.header({ key: 'wall-h', title: by, dim }))
     if (!a) {
-      rows.push(k.text(wall.loading ? 'Reading the wall through your session…' : 'Press r to read the wall.', { key: 'wall-empty', dimColor: true }))
+      rows.push(k.text(lp.inFlight ? 'Reading the wall through your session…' : 'Press r to read the wall.', { key: 'wall-empty', dimColor: true }))
     } else if (!a.ok) {
       rows.push(k.text(clipText(a.error || 'The wall could not be read.', k.width), { key: 'wall-err' }))
     } else {
@@ -106,19 +120,20 @@ export function install(on) {
       const more = moreWords(a)
       if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
     }
+    rows.push(liveFooter(k, lp, nowMs, r, 'wall-live'))
     const sel = selectedWidget()
     rows.push(
       k.row(
         [
           sel ? k.button({ key: 'wall-ask', label: 'ask about ' + clipText(sel.title || sel.type, 28), hotkey: 'a', primary: true, onPress: () => askAbout($, sel) }) : null,
           a && a.ok && (a.widgets || []).length > 1 ? k.button({ key: 'wall-next', label: 'next widget', hotkey: 'n', onPress: () => selectNext($) }) : null,
-          k.button({ key: 'wall-refresh', label: 'refresh', hotkey: 'r', onPress: () => loadWall($) }),
+          k.button({ key: 'wall-refresh', label: 'refresh', hotkey: 'r', onPress: () => loadWall(paneIo($)) }),
           k.button({ key: 'wall-close', label: 'close (esc)', dim: true, onPress: () => closeWall($) }),
         ],
         'wall-keys',
       ),
     )
-    return k.col(rows, 'wall')
+    return k.col(rows.filter(Boolean), 'wall')
   })
 }
 
@@ -126,62 +141,137 @@ export async function band(io, e, k) {
   return null
 }
 
-// onSnapshot reads the wall again when the room has moved on, while the pane
-// is open, at most every 20 seconds. The pane is open when it drew after the
-// previous snapshot (each snapshot redraws every open site).
+// onSnapshot: a widget landed on the wall. Told as a toast (FR-L4), and an
+// open wall reads again right away (FR-L2: within 2 s of the event).
 export function onSnapshot(io, snap, prev) {
-  const wasDrawn = wall.drawnSnap >= wall.snaps
-  wall.snaps += 1
-  if (!wall.open) return
-  if (!wasDrawn) {
-    wall.open = false
-    return
+  for (const r of snap.rooms || []) {
+    const nw = r.newestWidget
+    const seq = nw && typeof nw.seq === 'number' ? nw.seq : null
+    const seen = news.seen[r.roomKey]
+    if (seen == null) {
+      // The first sight of a room is what is already there, not news.
+      news.seen[r.roomKey] = seq ?? 0
+      continue
+    }
+    if (seq == null || seq <= seen) continue
+    news.seen[r.roomKey] = seq
+    news.pending = { title: nw.title || nw.type || 'a widget', by: nw.by || '' }
   }
-  if (wall.loading) return
-  const r = (snap.rooms || []).find((x) => x.roomKey === wall.roomKey) || snap.rooms[0]
-  if (!r || !(r.maxSeq > wall.loadedSeq)) return
-  if (wall.seenAt - wall.loadedAt < REFRESH_MS) return
-  void reloadFromSnapshot(io, r)
+  if (news.pending) void announce(io)
+  if (!lp.open) return
+  const r = wallRoom(snap)
+  const ws = widgetSeqOf(r)
+  if (ws != null && ws > lp.seq) void loadWall(io)
 }
 
 export function start(io) {}
 
-async function reloadFromSnapshot(io, r) {
-  wall.loading = true
-  wall.loadedSeq = r.maxSeq
-  wall.loadedAt = wall.seenAt
-  try {
-    const answer = await io.run(wallArgs(r))
-    wall.answer = answer
-  } catch (err) {
-    wall.answer = { ok: false, error: String(err).slice(0, 200) }
+// tick: the open wall reads again every 15 s, and the age under it moves; a
+// new-widget toast held by the gap is told once the gap has run.
+export async function tick(io, nowMs) {
+  if (news.pending) await announce(io, nowMs)
+  if (news.hintUntil && nowMs >= news.hintUntil) {
+    news.hintUntil = 0
+    io.invalidate()
   }
-  wall.loading = false
+  if (!lp.open) return
+  io.invalidate()
+  const ws = widgetSeqOf(wallRoom(room.snapshot))
+  if (due(lp, nowMs, REFRESH_MS) || (ws != null && ws > lp.seq && !lp.inFlight)) void loadWall(io)
+}
+
+// announce shows the waiting new-widget toast, unless one was shown within
+// the gap; then the next tick tells it.
+async function announce(io, nowMs) {
+  const now = nowMs ?? (await ioNow(io))
+  if (!news.pending) return
+  if (news.toastAt != null && now - news.toastAt < NEWS_GAP_MS) return
+  const w = news.pending
+  news.pending = null
+  news.toastAt = now
+  news.hintUntil = now + HINT_MS
+  news.hintTitle = w.title
+  io.toast(newWidgetWords(w), 6000)
   io.invalidate()
 }
 
-// loadWall runs `landfall wall` for the current room.
-async function loadWall($) {
-  if (wall.loading) return
+// newWidgetWords is the toast: "New on the wall: 5xx by target group · by bob".
+export function newWidgetWords(w) {
+  return 'New on the wall: ' + w.title + (w.by ? ' · by ' + w.by : '')
+}
+
+// wallHint is what the band offers for a minute after a new widget: the
+// widget's title, or null.
+export function wallHint(nowMs) {
+  if (!news.hintUntil || nowMs >= news.hintUntil) return null
+  return { title: news.hintTitle }
+}
+
+// openWall opens the wall from the band's `w` and reads it.
+export async function openWall(io) {
+  news.hintUntil = 0
   const r = currentRoom()
-  wall.loading = true
-  wall.roomKey = r ? r.roomKey : ''
-  wall.loadedSeq = r ? r.maxSeq ?? -1 : -1
+  const opened = await io.open(PANE, paneTitle(r), { focus: true, closeOnEscape: true })
+  if (opened && opened.isPlaced) markOpen(lp)
+  await loadWall(io)
+}
+
+// paneIo is what this file's reads take, from the hook's own `$`, shaped as
+// register.js shapes `io`, so a key, a command and the clock read the same way.
+function paneIo($) {
+  return {
+    run: async (args, opts) => {
+      try {
+        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 30000, ...(opts || {}) }))
+      } catch (err) {
+        return { ok: false, error: String(err).slice(0, 200) }
+      }
+    },
+    invalidate: () => $.ui.invalidate('ui.render'),
+    now: () => $.clock.now(),
+  }
+}
+
+async function clockNow($) {
   try {
-    wall.loadedAt = await $.clock.now()
+    return Number(await $.clock.now())
   } catch {
-    wall.loadedAt = 0
+    return lp.goodAt
   }
-  $.ui.invalidate('ui.render')
+}
+
+async function ioNow(io) {
   try {
-    wall.answer = parseAnswer(await $.process.run([room.bin, ...wallArgs(r)], { timeoutMs: 30000 }))
-  } catch (err) {
-    wall.answer = { ok: false, error: String(err).slice(0, 200) }
+    return Number(await io.now())
+  } catch {
+    return lp.triedAt
   }
-  wall.loading = false
-  const n = wall.answer && wall.answer.ok ? (wall.answer.widgets || []).length : 0
+}
+
+// wallRoom is the room the wall reads: the one it was opened on, else the first.
+function wallRoom(snap) {
+  const rooms = (snap && snap.rooms) || []
+  return rooms.find((x) => x.roomKey === wall.roomKey) || rooms[0] || null
+}
+
+// loadWall runs `landfall wall` for the wall's room, one read at a time; a
+// widget event seen mid-read reads once more after it.
+async function loadWall(io) {
+  if (!wall.roomKey || !room.snapshot.rooms.some((x) => x.roomKey === wall.roomKey)) {
+    const r = currentRoom()
+    wall.roomKey = r ? r.roomKey : ''
+  }
+  const fetch = () => {
+    const r = wallRoom(room.snapshot)
+    const ws = widgetSeqOf(r)
+    lp.seq = ws == null ? -1 : ws
+    io.invalidate()
+    return io.run(wallArgs(r), { timeoutMs: 30000 })
+  }
+  await readLive(lp, fetch, () => ioNow(io))
+  const n = lp.answer && lp.answer.ok ? (lp.answer.widgets || []).length : 0
   if (wall.selected >= n) wall.selected = 0
-  $.ui.invalidate('ui.render')
+  io.invalidate()
 }
 
 async function askAbout($, w) {
@@ -191,7 +281,7 @@ async function askAbout($, w) {
 }
 
 function selectNext($) {
-  const n = wall.answer && wall.answer.ok ? (wall.answer.widgets || []).length : 0
+  const n = lp.answer && lp.answer.ok ? (lp.answer.widgets || []).length : 0
   if (n > 0) wall.selected = (wall.selected + 1) % n
   $.ui.invalidate('ui.render')
 }
@@ -202,7 +292,7 @@ function selectWidget($, i) {
 }
 
 async function closeWall($) {
-  wall.open = false
+  closed(lp)
   await $.ui.close({ id: PANE })
 }
 
@@ -408,7 +498,7 @@ function caption(k, w, key) {
 }
 
 function selectedWidget() {
-  const a = wall.answer
+  const a = lp.answer
   if (!a || !a.ok) return null
   return (a.widgets || [])[wall.selected] || null
 }
@@ -487,7 +577,3 @@ function widgetLines(w) {
       return [(w.type ? w.type + ' widgets' : 'This widget') + ' draw in the web app.']
   }
 }
-
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}

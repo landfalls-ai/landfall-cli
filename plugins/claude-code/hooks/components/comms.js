@@ -5,16 +5,22 @@
 // says so. The server keeps no time per update, so none is shown. Read only:
 // approving an update is the one approval in the product and stays in the war
 // room in the browser, so this pane has no approve button.
+//
+// While open the list is live (live.md FR-L2): it reads again every 30 s. A
+// failed read keeps the last good list and says it is stale.
 
 import { HOST, addCommand, clip, currentRoom, parseAnswer, room } from '../core.js'
 import { kit } from '../kit.js'
+import { closed, drawn, due, LIST_MS, liveFooter, livePane, readLive, opened as markOpen } from '../live.js'
 
 export const PANE = 'landfall-comms'
 export const APPROVAL_NOTE = 'Approving an update happens in the war room, in the browser.'
 const SHOWN = 6
 
-// The last `landfall comms` answer and whether one is running.
-const view = { answer: null, loading: false }
+// The live read (live.js): the last good `landfall comms` answer, whether
+// one is running, open or not; and the room it reads.
+const lp = livePane()
+const view = { roomKey: '' }
 
 export function install(on) {
   addCommand({ name: 'comms', description: 'Read the stakeholder updates drafted in the war room (read only)' })
@@ -23,19 +29,35 @@ export function install(on) {
     const r = currentRoom()
     if (!r) return { text: 'This folder is not in a war room. Open a share link from the room, or run /incidents to join one.' }
     const opened = await $.ui.open({ id: PANE, title: 'Stakeholder updates', focus: true, closeOnEscape: true })
-    await load($, r.roomKey)
-    if (!opened.isPlaced) return { text: commsText(view.answer) }
+    if (opened.isPlaced) markOpen(lp)
+    await load(paneIo($), r.roomKey)
+    if (!opened.isPlaced) return { text: commsText(lp.last) }
     return {}
+  })
+
+  // The person's close (esc, the close mark) reaches this hook; the mod's own
+  // closes go through closePane, since a plugin's own $.ui.close is not
+  // raised to its own hooks.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    closed(lp)
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const k = kit($.ui.resolve(e), e)
     const { Box, Text } = k.els
+    drawn(lp)
+    let nowMs = lp.goodAt
+    try {
+      nowMs = Number(await $.clock.now())
+    } catch {
+      // No clock: the age reads as of the last read.
+    }
     const r = currentRoom()
-    const answer = view.answer
+    const answer = lp.answer
     const messages = answer && answer.ok ? (answer.messages || []).slice(0, SHOWN) : []
 
-    const rows = [k.header({ key: 'cm-hdr', title: 'Stakeholder updates', pills: [], dim: view.loading ? 'reading…' : r ? r.displayId || '' : '' })]
+    const rows = [k.header({ key: 'cm-hdr', title: 'Stakeholder updates', pills: [], dim: lp.inFlight ? 'reading…' : r ? r.displayId || '' : '' })]
     if (!answer) rows.push(Text({ key: 'cm-wait', dimColor: true, children: ['Reading stakeholder updates…'] }))
     else if (!answer.ok) rows.push(Text({ key: 'cm-err', children: [String(answer.error || 'The stakeholder updates did not answer.')] }))
     else if (messages.length === 0) rows.push(Text({ key: 'cm-none', dimColor: true, children: ['No stakeholder update has been drafted yet.'] }))
@@ -62,11 +84,13 @@ export function install(on) {
     })
 
     rows.push(Text({ key: 'cm-note', dimColor: true, children: [APPROVAL_NOTE] }))
+    const foot = liveFooter(k, lp, nowMs, r, 'cm-live')
+    if (foot) rows.push(foot)
     rows.push(
       k.row(
         [
-          r ? k.button({ key: 'refresh', label: 'refresh', hotkey: 'r', onPress: () => load($, r.roomKey) }) : null,
-          k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => $.ui.close({ id: PANE }) }),
+          r ? k.button({ key: 'refresh', label: 'refresh', hotkey: 'r', onPress: () => load(paneIo($), r.roomKey) }) : null,
+          k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => closePane($) }),
         ],
         'cm-keys',
       ),
@@ -83,21 +107,52 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-// load runs `landfall comms` for the room and redraws.
-async function load($, roomKey) {
-  view.loading = true
-  $.ui.invalidate('ui.render')
-  view.answer = await cli($, ['comms', '--room', roomKey])
-  view.loading = false
-  $.ui.invalidate('ui.render')
+// tick: an open list reads again every 30 s, and the age under it moves.
+export async function tick(io, nowMs) {
+  if (!lp.open) return
+  io.invalidate()
+  const r = currentRoom()
+  if (due(lp, nowMs, LIST_MS) && (view.roomKey || r)) void load(io, view.roomKey || r.roomKey)
 }
 
-// cli runs `landfall <args> --host claude-code` and reads its one JSON line.
-async function cli($, args) {
+// load runs `landfall comms` for the room and redraws, one read at a time.
+async function load(io, roomKey) {
+  view.roomKey = roomKey
+  const fetch = () => {
+    io.invalidate()
+    return io.run(['comms', '--room', view.roomKey, '--host', HOST], { timeoutMs: 20000 })
+  }
+  await readLive(lp, fetch, () => ioNow(io))
+  io.invalidate()
+}
+
+// closePane closes the pane and stops its reads.
+async function closePane($) {
+  closed(lp)
+  await $.ui.close({ id: PANE })
+}
+
+// paneIo is what this file's reads take, from the hook's own `$`, shaped as
+// register.js shapes `io`.
+function paneIo($) {
+  return {
+    run: async (args, opts) => {
+      try {
+        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 20000, ...(opts || {}) }))
+      } catch (err) {
+        return { ok: false, error: clip(String(err), 200) }
+      }
+    },
+    invalidate: () => $.ui.invalidate('ui.render'),
+    now: () => $.clock.now(),
+  }
+}
+
+async function ioNow(io) {
   try {
-    return parseAnswer(await $.process.run([room.bin, ...args, '--host', HOST], { timeoutMs: 20000 }))
-  } catch (err) {
-    return { ok: false, error: clip(String(err), 200) }
+    return Number(await io.now())
+  } catch {
+    return lp.triedAt
   }
 }
 
@@ -135,7 +190,3 @@ export function commsText(answer) {
   out.push(APPROVAL_NOTE)
   return out.join('\n')
 }
-
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}

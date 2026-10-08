@@ -10,16 +10,21 @@
 // no-data cell, never a quiet one. `s` shares the view as a real widget
 // through the chart path (`landfall chart`, as key 4 does); `a` drafts a
 // question about the worst zone or group. Nothing sends.
+//
+// While open the board is live (live.md FR-L2): it reads again every 60 s,
+// CloudWatch's own minute. A failed read keeps the last good board and says
+// it is stale; the last line says how old what it shows is.
 
 import { HOST, addCommand, clip, currentRoom, parseAnswer, room, roomName } from '../core.js'
 import { kit } from '../kit.js'
+import { closed, drawn, due, LB_MS, liveFooter, livePane, readLive, opened as markOpen } from '../live.js'
 import { byZone, clipText, fiveXxTone, fmt, healthTone, healthyTone, hhmm, lastPct, pctCell, toneColor } from '../views.js'
 
 export const PANE = 'landfall-lb'
 
+// The board's live read (live.js): the last good `landfall lb` answer.
+const lp = livePane()
 const lb = {
-  answer: null,
-  loading: false,
   sharing: false,
   name: '', // the --lb the person asked for
 }
@@ -31,19 +36,35 @@ export function install(on) {
     lb.name = String(e.args || '').trim()
     const r = currentRoom()
     const opened = await $.ui.open({ id: PANE, title: r && r.displayId ? 'Load balancers · ' + r.displayId : 'Load balancers', focus: true, closeOnEscape: true })
-    await loadLb($)
-    if (!opened || !opened.isPlaced) return { text: lbText(lb.answer) }
+    if (opened && opened.isPlaced) markOpen(lp)
+    await loadLb(paneIo($))
+    if (!opened || !opened.isPlaced) return { text: lbText(lp.last) }
     return {}
+  })
+
+  // The person's close (esc, the close mark) reaches this hook; the mod's own
+  // closes go through closePane, since a plugin's own $.ui.close is not
+  // raised to its own hooks.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    closed(lp)
+    return next(e)
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const k = kit($.ui.resolve(e), e)
-    const a = lb.answer
+    drawn(lp)
+    let nowMs = lp.goodAt
+    try {
+      nowMs = Number(await $.clock.now())
+    } catch {
+      // No clock: the age reads as of the last read.
+    }
+    const a = lp.answer
     const rows = []
     const r = currentRoom()
     if (!a) {
       rows.push(k.header({ key: 'lb-h', title: 'Load balancers', dim: r ? roomName(r) : '' }))
-      rows.push(k.text(lb.loading ? 'Reading the room’s AWS connection…' : 'Press r to read the load balancers.', { key: 'lb-empty', dimColor: true }))
+      rows.push(k.text(lp.inFlight ? 'Reading the room’s AWS connection…' : 'Press r to read the load balancers.', { key: 'lb-empty', dimColor: true }))
     } else if (!a.ok) {
       rows.push(k.header({ key: 'lb-h', title: 'Load balancers', dim: r ? roomName(r) : '' }))
       rows.push(k.text(clipText(a.error || 'The load balancers could not be read.', k.width), { key: 'lb-err' }))
@@ -52,14 +73,16 @@ export function install(on) {
       if ((a.loadBalancers || []).length === 0) rows.push(k.text('No load balancers in scope.', { key: 'lb-none', dimColor: true }))
       for (const [i, line] of notes(a).entries()) rows.push(k.text(line, { key: 'lb-note' + i, dimColor: true }))
     }
+    const foot = liveFooter(k, lp, nowMs, r, 'lb-live')
+    if (foot) rows.push(foot)
     const worst = a && a.ok ? worstSpot(a) : null
     rows.push(
       k.row(
         [
           a && a.ok && a.query ? k.button({ key: 'lb-share', label: lb.sharing ? 'sharing…' : 'share as widget', hotkey: 's', primary: true, onPress: () => shareLb($) }) : null,
           worst ? k.button({ key: 'lb-ask', label: 'ask about ' + worst.label, hotkey: 'a', onPress: () => askWorst($, worst) }) : null,
-          k.button({ key: 'lb-refresh', label: 'refresh', hotkey: 'r', onPress: () => loadLb($) }),
-          k.button({ key: 'lb-close', label: 'close (esc)', dim: true, onPress: () => $.ui.close({ id: PANE }) }),
+          k.button({ key: 'lb-refresh', label: 'refresh', hotkey: 'r', onPress: () => loadLb(paneIo($)) }),
+          k.button({ key: 'lb-close', label: 'close (esc)', dim: true, onPress: () => closePane($) }),
         ],
         'lb-keys',
       ),
@@ -76,24 +99,58 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-async function loadLb($) {
-  if (lb.loading) return
-  lb.loading = true
-  $.ui.invalidate('ui.render')
-  try {
-    lb.answer = parseAnswer(await $.process.run([room.bin, ...lbArgs(currentRoom(), lb.name)], { timeoutMs: 40000 }))
-  } catch (err) {
-    lb.answer = { ok: false, error: String(err).slice(0, 200) }
+// tick: an open board reads again every 60 s, and the age under it moves.
+export async function tick(io, nowMs) {
+  if (!lp.open) return
+  io.invalidate()
+  if (due(lp, nowMs, LB_MS)) void loadLb(io)
+}
+
+// loadLb runs `landfall lb`, one read at a time.
+async function loadLb(io) {
+  const fetch = () => {
+    io.invalidate()
+    return io.run(lbArgs(currentRoom(), lb.name), { timeoutMs: 40000 })
   }
-  lb.loading = false
-  $.ui.invalidate('ui.render')
+  await readLive(lp, fetch, () => ioNow(io))
+  io.invalidate()
+}
+
+// closePane closes the pane and stops its reads.
+async function closePane($) {
+  closed(lp)
+  await $.ui.close({ id: PANE })
+}
+
+// paneIo is what this file's reads take, from the hook's own `$`, shaped as
+// register.js shapes `io`.
+function paneIo($) {
+  return {
+    run: async (args, opts) => {
+      try {
+        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 40000, ...(opts || {}) }))
+      } catch (err) {
+        return { ok: false, error: String(err).slice(0, 200) }
+      }
+    },
+    invalidate: () => $.ui.invalidate('ui.render'),
+    now: () => $.clock.now(),
+  }
+}
+
+async function ioNow(io) {
+  try {
+    return Number(await io.now())
+  } catch {
+    return lp.triedAt
+  }
 }
 
 // shareLb puts the board's read on the room's canvas as a chart: the same
 // `landfall chart` path key 4 takes (components/chart.js pinChart), so the
 // room daemon makes the read and nobody copies points.
 async function shareLb($) {
-  const a = lb.answer
+  const a = lp.answer
   if (!a || !a.ok || !a.query || lb.sharing) return
   lb.sharing = true
   $.ui.invalidate('ui.render')
@@ -331,7 +388,3 @@ export function lbText(a) {
   out.push(...notes(a))
   return out.join('\n')
 }
-
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}

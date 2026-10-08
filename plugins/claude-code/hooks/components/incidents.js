@@ -5,9 +5,15 @@
 // opens it in the browser. A practice incident (a simulated one) says so, and
 // a list the CLI had to cut says that too. Every read and the join run the
 // landfall CLI.
+//
+// While open the list is live (live.md FR-L2): it reads again every 30 s. A
+// failed read keeps the last good list and says it is stale. A join from
+// here puts the person's agent in the room too (FR-L5): `landfall serve`
+// adopts the room the daemon holds on its next step, and the toast says so.
 
 import { HOST, addCommand, ago, clip, parseAnswer, room, severityTone, statusTone } from '../core.js'
 import { kit, TONE } from '../kit.js'
+import { closed, drawn, due, LIST_MS, liveFooter, livePane, readLive, opened as markOpen } from '../live.js'
 
 export const PANE = 'landfall-incidents'
 export const PRACTICE = 'practice'
@@ -16,16 +22,27 @@ const ROOM_PANE = 'landfall-room'
 
 // What the pane draws: the last `landfall incidents` answer, whether one is
 // running, which incident the focus is on, and which one is being joined.
-const board = { answer: null, loading: false, sel: '', joining: '' }
+// `lp` (live.js) holds the answer, whether a read runs and whether the pane is open.
+const lp = livePane()
+const board = { sel: '', joining: '' }
 
 export function install(on) {
   addCommand({ name: 'incidents', description: "List your organization's open incidents and join one" })
 
   on('command.run', { command: 'incidents' }, async ($) => {
     const opened = await $.ui.open({ id: PANE, title: 'Open incidents', focus: true, closeOnEscape: true })
-    await load($)
-    if (!opened.isPlaced) return { text: incidentsText(board.answer) }
+    if (opened.isPlaced) markOpen(lp)
+    await load(paneIo($))
+    if (!opened.isPlaced) return { text: incidentsText(lp.last) }
     return {}
+  })
+
+  // The person's close (esc, the close mark) reaches this hook; the mod's own
+  // closes go through closePane, since a plugin's own $.ui.close is not
+  // raised to its own hooks.
+  on('ui.close', { id: PANE }, async ($, e, next) => {
+    closed(lp)
+    return next(e)
   })
 
   // The focus ring names the incident `b` and `o` act on.
@@ -40,13 +57,20 @@ export function install(on) {
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const k = kit($.ui.resolve(e), e)
     const { Box, Text, Button, Link } = k.els
-    const answer = board.answer
+    drawn(lp)
+    let nowMs = lp.goodAt
+    try {
+      nowMs = Number(await $.clock.now())
+    } catch {
+      // No clock: the age reads as of the last read.
+    }
+    const answer = lp.answer
     const list = answer && answer.ok ? sortIncidents(answer.incidents || []) : []
     const selected = list.find((i) => i.incidentId === board.sel) || list[0] || null
 
     const join = async (inc) => {
       if (inc.joined) {
-        await $.ui.close({ id: PANE })
+        await closePane($)
         await $.ui.open({ id: ROOM_PANE, title: 'Landfall', focus: true, closeOnEscape: true })
         return
       }
@@ -57,7 +81,7 @@ export function install(on) {
       if (got.ok) {
         inc.joined = true
         inc.roomKey = got.roomKey || inc.roomKey
-        await $.ui.toast('Joined ' + incName({ ...inc, ...pick(got) }) + '. Room news reaches this session from now on.', { timeoutMs: 8000 })
+        await $.ui.toast(joinedWords({ ...inc, ...pick(got) }), { timeoutMs: 8000 })
       } else {
         await $.ui.toast('Not joined: ' + clip(got.error || 'no answer', 200), { timeoutMs: 8000 })
       }
@@ -65,7 +89,7 @@ export function install(on) {
     }
     const brief = async (inc) => {
       if (!inc) return
-      await $.ui.close({ id: PANE })
+      await closePane($)
       await $.prompt.fill({ text: 'Give me the brief for ' + (inc.displayId || inc.title) })
     }
     const openIt = async (inc, surface) => {
@@ -76,12 +100,12 @@ export function install(on) {
       })
     }
     const refresh = async () => {
-      await load($)
+      await load(paneIo($))
     }
 
     const pills = []
     if (answer && answer.ok) pills.push({ text: (answer.org || 'org') + ' · ' + list.length, tone: 'neutral' })
-    const rows = [k.header({ key: 'inc-hdr', title: 'Open incidents', pills, dim: board.loading ? 'reading…' : '' })]
+    const rows = [k.header({ key: 'inc-hdr', title: 'Open incidents', pills, dim: lp.inFlight ? 'reading…' : '' })]
 
     if (!answer) rows.push(Text({ key: 'inc-wait', dimColor: true, children: ['Reading open incidents…'] }))
     else if (!answer.ok) rows.push(Text({ key: 'inc-err', children: [String(answer.error || 'The incident list did not answer.')] }))
@@ -162,6 +186,9 @@ export function install(on) {
     })
 
     if (answer && answer.ok && answer.truncated) rows.push(Text({ key: 'inc-cut', dimColor: true, children: [TRUNCATED] }))
+    // The list is the organization's, not the room's: no reconnecting line.
+    const foot = liveFooter(k, lp, nowMs, null, 'inc-live')
+    if (foot) rows.push(foot)
 
     const keys = []
     if (k.terminal && list.length > 0) {
@@ -170,7 +197,7 @@ export function install(on) {
       keys.push(k.button({ key: 'open', label: 'open in browser', hotkey: 'o', onPress: (press) => openIt(selected, press.surface) }))
     }
     keys.push(k.button({ key: 'refresh', label: 'refresh', hotkey: 'r', onPress: refresh }))
-    keys.push(k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => $.ui.close({ id: PANE }) }))
+    keys.push(k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => closePane($) }))
     rows.push(k.row(keys, 'inc-keys'))
     return Box({ flexDirection: 'column', rowGap: k.terminal ? 0 : 1, children: rows })
   })
@@ -184,17 +211,62 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-// load runs `landfall incidents` and redraws.
-async function load($) {
-  board.loading = true
-  $.ui.invalidate('ui.render')
-  board.answer = await cli($, ['incidents'])
-  board.loading = false
-  if (board.answer.ok && !(board.answer.incidents || []).some((i) => i.incidentId === board.sel)) {
-    const first = sortIncidents(board.answer.incidents || [])[0]
+// tick: an open list reads again every 30 s, and the age under it moves.
+export async function tick(io, nowMs) {
+  if (!lp.open) return
+  io.invalidate()
+  if (due(lp, nowMs, LIST_MS) && !board.joining) void load(io)
+}
+
+// load runs `landfall incidents` and redraws, one read at a time.
+async function load(io) {
+  const fetch = () => {
+    io.invalidate()
+    return io.run(['incidents', '--host', HOST], { timeoutMs: 20000 })
+  }
+  await readLive(lp, fetch, () => ioNow(io))
+  const a = lp.answer
+  if (a && a.ok && !(a.incidents || []).some((i) => i.incidentId === board.sel)) {
+    const first = sortIncidents(a.incidents || [])[0]
     board.sel = first ? first.incidentId : ''
   }
-  $.ui.invalidate('ui.render')
+  io.invalidate()
+}
+
+// closePane closes the pane and stops its reads.
+async function closePane($) {
+  closed(lp)
+  await $.ui.close({ id: PANE })
+}
+
+// paneIo is what this file's reads take, from the hook's own `$`, shaped as
+// register.js shapes `io`.
+function paneIo($) {
+  return {
+    run: async (args, opts) => {
+      try {
+        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 20000, ...(opts || {}) }))
+      } catch (err) {
+        return { ok: false, error: clip(String(err), 200) }
+      }
+    },
+    invalidate: () => $.ui.invalidate('ui.render'),
+    now: () => $.clock.now(),
+  }
+}
+
+async function ioNow(io) {
+  try {
+    return Number(await io.now())
+  } catch {
+    return lp.triedAt
+  }
+}
+
+// joinedWords is the toast after a join from here: the mod is in the room
+// now, and the person's agent follows on its next step (FR-L5).
+export function joinedWords(inc) {
+  return 'Joined ' + incName(inc) + '. Your agent joins on its next step.'
 }
 
 // cli runs `landfall <args> --host claude-code` and reads its one JSON line.
@@ -264,7 +336,3 @@ export function incidentsText(answer) {
   if (answer.truncated) out.push(TRUNCATED)
   return out.join('\n')
 }
-
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}

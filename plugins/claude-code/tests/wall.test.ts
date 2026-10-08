@@ -234,68 +234,8 @@ test('a on the selected widget drafts a question about it, and never sends', asy
   }
 })
 
-test('the wall reads again when the room moves on, at most every 20 seconds, only while open', async ($, on) => {
-  // The clock is the test's: the watch stream below never ends, so nothing
-  // here waits for the event loop to settle.
-  let now = 0
-  const release: Array<() => void> = []
-  const wallRuns: Array<readonly string[]> = []
-  let statuses = 0
-  on('clock.now', () => ({ value: now }))
-  on('env.get', () => ({ value: undefined }))
-  on('env.set', () => ({ value: undefined }))
-  on('command.register', () => ({ value: undefined }))
-  on('ui.toast', () => ({ value: undefined }))
-  on('ui.status', () => {
-    statuses += 1
-    return { value: undefined }
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('ui.close', () => ({ value: undefined }))
-  on('process.spawn', async function* () {
-    for (const seq of [41, 50, 60, 70]) {
-      yield { stream: 'stdout', text: snap(seq) }
-      await new Promise<void>((r) => release.push(r))
-    }
-    return { value: { code: 0, signal: null } }
-  })
-  on('process.run', ($, e) => {
-    if (e.argv[1] === 'wall') wallRuns.push(e.argv)
-    return ran(JSON.stringify(WALL) + '\n')
-  })
-  on('session.start', () => ({ cwd: '/work' }))
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' } as never)
-  await settle(() => statuses >= 1)
-
-  await $.command.run({ command: 'wall', args: '' })
-  expect(wallRuns).toEqual([['landfall', 'wall', '--host', 'claude-code', '--room', 'k168']])
-  let pane = await $.ui.mount({ plugin: 'landfall', surface: 'terminal', component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-
-  // 10s on, a new seq, but within 20 seconds of the last read: no read.
-  now = 10000
-  release.shift()?.()
-  await settle(() => statuses >= 2)
-  await settle(() => false)
-  expect(wallRuns).toHaveLength(1)
-
-  // 21s on, the pane still drawn: the next new seq reads again.
-  now = 21000
-  await pane.unmount()
-  pane = await $.ui.mount({ plugin: 'landfall', surface: 'terminal', component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-  release.shift()?.()
-  await settle(() => wallRuns.length >= 2)
-  expect(wallRuns).toHaveLength(2)
-
-  // Closed: no more reads, however long it has been.
-  await pane.press({ key: 'wall-close' })
-  await pane.unmount()
-  now = 100000
-  release.shift()?.()
-  await settle(() => statuses >= 4)
-  await settle(() => false)
-  expect(statuses).toBe(4)
-  expect(wallRuns).toHaveLength(2)
-})
+// The wall's live cadence (15 s while open, a widget event at once, stale on
+// a failed read) is pinned in live.test.ts.
 
 test('/wall answers in text where no pane can be placed, and says why when the wall cannot be read', async ($, on) => {
   let answerJson = JSON.stringify(WALL)

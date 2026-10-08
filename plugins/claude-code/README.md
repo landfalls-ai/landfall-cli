@@ -72,14 +72,38 @@ status, severity or focus (those stay in the war room), and no button makes an M
 | Sound | one soft chime when your incident becomes SEV1 or a vote waits on you; off until **Sound cues** is switched on in `/config`; macOS only | none |
 | `/landfall-sound` | whether the chime is on, and how to change it | none |
 
+### Live panes and both sides of the connection
+
+A pane reads the room again only while it is open, on the session's own clock:
+
+| Pane | Reads again |
+|---|---|
+| `/wall` | every 15 s (the web canvas's own cadence), and at once when a widget lands, changes or the shared arrangement is saved |
+| `/topology` | when a widget event lands |
+| `/lb` | every 60 s (CloudWatch's minute) |
+| `/timeline` | on every new room event; the newest page is laid over the rows shown |
+| `/incidents`, `/comms` | every 30 s |
+
+Each ends with `live · updated 12s ago`. A failed read keeps what the pane showed and says
+`stale · updated 40s ago · <why>`. While the room's connection is down, the band and the panes say
+**Reconnecting to the room…** and the status line's dot is hollow (`○`). A new widget is told as a
+toast (`New on the wall: 5xx by target group · by bob`, at most one per 10 s) and the band offers
+**w** to open the wall for a minute after. The band's head says whether your agent (`landfall
+serve`) is in the room (`agent ✓`, or `agent not in the room`), and `/room` says both: `You: this
+session (Claude Code) · your agent: in the room`. Joining from `/incidents` brings your agent in on
+its next step. These read the `landfall watch` fields `widgetSeq`, `newestWidget`, `connection` and
+`agent`; an older `landfall` that sends none of them leaves the words out and the panes read on
+their timers alone.
+
 ### Layout
 
 `hooks/register.js` owns the session: the single `session.start`, the one `landfall watch` stream
-and the band. Each file in `hooks/components/` is one feature with the same four exports
-(`install`, `band`, `onSnapshot`, `start`); `register.js` calls each by name and hands it an `io`
+and the band. Each file in `hooks/components/` is one feature with the same five exports
+(`install`, `band`, `onSnapshot`, `start`, `tick`); `register.js` calls each by name and hands it an `io`
 object in place of `$`, because `claude plugin validate` follows `$` only into functions declared
 in the same file. `hooks/kit.js` draws Landfall's pieces for each surface; `hooks/views.js` holds
-the pure chart and graph drawings.
+the pure chart and graph drawings; `hooks/live.js` the bookkeeping every live pane shares (open or
+not, the last good read, stale or not, the footer).
 
 ## How it fits with `landfall hooks install`
 

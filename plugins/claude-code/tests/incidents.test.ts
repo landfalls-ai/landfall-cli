@@ -95,7 +95,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     await pane.press({ key: 'inc-i172' })
     expect(w.runs[1]).toEqual(['landfall', 'join', '--incident', 'i172', '--host', 'claude-code'])
-    expect(w.toasts).toEqual(['Joined 172 orders-db-replica-lag. Room news reaches this session from now on.'])
+    expect(w.toasts).toEqual(['Joined 172 orders-db-replica-lag. Your agent joins on its next step.'])
     expect(w.mcp()).toBe(0)
   })
 
@@ -192,7 +192,7 @@ test('after a join the row reads as joined and Enter opens the room', async ($, 
   await $.command.run({ command: 'incidents', args: '' })
   const pane = await $.ui.mount({ ...PANE, surface: 'desktop' } as never)
   await pane.press({ key: 'inc-i172' })
-  expect(w.toasts).toEqual(['Joined 172 orders-db-replica-lag. Room news reaches this session from now on.'])
+  expect(w.toasts).toEqual(['Joined 172 orders-db-replica-lag. Your agent joins on its next step.'])
   expect((await pane.find({ key: 'inc-i172' }))?.props.label).toBe('Open the room')
   await pane.press({ key: 'inc-i172' })
   expect(w.opened).toEqual(['landfall-incidents', 'landfall-room'])

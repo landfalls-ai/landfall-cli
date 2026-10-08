@@ -1,95 +1,47 @@
-// Load balancer health board: /lb [name] (proposal item 07, FR-07).
+// Load balancer health board: the console's Load balancers tab (spec 4.5; proposal item 07, FR-07).
 //
-// A local component, not a widget anybody posted: `landfall lb` runs the
-// CloudWatch source's own reads through the room daemon (the room's
-// connection and session), and the pane draws each load balancer's target
-// groups, every target's health by zone, and 5xx per target group per minute
-// (CloudWatch publishes ALB 5xx per target group, never per target: the CLI
-// says so with `fiveXxBy: "targetGroup"`): a Raster heat map on the terminal,
-// an Svg grid with hover on the desktop. A minute with no requests is a
-// no-data cell, never a quiet one. `s` shares the view as a real widget
-// through the chart path (`landfall chart`, as key 4 does); `a` drafts a
-// question about the worst zone or group. Nothing sends.
+// A local component, not a widget anybody posted: `landfall lb` runs the CloudWatch source's own
+// reads through the room daemon (the room's connection and session), and the tab draws each load
+// balancer's target groups, every target's health by zone, and 5xx per target group per minute
+// (CloudWatch publishes ALB 5xx per target group, never per target: the CLI says so with
+// `fiveXxBy: "targetGroup"`): a Raster heat map on the terminal, an Svg grid with hover on the
+// desktop. A minute with no requests is a no-data cell, never a quiet one. `s` shares the view as
+// a real widget through the chart path (`landfall chart`, as key 4 does); `a` drafts a question
+// about the worst zone or group. Nothing sends.
 //
-// While open the board is live (live.md FR-L2): it reads again every 60 s,
-// CloudWatch's own minute. A failed read keeps the last good board and says
-// it is stale; the last line says how old what it shows is.
+// It is warm from the moment the console opens and reads again every 60 s, CloudWatch's own
+// minute. A failed read keeps the last good board and says it is stale; the footer says how old
+// what it shows is. `/landfall lb <name>` shows one load balancer.
 
-import { HOST, addCommand, clip, currentRoom, parseAnswer, room, roomArgs, roomName } from '../core.js'
-import { kit } from '../kit.js'
-import { closed, drawn, due, LB_MS, liveFooter, livePane, readLive, opened as markOpen } from '../live.js'
+import { HOST, consoleState, currentRoom, roomArgs, roomName } from '../core.js'
+import { TONE } from '../kit.js'
+import { closed, drawn, due, LB_MS, livePane, readLive, opened as markOpen } from '../live.js'
 import { byZone, clipText, fiveXxTone, fmt, healthTone, healthyTone, hhmm, lastPct, pctCell, toneColor } from '../views.js'
+import { centerRow, footerOf, keyButton, nowOf, resetLive, roomKeyOf, say } from './tabparts.js'
 
-export const PANE = 'landfall-lb'
+// The one label column of the whole board (spec 4.5): zone names, target-group names, the
+// healthy-hosts label.
+const LABEL_W = 17
 
 // The board's live read (live.js): the last good `landfall lb` answer.
 const lp = livePane()
 const lb = {
+  roomKey: '', // the room this board is of
   sharing: false,
   name: '', // the --lb the person asked for
+  argsApplied: '', // the name a `/landfall lb <name>` already chose
 }
 
-export function install(on) {
-  addCommand({ name: 'lb', description: "Show load balancer health from the room's AWS connection", argumentHint: '[name]' })
-
-  on('command.run', { command: 'lb' }, async ($, e) => {
-    lb.name = String(e.args || '').trim()
-    const r = currentRoom()
-    const opened = await $.ui.open({ id: PANE, title: r && r.displayId ? 'Load balancers · ' + r.displayId : 'Load balancers', focus: true, closeOnEscape: true })
-    if (opened && opened.isPlaced) markOpen(lp)
-    await loadLb(paneIo($))
-    if (!opened || !opened.isPlaced) return { text: lbText(lp.last) }
-    return {}
-  })
-
-  // The person's close (esc, the close mark) reaches this hook; the mod's own
-  // closes go through closePane, since a plugin's own $.ui.close is not
-  // raised to its own hooks.
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    closed(lp)
-    return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const k = kit($.ui.resolve(e), e)
-    drawn(lp)
-    let nowMs = lp.goodAt
-    try {
-      nowMs = Number(await $.clock.now())
-    } catch {
-      // No clock: the age reads as of the last read.
-    }
-    const a = lp.answer
-    const rows = []
-    const r = currentRoom()
-    if (!a) {
-      rows.push(k.header({ key: 'lb-h', title: 'Load balancers', dim: r ? roomName(r) : '' }))
-      rows.push(k.text(lp.inFlight ? 'Reading the room’s AWS connection…' : 'Press r to read the load balancers.', { key: 'lb-empty', dimColor: true }))
-    } else if (!a.ok) {
-      rows.push(k.header({ key: 'lb-h', title: 'Load balancers', dim: r ? roomName(r) : '' }))
-      rows.push(k.text(clipText(a.error || 'The load balancers could not be read.', k.width), { key: 'lb-err' }))
-    } else {
-      for (const [i, one] of (a.loadBalancers || []).entries()) rows.push(...lbView(k, one, 'lb' + i, a))
-      if ((a.loadBalancers || []).length === 0) rows.push(k.text('No load balancers in scope.', { key: 'lb-none', dimColor: true }))
-      for (const [i, line] of notes(a).entries()) rows.push(k.text(line, { key: 'lb-note' + i, dimColor: true }))
-    }
-    const foot = liveFooter(k, lp, nowMs, r, 'lb-live')
-    if (foot) rows.push(foot)
-    const worst = a && a.ok ? worstSpot(a) : null
-    rows.push(
-      k.row(
-        [
-          a && a.ok && a.query ? k.button({ key: 'lb-share', label: lb.sharing ? 'sharing…' : 'share as widget', hotkey: 's', primary: true, onPress: () => shareLb($) }) : null,
-          worst ? k.button({ key: 'lb-ask', label: 'ask about ' + worst.label, hotkey: 'a', onPress: () => askWorst($, worst) }) : null,
-          k.button({ key: 'lb-refresh', label: 'refresh', hotkey: 'r', onPress: () => loadLb(paneIo($)) }),
-          k.button({ key: 'lb-close', label: 'close (esc)', dim: true, onPress: () => closePane($) }),
-        ],
-        'lb-keys',
-      ),
-    )
-    return k.col(rows, 'lb')
-  })
+// forRoom drops what was read of another room: a different incident starts the board over.
+function forRoom(r) {
+  const key = roomKeyOf(r)
+  if (key === lb.roomKey) return
+  Object.assign(lb, { roomKey: key, sharing: false, name: '', argsApplied: '' })
+  resetLive(lp)
 }
+
+// No hooks of its own: the console owns the pane and the `/landfall` command.
+export function install(on) {}
 
 export async function band(io, e, k) {
   return null
@@ -99,11 +51,125 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-// tick: an open board reads again every 60 s, and the age under it moves.
+// tick: an open board reads again every 60 s; closing the console stops the reads and forgets
+// the name the person asked for.
 export async function tick(io, nowMs) {
+  if (lp.open && !consoleState.open) {
+    closed(lp)
+    lb.name = ''
+    lb.argsApplied = ''
+  }
+  const moved = roomKeyOf(currentRoom()) !== lb.roomKey
+  forRoom(currentRoom())
   if (!lp.open) return
-  io.invalidate()
-  if (due(lp, nowMs, LB_MS)) void loadLb(io)
+  if (moved || due(lp, nowMs, LB_MS)) void loadLb(io)
+}
+
+// warm starts the board's reads when the console opens (and reads again when asked).
+export async function warm(io) {
+  forRoom(currentRoom())
+  markOpen(lp)
+  await loadLb(io)
+}
+
+export async function refresh(io) {
+  await warm(io)
+}
+
+// Load balancers carry no badge.
+export function badge() {
+  return null
+}
+
+// The live read's state (live.js), so Home can say how old its load balancer block is.
+export function readState() {
+  return lp
+}
+
+// The last good answer, for Home's load balancer block.
+export function answerOf() {
+  return lp.answer && lp.answer.ok ? lp.answer : null
+}
+
+// tab is the Load balancers tab's body (spec 4.5): each load balancer as lbView draws it, then
+// the answer's notes, the footer and the keys row. `args` is `/landfall lb <name>`.
+export function tab(k, io, nowMs, args) {
+  drawn(lp)
+  const r = currentRoom()
+  forRoom(r)
+  applyArgs(io, args)
+  const a = lp.answer
+  const rows = []
+  if (lb.name) {
+    rows.push(
+      k.row(
+        [k.text('Showing ' + lb.name + ' only.', { key: 'lb-only', dimColor: true }), k.els.Button({ key: 'lb-all', label: 'show all load balancers', plain: true, onPress: () => showAll(io) })],
+        'lb-filter',
+        1,
+      ),
+    )
+  }
+  if (!a) {
+    rows.push(k.text('Reading the room’s AWS connection…', { key: 'lb-empty', dimColor: true }))
+  } else if (!a.ok) {
+    rows.push(k.text(clipText(a.error || 'The load balancers could not be read.', k.width), { key: 'lb-err' }))
+  } else {
+    for (const [i, one] of (a.loadBalancers || []).entries()) rows.push(...lbView(k, one, 'lb' + i, a))
+    if ((a.loadBalancers || []).length === 0) rows.push(k.text('No load balancers in scope.', { key: 'lb-none', dimColor: true }))
+    for (const [i, line] of notes(a).entries()) rows.push(k.text(line, { key: 'lb-note' + i, dimColor: true }))
+  }
+  const foot = footerOf(k, lp, nowMs, r, 'lb-live')
+  if (foot) rows.push(foot)
+  const keyRow = keys(k, io, nowMs, args)
+  if (keyRow.length > 0) rows.push(k.row(keyRow, 'lb-keys', 2))
+  return rows
+}
+
+// keys are the tab's letters: `s: share as widget` (primary while a query exists), `a: ask about
+// <worst>`. Console.js adds `r: refresh` and `close (esc)`.
+export function keys(k, io, nowMs, args) {
+  const a = lp.answer
+  const worst = a && a.ok ? worstSpot(a) : null
+  const out = []
+  if (a && a.ok && a.query) {
+    out.push(
+      keyButton(k, {
+        key: 'lb-share',
+        label: lb.sharing ? 'sharing…' : k.terminal ? 'share as widget' : 'Share as widget',
+        hotkey: 's',
+        primary: true,
+        onPress: () => shareLb(io),
+      }),
+    )
+  }
+  if (worst) out.push(keyButton(k, { key: 'lb-ask', label: (k.terminal ? 'ask about ' : 'Ask about ') + worst.label, hotkey: 'a', onPress: () => askWorst(io, worst) }))
+  return out
+}
+
+// applyArgs takes `/landfall lb <name>` once: the name is chosen and read, then not chosen again
+// on every draw.
+function applyArgs(io, args) {
+  if (args == null || args === '') {
+    lb.argsApplied = ''
+    return
+  }
+  const asked = String(typeof args === 'object' ? args.name || '' : args).trim()
+  if (consoleState.args === args) consoleState.args = null
+  if (!asked || asked === lb.argsApplied) return
+  lb.argsApplied = asked
+  if (asked !== lb.name) chooseName(asked, io)
+}
+
+function chooseName(name, io) {
+  lb.name = name
+  lp.answer = null
+  lp.last = null
+  void loadLb(io)
+}
+
+function showAll(io) {
+  lb.argsApplied = ''
+  chooseName('', io)
 }
 
 // loadLb runs `landfall lb`, one read at a time.
@@ -112,63 +178,32 @@ async function loadLb(io) {
     io.invalidate()
     return io.run(lbArgs(currentRoom(), lb.name), { timeoutMs: 40000 })
   }
-  await readLive(lp, fetch, () => ioNow(io))
+  await readLive(lp, fetch, () => nowOf(io, lp.triedAt))
   io.invalidate()
 }
 
-// closePane closes the pane and stops its reads.
-async function closePane($) {
-  closed(lp)
-  await $.ui.close({ id: PANE })
-}
-
-// paneIo is what this file's reads take, from the hook's own `$`, shaped as
-// register.js shapes `io`.
-function paneIo($) {
-  return {
-    run: async (args, opts) => {
-      try {
-        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 40000, ...(opts || {}) }))
-      } catch (err) {
-        return { ok: false, error: String(err).slice(0, 200) }
-      }
-    },
-    invalidate: () => $.ui.invalidate('ui.render'),
-    now: () => $.clock.now(),
-  }
-}
-
-async function ioNow(io) {
-  try {
-    return Number(await io.now())
-  } catch {
-    return lp.triedAt
-  }
-}
-
-// shareLb puts the board's read on the room's canvas as a chart: the same
-// `landfall chart` path key 4 takes (components/chart.js pinChart), so the
-// room daemon makes the read and nobody copies points.
-async function shareLb($) {
+// shareLb puts the board's read on the room's canvas as a chart: the same `landfall chart` path
+// key 4 takes (components/chart.js pinChart), so the room daemon makes the read and nobody copies
+// points.
+async function shareLb(io) {
   const a = lp.answer
   if (!a || !a.ok || !a.query || lb.sharing) return
   lb.sharing = true
-  $.ui.invalidate('ui.render')
+  io.invalidate()
   const title = shareTitle(a)
   try {
-    const run = await $.process.run([room.bin, 'chart', '--host', HOST, ...roomArgs(currentRoom()), '--query', JSON.stringify({ ...a.query, title })], { timeoutMs: 40000 })
-    const answer = parseAnswer(run)
-    if (answer.ok) await $.ui.toast('Chart added to your dashboard in the room: ' + (answer.title || title), { timeoutMs: 6000 })
-    else await $.ui.toast('Chart not added: ' + clip(String(answer.error || 'no answer'), 200), { timeoutMs: 8000 })
+    const answer = await io.run(['chart', '--host', HOST, ...roomArgs(currentRoom()), '--query', JSON.stringify({ ...a.query, title })], { timeoutMs: 40000 })
+    if (answer.ok) say(io, 'Chart added to your dashboard in the room: ' + (answer.title || title), 6000)
+    else say(io, 'Chart not added: ' + String(answer.error || 'no answer'), 8000)
   } catch (err) {
-    await $.ui.toast('Chart not added: ' + String(err).slice(0, 200), { timeoutMs: 8000 })
+    say(io, 'Chart not added: ' + String(err), 8000)
   }
   lb.sharing = false
-  $.ui.invalidate('ui.render')
+  io.invalidate()
 }
 
-async function askWorst($, worst) {
-  await $.prompt.fill({ text: worst.ask })
+async function askWorst(io, worst) {
+  await io.fill(worst.ask)
 }
 
 export function lbArgs(r, name) {
@@ -210,7 +245,7 @@ export function worstSpot(a) {
 export function notes(a) {
   const out = []
   if (a.metricsUnavailable) out.push('5xx and healthy host counts are not shown. ' + a.metricsUnavailable)
-  if (a.truncated) out.push('Some load balancers or target groups are not shown. Run /lb with a name to see one load balancer alone.')
+  if (a.truncated) out.push('Some load balancers or target groups are not shown. Run /landfall lb <name> to see one load balancer alone.')
   return out
 }
 
@@ -224,16 +259,31 @@ function targetName(t, tg) {
   return (t.id || '?') + (t.port && t.port !== tg.port ? ':' + t.port : '')
 }
 
-// lbView is one load balancer: "healthy N of M", then each target group with
-// its latest 5xx share and its targets by zone, then 5xx per target group per
-// minute and (where it draws) the healthy host count.
+// groupHead is a target group's short heading: "web-edge-tg · HTTP 8080 · /healthz".
+function groupHead(tg) {
+  return [tg.name || '', [tg.protocol, tg.port].filter(Boolean).join(' '), tg.healthCheck || ''].filter(Boolean).join(' · ')
+}
+
+// labelCell is one cell of the board's label column.
+function labelCell(k, text, key, dim) {
+  return k.els.Box({ key, width: LABEL_W, flexShrink: 0, children: [k.els.Text({ key: key + '-t', dimColor: dim !== false, children: [clipText(text, LABEL_W - 1)] })] })
+}
+
+// lbView is one load balancer: "healthy N of M", then each target group with its latest 5xx
+// share and its targets by zone, then 5xx per target group per minute and the healthy host
+// count.
 function lbView(k, one, key, a) {
   const { Text } = k.els
   const rows = []
   const tone = healthyTone(one.healthy, one.total)
-  const pills = [{ text: 'healthy ' + (one.healthy ?? 0) + ' of ' + (one.total ?? 0), tone }]
-  if (one.state && one.state !== 'active') pills.push({ text: one.state, tone: /fail/.test(one.state) ? 'critical' : 'warning' })
-  rows.push(k.header({ key: key + '-h', title: one.name || 'load balancer', pills, dim: [a.region, one.scheme].filter(Boolean).join(' · ') }))
+  const head = [
+    Text({ key: key + '-hn', bold: true, children: [one.name || 'load balancer'] }),
+    k.pill('healthy ' + (one.healthy ?? 0) + ' of ' + (one.total ?? 0), tone, key + '-hp'),
+  ]
+  if (one.state && one.state !== 'active') head.push(k.pill(one.state, /fail/.test(one.state) ? 'critical' : 'warning', key + '-hs'))
+  const where = [a.region, one.scheme].filter(Boolean).join(' · ')
+  if (where) head.push(Text({ key: key + '-hw', dimColor: true, children: [where] }))
+  rows.push(centerRow(k, head, key + '-h', 1))
   if ((one.zones || []).length > 0) rows.push(k.text(clipText('Zones: ' + one.zones.join(', '), k.width), { key: key + '-zl', dimColor: true }))
   const groups = one.targetGroups || []
   if (groups.length === 0) rows.push(k.text('No target groups behind it.', { key: key + '-notg', dimColor: true }))
@@ -241,8 +291,8 @@ function lbView(k, one, key, a) {
     const gk = key + '-tg' + gi
     const pct = lastPct(tg)
     rows.push(
-      k.row(
-        [Text({ key: 'n', bold: true, children: [clipText(groupWords(tg), Math.max(16, k.width - 14))] }), pct == null ? null : k.pill('5xx ' + fmt(pct) + '%', fiveXxTone(pct) || 'good', 'p')],
+      centerRow(k, 
+        [Text({ key: 'n', bold: true, children: [clipText(groupHead(tg), Math.max(16, k.width - 14))] }), pct == null ? null : k.pill('5xx ' + fmt(pct) + '%', fiveXxTone(pct) || 'good', 'p')],
         gk + '-n',
         1,
       ),
@@ -250,122 +300,106 @@ function lbView(k, one, key, a) {
     if (tg.healthUnavailable) rows.push(k.text(tg.healthUnavailable, { key: gk + '-hu', dimColor: true }))
     const zones = byZone(tg.targets)
     if (zones.length === 0 && !tg.healthUnavailable) rows.push(k.text('No registered targets.', { key: gk + '-none', dimColor: true }))
-    if (k.rich) {
-      rows.push(
-        k.els.Box({
-          key: gk + '-zones',
-          flexDirection: 'row',
-          flexWrap: 'wrap',
-          columnGap: 2,
-          children: zones.map((z, zi) =>
-            k.els.Box({
-              key: 'z' + zi,
-              flexDirection: 'column',
-              borderStyle: 'round',
-              paddingX: 1,
-              children: [
-                Text({ key: 'zn', bold: true, children: [z.zone] }),
-                ...z.targets.flatMap((t, ti) => [targetText(k, t, tg, 't' + ti), t.detail && t.state !== 'healthy' ? Text({ key: 'd' + ti, dimColor: true, children: [clipText(t.detail, 60)] }) : null]).filter(Boolean),
-              ],
-            }),
-          ),
-        }),
-      )
-    } else {
-      zones.forEach((z, zi) => {
-        rows.push(k.row([Text({ key: 'zn', dimColor: true, children: [z.zone] }), ...z.targets.map((t, ti) => targetText(k, t, tg, 't' + ti))], gk + '-z' + zi, 2))
-      })
-      for (const [ti, t] of (tg.targets || []).entries()) {
-        if (t.state === 'healthy' || !(t.detail || t.reason)) continue
-        rows.push(k.text(clipText('  ' + targetName(t, tg) + ': ' + (t.detail || t.reason), k.width), { key: gk + '-d' + ti, dimColor: true }))
-      }
+    zones.forEach((z, zi) => {
+      const items = z.targets.map((t, ti) => centerRow(k, [Text({ key: 's', color: toneColor(healthTone(t.state)), children: ['■'] }), Text({ key: 'i', children: [targetName(t, tg)] })], gk + '-z' + zi + 't' + ti, 1))
+      rows.push(centerRow(k, [labelCell(k, z.zone, gk + '-z' + zi + 'l'), ...items], gk + '-z' + zi, 2))
+    })
+    for (const [ti, t] of (tg.targets || []).entries()) {
+      if (t.state === 'healthy' || !(t.detail || t.reason)) continue
+      rows.push(k.text(clipText('  ' + targetName(t, tg) + ': ' + (t.detail || t.reason), k.width), { key: gk + '-d' + ti, dimColor: true }))
     }
   })
   if (!a.metricsUnavailable) {
     const heat = heatView(k, one, key, a)
     if (heat) rows.push(...heat)
-    const hhc = (one.healthyHostCount || []).filter((v) => typeof v === 'number')
-    const sparkTone = tone === 'good' ? 'good' : 'warning'
-    if (k.rich && hhc.length >= 2) {
-      rows.push(k.text('Healthy host count · AWS/ApplicationELB · 1 min', { key: key + '-hhc-l', dimColor: true }))
-      rows.push(k.spark(hhc, { key: key + '-hhc', tone: sparkTone, px: 320, height: 46, label: 'healthy host count', hover: true }))
-    } else if (hhc.length >= 2) {
-      rows.push(k.row([k.text('healthy hosts', { key: 'l', dimColor: true }), k.spark(hhc, { key: 's', tone: sparkTone, width: 30, label: 'healthy host count' })], key + '-hhc', 1))
-    }
   }
   return rows
 }
 
-function targetText(k, t, tg, key) {
-  const why = [t.state || 'unknown', t.reason || ''].filter(Boolean).join(' · ')
-  return k.els.Text({ key, color: toneColor(healthTone(t.state)), children: ['■ ' + targetName(t, tg) + (k.rich ? ' · ' + why : '')] })
-}
-
-// heatView is 5xx per target group per minute: one row per target group,
-// columns minutes, cells toned by share, a minute with no requests drawn as
-// no data; the latest share at the end of each row and a legend under it.
+// heatView is 5xx per target group per minute: one row per target group, the name in the label
+// column, the minutes as cells toned by share (a minute with no requests drawn as no data), the
+// latest share as a label two cells after the last cell, then the legend, the caption and the
+// healthy-host sparkline exactly as wide as a heat row.
 function heatView(k, one, key, a) {
   const groups = (one.targetGroups || []).filter((tg) => (tg.fiveXxPct || []).length > 0)
   if (groups.length === 0) return null
   const minutes = Math.max(...groups.map((tg) => tg.fiveXxPct.length))
-  const { Text } = k.els
-  const names = groups.map((tg) => clipText(tg.name || 'target group', 24))
-  const labelW = Math.max(...names.map((n) => n.length))
-  const cols = k.rich ? minutes : Math.max(4, Math.min(minutes, k.width - labelW - 12))
-  // On the terminal, keep the newest minutes that fit.
+  const { Text, Box } = k.els
+  // The terminal keeps the newest minutes that fit beside the label column and the share label.
+  const cols = k.rich ? minutes : Math.max(4, Math.min(minutes, k.width - LABEL_W - 12))
   const from = minutes - cols
   const at = (tg, x) => {
     const v = tg.fiveXxPct
     return v[x - (minutes - v.length)]
   }
-  const grid = groups.map((tg) => {
+  const gridOf = (tg) => {
     const row = []
     for (let x = from; x < minutes; x++) row.push(pctCell(at(tg, x)))
     return row
-  })
-  const span = (a.minutes || minutes) + ' minutes'
-  const out = []
-  if (k.rich) {
-    const start = one.minuteStartMs
-    const titleFor = (y, x) => {
-      const tg = groups[y]
-      const m = from + x
-      const v = at(tg, m)
-      const off = minutes - tg.fiveXxPct.length
-      const req = (tg.requests || [])[m - off]
-      const err = (tg.fiveXx || [])[m - off]
-      const when = typeof start === 'number' ? hhmm(start + m * 60000) + 'Z · ' : ''
-      if (typeof v !== 'number') return tg.name + ' · ' + when + 'no requests'
-      return tg.name + ' · ' + when + '5xx ' + fmt(v) + '%' + (typeof req === 'number' && typeof err === 'number' ? ' (' + fmt(err) + ' of ' + fmt(req) + ' requests)' : '')
-    }
-    out.push(k.text('5xx per target group per minute', { key: key + '-hl', dimColor: true }))
-    out.push(k.heat(grid, { key: key + '-heat', cell: 9, label: '5xx per target group per minute, ' + groups.length + (groups.length === 1 ? ' target group' : ' target groups') + ' over ' + span, titleFor }))
-  } else {
-    const start = typeof one.minuteStartMs === 'number' ? hhmm(one.minuteStartMs + from * 60000) : ''
-    out.push(k.text(' '.repeat(labelW + 1) + clipText(start + ' '.repeat(Math.max(1, cols - start.length - 3)) + 'now', cols), { key: key + '-axis', dimColor: true }))
-    const labels = names.map((n, i) => Text({ key: 'l' + i, dimColor: true, children: [n.padEnd(labelW)] }))
-    const latest = groups.map((tg, i) => {
-      const pct = lastPct(tg)
-      if (pct == null) return Text({ key: 'p' + i, dimColor: true, children: ['no requests'] })
-      return Text({ key: 'p' + i, color: toneColor(fiveXxTone(pct) || 'good'), children: [fmt(pct) + '%'] })
-    })
-    out.push(k.row([k.col(labels, 'labels'), k.heat(grid, { key: 'heat', label: '5xx per target group per minute' }), k.col(latest, 'latest')], key + '-heat', 1))
   }
+  const span = (a.minutes || minutes) + ' minutes'
+  const latest = (tg, i) => {
+    const pct = lastPct(tg)
+    if (pct == null) return Text({ key: 'p' + i, dimColor: true, children: ['no requests'] })
+    return k.pill(fmt(pct) + '%', fiveXxTone(pct) || 'good', 'p' + i)
+  }
+  // Desktop cells scale to the card, up to 18 px; the row is as wide as its cells.
+  const cell = k.rich ? Math.max(5, Math.min(18, Math.floor((k.width * 8 - 260) / minutes) - 2)) : 0
+  const out = []
+  const start = typeof one.minuteStartMs === 'number' ? hhmm(one.minuteStartMs + from * 60000) : ''
+  if (k.rich) {
+    out.push(Box({ key: key + '-axis', flexDirection: 'row', paddingLeft: LABEL_W, width: LABEL_W + minutes * (cell + 2), justifyContent: 'space-between', children: [Text({ key: 'a', dimColor: true, children: [start] }), Text({ key: 'b', dimColor: true, children: ['now'] })] }))
+    groups.forEach((tg, gi) => {
+      const titleFor = (y, x) => {
+        const m = from + x
+        const v = at(tg, m)
+        const off = minutes - tg.fiveXxPct.length
+        const req = (tg.requests || [])[m - off]
+        const err = (tg.fiveXx || [])[m - off]
+        const when = typeof one.minuteStartMs === 'number' ? hhmm(one.minuteStartMs + m * 60000) + 'Z · ' : ''
+        if (typeof v !== 'number') return tg.name + ' · ' + when + 'no requests'
+        return tg.name + ' · ' + when + '5xx ' + fmt(v) + '%' + (typeof req === 'number' && typeof err === 'number' ? ' (' + fmt(err) + ' of ' + fmt(req) + ' requests)' : '')
+      }
+      out.push(centerRow(k, [labelCell(k, tg.name || 'target group', key + '-hl' + gi), k.heat([gridOf(tg)], { key: key + '-heat' + gi, cell, label: '5xx per minute, ' + (tg.name || 'target group') + ', ' + span, titleFor }), latest(tg, gi)], key + '-hr' + gi, 2))
+    })
+  } else {
+    out.push(k.text(' '.repeat(LABEL_W) + clipText(start + ' '.repeat(Math.max(1, cols - start.length - 3)) + 'now', cols), { key: key + '-axis', dimColor: true }))
+    const labels = groups.map((tg, i) => labelCell(k, tg.name || 'target group', 'l' + i))
+    out.push(centerRow(k, [k.col(labels, 'labels'), k.heat(groups.map(gridOf), { key: 'heat', label: '5xx per target group per minute' }), k.col(groups.map(latest), 'latest')], key + '-heat', 2))
+  }
+  const swatch = (ch, color, words, i) => centerRow(k, [Text({ key: 'sw' + i, color, children: [ch] }), Text({ key: 'wd' + i, dimColor: true, children: [words] })], key + '-lg' + i, 1)
   out.push(
-    k.row(
+    centerRow(k, 
       [
-        Text({ key: 'q', dimColor: true, children: ['▪ under 1%'] }),
-        Text({ key: 'g', color: toneColor('good'), children: ['█ 1-5%'] }),
-        Text({ key: 'w', color: toneColor('warning'), children: ['█ 5-20%'] }),
-        Text({ key: 'c', color: toneColor('critical'), children: ['█ over 20%'] }),
-        Text({ key: 'n', dimColor: true, children: [(k.rich ? '□' : '·') + ' no requests'] }),
-        Text({ key: 'x', dimColor: true, children: ['5xx per target group, last ' + span] }),
+        swatch('▪', TONE.neutral, 'under 1%', 0),
+        swatch('█', toneColor('good'), '1-5%', 1),
+        swatch('█', toneColor('warning'), '5-20%', 2),
+        swatch('█', toneColor('critical'), 'over 20%', 3),
+        swatch(k.rich ? '□' : '·', TONE.neutral, 'no requests', 4),
       ],
       key + '-legend',
       2,
     ),
   )
+  out.push(k.text('5xx per target group, last ' + span, { key: key + '-cap', dimColor: true }))
+  const hhc = fillGaps(one.healthyHostCount || [])
+  if (hhc.length >= 2) {
+    const sparkTone = healthyTone(one.healthy, one.total) === 'good' ? 'good' : 'warning'
+    const total = k.rich ? minutes * (cell + 2) : cols
+    const sp = k.rich ? k.spark(hhc, { key: key + '-hhc', tone: sparkTone, px: total, height: 44, label: 'healthy host count', hover: true }) : k.spark(hhc, { key: key + '-hhc', tone: sparkTone, width: cols, label: 'healthy host count' })
+    out.push(centerRow(k, [labelCell(k, 'healthy hosts', key + '-hhl'), sp, Text({ key: key + '-hhn', dimColor: true, children: [(one.healthy ?? 0) + ' of ' + (one.total ?? 0)] })], key + '-hhc-r', 2))
+  }
   return out
+}
+
+// fillGaps is the healthy host count with each minute CloudWatch had no sample for (null) carried
+// from the minute before (the first from the one after), so the sparkline has one point per heat
+// cell and is exactly as wide as a heat row. Empty when there is no sample at all.
+function fillGaps(values) {
+  const first = values.find((v) => typeof v === 'number')
+  if (first === undefined) return []
+  let last = first
+  return values.map((v) => (typeof v === 'number' ? (last = v) : last))
 }
 
 // lbText is /lb's answer where no pane can be drawn.
@@ -389,13 +423,16 @@ export function lbText(a) {
   return out.join('\n')
 }
 
-// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
-export function tab(k, io, nowMs, args) {
-  return []
+// text is the Load balancers tab's answer where no pane can be placed (`claude -p`): it reads the
+// board (one load balancer when `args` names one) and says it.
+export async function text(io, args) {
+  forRoom(currentRoom())
+  const name = String(args || '').trim()
+  if (name !== lb.name) {
+    lb.name = name
+    lp.answer = null
+  }
+  await loadLb(io)
+  return lbText(lp.last)
 }
 
-export function badge() {
-  return null
-}
-
-export function warm(io) {}

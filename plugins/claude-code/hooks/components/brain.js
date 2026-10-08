@@ -1,89 +1,33 @@
-// Company second brain lookup (proposal item 15, FR-15): /brain [text] shows
-// what the brain holds that bears on the live room: each entry's title, its
-// summary, what kind of knowledge it is and how settled, how sure the brain is,
-// and the past incidents it came from. A press quotes a match into the prompt
-// as a draft. Reads run `landfall brain`; with no text the CLI asks for
-// entries like the room's own incident, with text it searches the
-// organization's memory. The CLI maps only fields an entry really carries
-// (review #10): there is no "fix" or "why" on an entry, so none is drawn.
+// Company second brain lookup (proposal item 15, FR-15): the Brain chip inside the console's More
+// tab (spec 4.8, 4.11) shows what the brain holds that bears on the live room: each entry's title,
+// its summary, how sure the brain is and how settled the entry is (two labels at most), the kind
+// and the past incidents it came from on one dim line. A press quotes a match into the prompt as a
+// draft. Reads run `landfall brain`; with no text the CLI asks for entries like the room's own
+// incident, with text it searches the organization's memory. The CLI maps only fields an entry
+// really carries (review #10): there is no "fix" or "why" on an entry, so none is drawn.
+//
+// It reads on open, on `r` and on a search (spec 2.5), never on a clock. More draws the chip row
+// and calls `tab` for the body.
 
-import { HOST, addCommand, clip, currentRoom, parseAnswer, quoteDraft, room } from '../core.js'
-import { kit } from '../kit.js'
+import { HOST, clip, currentRoom, quoteDraft } from '../core.js'
+import { livePane, readLive } from '../live.js'
+import { centerRow, footerOf, nowOf, resetLive, roomKeyOf } from './tabparts.js'
 
-export const PANE = 'landfall-brain'
+// The last `landfall brain` answer (live.js keeps it and its age) and the text it searched for.
+const lp = livePane()
+const view = { q: '', roomKey: '' }
 
-// The last `landfall brain` answer, the text it searched for, and whether one is running.
-const view = { answer: null, q: '', loading: false }
-
-export function install(on) {
-  addCommand({ name: 'brain', description: 'Ask the company second brain what it knows that bears on this incident', argumentHint: '[what to look for]' })
-
-  on('command.run', { command: 'brain' }, async ($, e) => {
-    const opened = await $.ui.open({ id: PANE, title: 'Company second brain', focus: true, closeOnEscape: true })
-    await load($, (e.args || '').trim())
-    if (!opened.isPlaced) return { text: brainText(view.answer, view.q) }
-    return {}
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const k = kit($.ui.resolve(e), e)
-    const { Box, Text, Button, Input } = k.els
-    const answer = view.answer
-    const matches = answer && answer.ok ? answer.matches || [] : []
-
-    const quote = async (m) => {
-      await $.ui.close({ id: PANE })
-      await $.prompt.fill({ text: quoteDraft(matchQuote(m)) })
-    }
-
-    const r = currentRoom()
-    const asked = view.q ? 'for "' + clip(view.q, 40) + '"' : r ? 'like ' + (r.displayId || 'this incident') : ''
-    const rows = [k.header({ key: 'br-hdr', title: 'Company second brain', pills: [], dim: view.loading ? 'reading…' : asked })]
-    if (!answer) rows.push(Text({ key: 'br-wait', dimColor: true, children: ['Asking the company second brain…'] }))
-    else if (!answer.ok) rows.push(Text({ key: 'br-err', children: [String(answer.error || 'The company second brain did not answer.')] }))
-    else if (matches.length === 0) rows.push(Text({ key: 'br-none', dimColor: true, children: [view.q ? 'The company second brain has nothing on "' + clip(view.q, 40) + '" yet.' : 'The company second brain holds nothing on this incident yet.'] }))
-
-    matches.forEach((m, i) => {
-      const id = 'm' + i
-      const kind = kindWords(m)
-      const head = k.row(
-        [
-          Text({ key: 'bt-' + id, bold: true, children: [String(m.title || 'past incident')] }),
-          kind ? k.pill(kind, 'neutral', 'bk-' + id) : null,
-          m.confidence ? k.pill(String(m.confidence), confidenceTone(m.confidence), 'bc-' + id) : null,
-          m.status ? k.pill(String(m.status), statusTone(m.status), 'bs-' + id) : null,
-        ],
-        'bh-' + id,
-        1,
-      )
-      const facts = []
-      if (m.summary) facts.push(Text({ key: 'bf-' + id, children: [String(m.summary)] }))
-      const from = fromWords(m)
-      if (from) facts.push(Text({ key: 'bi-' + id, dimColor: true, children: [from] }))
-      const press = Button({ key: 'quote-' + i, label: k.terminal ? 'quote it' : 'Quote into my prompt', ...(k.terminal ? { plain: true } : {}), ...(i < 9 ? { hotkey: String(i + 1) } : {}), onPress: () => quote(m) })
-      if (k.terminal) {
-        rows.push(head)
-        rows.push(Box({ key: 'bb-' + id, paddingLeft: 2, flexDirection: 'column', children: [...facts, press] }))
-        return
-      }
-      rows.push(Box({ key: 'card-' + id, flexDirection: 'column', rowGap: 1, borderStyle: 'round', borderColor: '#d9d9d6', paddingX: 1, children: [head, ...facts, press] }))
-    })
-
-    if (hasFields(k)) {
-      rows.push(Input({ key: 'brain-q', label: 'Search', placeholder: 'origin pool exhaustion', submitLabel: 'search', value: view.q, onSubmit: (value) => load($, String(value || '').trim()) }))
-    }
-    rows.push(
-      k.row(
-        [
-          k.button({ key: 'refresh', label: 'refresh', hotkey: 'r', onPress: () => load($, view.q) }),
-          k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => $.ui.close({ id: PANE }) }),
-        ],
-        'br-keys',
-      ),
-    )
-    return Box({ flexDirection: 'column', rowGap: k.terminal ? 0 : 1, children: rows })
-  })
+// forRoom drops what was asked of another room.
+function forRoom(r) {
+  const key = roomKeyOf(r)
+  if (key === view.roomKey) return
+  view.roomKey = key
+  view.q = ''
+  resetLive(lp)
 }
+
+// No hooks of its own: the console owns the pane and the `/landfall` command.
+export function install(on) {}
 
 export async function band(io, e, k) {
   return null
@@ -93,37 +37,132 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-// load runs `landfall brain` for the room, with the text when there is some.
-async function load($, q) {
-  view.q = q
-  view.loading = true
-  $.ui.invalidate('ui.render')
+// tick runs every TICK_MS while the session lives; the brain reads only on open, `r` and a search.
+export function tick(io, nowMs) {}
+
+// warm reads the brain when the Brain chip is shown (and again when asked): the room's own
+// incident, or the text last searched for.
+export async function warm(io) {
+  forRoom(currentRoom())
+  await read(io, view.q)
+}
+
+export async function refresh(io) {
+  forRoom(currentRoom())
+  await read(io, view.q)
+}
+
+// search reads the brain for `q` (`/landfall brain <text>`, or the field's Enter).
+export async function search(io, q) {
+  forRoom(currentRoom())
+  await read(io, String(q || '').trim())
+}
+
+// Brain has no badge.
+export function badge() {
+  return null
+}
+
+// The live read's state (live.js).
+export function readState() {
+  return lp
+}
+
+// Brain has no letters: Enter in the field searches, Enter on a match quotes it.
+export function keys(k, io, nowMs, args) {
+  return []
+}
+
+// tab is the Brain body (spec 4.8), under More's chip row.
+export function tab(k, io, nowMs, args) {
+  const { Box, Text, Button, Input } = k.els
   const r = currentRoom()
-  const args = ['brain']
-  if (r) args.push('--room', r.roomKey)
-  if (q) args.push('--q', q)
-  view.answer = await cli($, args)
-  view.loading = false
-  $.ui.invalidate('ui.render')
-}
+  forRoom(r)
+  const answer = lp.answer
+  const matches = answer && answer.ok ? answer.matches || [] : []
+  const asked = view.q ? 'for "' + clip(view.q, 40) + '"' : r ? 'like ' + (r.displayId || 'this incident') : ''
+  const rows = [k.row([Text({ key: 'br-h', bold: true, children: ['Company second brain'] }), asked ? Text({ key: 'br-d', dimColor: true, children: [asked] }) : null], 'br-hdr', 1)]
+  if (!answer) rows.push(Text({ key: 'br-wait', dimColor: true, children: ['Asking the company second brain…'] }))
+  else if (!answer.ok) rows.push(Text({ key: 'br-err', children: [String(answer.error || 'The company second brain did not answer.')] }))
+  else if (matches.length === 0) rows.push(Text({ key: 'br-none', dimColor: true, children: [view.q ? 'The company second brain has nothing on "' + clip(view.q, 40) + '" yet.' : 'The company second brain holds nothing on this incident yet.'] }))
 
-// cli runs `landfall <args> --host claude-code` and reads its one JSON line.
-async function cli($, args) {
-  try {
-    return parseAnswer(await $.process.run([room.bin, ...args, '--host', HOST], { timeoutMs: 20000 }))
-  } catch (err) {
-    return { ok: false, error: clip(String(err), 200) }
+  matches.forEach((m, i) => {
+    const id = 'm' + i
+    const labels = centerRow(
+      k,
+      [m.confidence ? k.pill(confidenceWords(m.confidence), confidenceTone(m.confidence), 'bc-' + id) : null, m.status ? k.pill(String(m.status), statusTone(m.status), 'bs-' + id) : null],
+      'bl-' + id,
+      1,
+    )
+    const facts = []
+    if (m.confidence || m.status) facts.push(labels)
+    if (m.summary) facts.push(Text({ key: 'bf-' + id, children: [String(m.summary)] }))
+    const from = sourceLine(m)
+    if (from) facts.push(Text({ key: 'bi-' + id, dimColor: true, children: [from] }))
+    const title = Text({ key: 'bt-' + id, bold: true, children: [String(m.title || 'past incident')] })
+    const press = Button({ key: 'quote-' + i, label: k.terminal ? 'Enter: quote it' : 'Quote into my prompt', ...(k.terminal ? { plain: true, dimColor: true } : {}), onPress: () => quote(io, m) })
+    if (k.terminal) {
+      rows.push(Box({ key: 'bb-' + id, flexDirection: 'column', children: [title, ...facts, press] }))
+      return
+    }
+    rows.push(Box({ key: 'card-' + id, flexDirection: 'column', rowGap: 1, borderStyle: 'round', borderColor: '#d9d9d6', paddingX: 1, children: [title, ...facts, press] }))
+  })
+  if (matches.length > 0) rows.push(Text({ key: 'br-hint', dimColor: true, children: ['Enter on a match quotes it into your prompt.'] }))
+
+  if (hasFields(k)) {
+    rows.push(
+      Input({ key: 'brain-q', label: 'Search', placeholder: 'origin pool exhaustion', submitLabel: k.terminal ? 'search' : 'Search', value: view.q, onSubmit: (value) => search(io, value) }),
+    )
   }
+  const foot = footerOf(k, lp, nowMs, r, 'br-live')
+  if (foot) rows.push(foot)
+  return rows
 }
 
-// statusTone: an entry the brain no longer stands behind says so.
+// quote drafts a match into the prompt (the console stays where it is).
+async function quote(io, m) {
+  await io.fill(quoteDraft(matchQuote(m)))
+}
+
+// read runs `landfall brain` for the room, with the text when there is some, one read at a time.
+// A new text clears the old answer, so the tab says it is asking.
+async function read(io, q) {
+  if (q !== view.q) {
+    view.q = q
+    lp.answer = null
+    lp.last = null
+  }
+  const fetch = () => {
+    io.invalidate()
+    const r = currentRoom()
+    const args = ['brain']
+    if (r) args.push('--room', r.roomKey)
+    if (view.q) args.push('--q', view.q)
+    args.push('--host', HOST)
+    return io.run(args, { timeoutMs: 20000 })
+  }
+  await readLive(lp, fetch, () => nowOf(io, lp.triedAt))
+  io.invalidate()
+}
+
+// text is the Brain answer where no pane can be placed (`claude -p`): it reads (searching for
+// `args` when there is text) and says it.
+export async function text(io, args) {
+  forRoom(currentRoom())
+  await read(io, String(args || '').trim())
+  return brainText(lp.last, view.q)
+}
+
+// statusTone: how settled the brain holds an entry: `confirmed` is info, a contested one critical,
+// anything else (`proposed`) neutral.
 export function statusTone(status) {
   const s = String(status || '').toLowerCase()
   if (/conflict|contest/.test(s)) return 'critical'
-  return 'warning'
+  if (/confirm|accept|admit|establish/.test(s)) return 'info'
+  return 'neutral'
 }
 
-// kindWords is the kind pill: "lesson · settled", "fact", or "".
+// kindWords is the kind folded into the source line: "lesson · settled", "fact", or "".
 export function kindWords(m) {
   return [m.kind, m.maturity].filter(Boolean).join(' · ')
 }
@@ -144,9 +183,22 @@ export function fromWords(m) {
 export function confidenceTone(confidence) {
   const c = String(confidence || '').toLowerCase()
   if (/establish|confirm|high/.test(c)) return 'good'
-  if (/likely|probable|medium/.test(c)) return 'info'
-  if (/contest|disput/.test(c)) return 'critical'
+  if (/likely|probable|medium|moderate/.test(c)) return 'warning'
+  if (/low|contest|disput|weak/.test(c)) return 'critical'
   return 'neutral'
+}
+
+// confidenceWords is the label's words: "high confidence".
+export function confidenceWords(confidence) {
+  const c = String(confidence || '').trim()
+  return /confidence/i.test(c) ? c : c + ' confidence'
+}
+
+// sourceLine is the dim line under a match: the kind and where it came from, "pattern · from Acme
+// 91, Acme 95".
+export function sourceLine(m) {
+  const from = fromWords(m)
+  return [kindWords(m), from ? from.charAt(0).toLowerCase() + from.slice(1) : ''].filter(Boolean).join(' · ')
 }
 
 // matchQuote is a match as the person's draft quotes it.
@@ -160,7 +212,7 @@ export function matchQuote(m) {
   return out.join('\n')
 }
 
-// brainText is /brain where no pane can be drawn.
+// brainText is the Brain answer where no pane can be drawn.
 export function brainText(answer, q) {
   if (!answer) return 'The company second brain did not answer.'
   if (!answer.ok) return String(answer.error || 'The company second brain did not answer.')
@@ -181,6 +233,3 @@ function hasFields(k) {
   return k.surface !== 'mobile' && typeof k.els.Input === 'function'
 }
 
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}

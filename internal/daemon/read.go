@@ -38,6 +38,11 @@ var readRoutes = map[string]map[string]bool{
 	"/events":         {"limit": true, "beforeSeq": true, "sinceSeq": true},
 	"/comms/messages": {},
 	"/memory":         {},
+	// `landfall brief`: the shared context as the person reads it, and the
+	// claims it folds each open item's state from. With no agentInstanceId
+	// the frame read records no context pull and moves no seat's cursor.
+	"/edge/context/frame": {},
+	"/claims":             {},
 }
 
 // ReadPathAllowed reports whether path (with its query) is one the read op

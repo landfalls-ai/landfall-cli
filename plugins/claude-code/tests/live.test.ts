@@ -190,62 +190,28 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('the load balancer board reads every 60 s, and the incident list and stakeholder updates every 30 s', async ($, on) => {
-  const LB = { ok: true, account: '1', region: 'us-east-1', minutes: 5, fiveXxBy: 'targetGroup', loadBalancers: [] }
+test('the incident list reads every 30 s', async ($, on) => {
   const s = await session($, on, [ROOM], (argv) => {
-    if (argv[1] === 'lb') return LB
     if (argv[1] === 'incidents') return { ok: true, org: 'acme', incidents: [] }
-    if (argv[1] === 'comms') return { ok: true, messages: [] }
     return WALL
   })
-  await $.command.run({ command: 'lb', args: '' })
   await $.command.run({ command: 'incidents', args: '' })
-  await $.command.run({ command: 'comms', args: '' })
   for (const surface of ['terminal', 'desktop'] as const) {
-    for (const id of ['landfall-lb', 'landfall-incidents', 'landfall-comms']) {
-      const p = await $.ui.mount(pane(id, surface))
-      expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
-      await p.unmount()
-    }
+    const p = await $.ui.mount(pane('landfall-incidents', surface))
+    expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
+    await p.unmount()
   }
-  expect([s.count('lb'), s.count('incidents'), s.count('comms')]).toEqual([1, 1, 1])
+  expect(s.count('incidents')).toBe(1)
   await s.clock.advance(30000)
-  expect([s.count('lb'), s.count('incidents'), s.count('comms')]).toEqual([1, 2, 2])
+  expect(s.count('incidents')).toBe(2)
   await s.clock.advance(30000)
-  expect([s.count('lb'), s.count('incidents'), s.count('comms')]).toEqual([2, 3, 3])
-  // Closing one stops it alone.
+  expect(s.count('incidents')).toBe(3)
+  // Closing it stops it.
   const inc = await $.ui.mount(pane('landfall-incidents', 'terminal'))
   await inc.press({ key: 'close' })
   await inc.unmount()
   await s.clock.advance(30000)
-  expect([s.count('lb'), s.count('incidents'), s.count('comms')]).toEqual([2, 3, 4])
-})
-
-test('the timeline reads the newest page on a new event and lays it over the rows shown', async ($, on) => {
-  const ev = (seq: number, text: string) => ({ seq, at: '2026-10-08T15:52:00Z', kind: 'other', type: 'chat.message', glyph: '·', tone: 'neutral', text, who: '', detail: '' })
-  let page = [ev(201, 'Triggered'), ev(204, 'Beacon at step 3')]
-  const s = await session($, on, [ROOM], (argv) => (argv[1] === 'timeline' ? { ok: true, events: page, hasMore: false, oldestSeq: page[0].seq } : WALL))
-  await $.command.run({ command: 'timeline', args: '' })
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const p = await $.ui.mount(pane('landfall-timeline', surface))
-    expect(await p.find({ type: 'Button', key: 'ev-204' })).toBeDefined()
-    expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
-    await p.unmount()
-  }
-  expect(s.count('timeline')).toBe(1)
-  // Ticks with no new event read nothing.
-  await s.clock.advance(20000)
-  expect(s.count('timeline')).toBe(1)
-  // A new event: the newest page again, its run folded anew into one row.
-  page = [ev(201, 'Triggered'), ev(238, 'Beacon at step 6'), ev(240, 'bob: rolling back')]
-  await s.feed([{ ...ROOM, maxSeq: 240 }])
-  expect(s.count('timeline')).toBe(2)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const p = await $.ui.mount(pane('landfall-timeline', surface))
-    const rows = (await p.findAll({ type: 'Button' })).filter((b) => /^ev-/.test(String(b.key)))
-    expect(rows.map((b) => b.key)).toEqual(['ev-201', 'ev-238', 'ev-240'])
-    await p.unmount()
-  }
+  expect(s.count('incidents')).toBe(3)
 })
 
 test('the topology reads the wall again on a widget event, not on every event', async ($, on) => {

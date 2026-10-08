@@ -1,59 +1,44 @@
-// The vote card: when the room is waiting on the person's position on a
-// staged finding, the band says so with keys to corroborate (5), contest (6),
-// read the evidence (7) or set it aside (8); a toast tells each new request
-// once; the 'landfall-vote' pane (and /vote) draws the whole card. On the
-// mobile surface the band is a compact card with two buttons. Proposal items
-// 01 and 16.
+// The vote: when the room is waiting on the person's position on a staged finding, the band says
+// so with keys to corroborate (5), contest (6), read the evidence (7) or set it aside (8); a toast
+// tells each new request once; the console's Vote tab (spec 4.1) draws the whole card. On the
+// mobile surface the band is a compact card with two buttons. Proposal items 01 and 16.
 //
-// A press records the vote AS THE PERSON: it runs `landfall vote`, which
-// calls the claims route with the person's own token and no agent instance
-// (review.md #1), never $.mcp.call. The person's own claims (`mine`) are never
-// offered: the server already counts them, and a second vote is refused.
+// A press records the vote AS THE PERSON: it runs `landfall vote`, which calls the claims route
+// with the person's own token and no agent instance (review.md #1), never $.mcp.call. The person's
+// own claims (`mine`) are never offered: the server already counts them, and a second vote is
+// refused.
+//
+// There is no pane of its own any more: the band keys and a new vote open the console on Vote
+// (core.openConsole), and `tab`, `badge`, `warm`, `keys`, `refresh` and `text` are what console.js
+// calls. The watch stream feeds this tab, so it reads nothing of its own.
 
-import { addCommand, clip, currentOf, currentRoom, parseAnswer, room, roomName, severityTone } from '../core.js'
-import { TONE, kit } from '../kit.js'
+import { clip, consoleState, currentOf, currentRoom, openConsole, roomName, severityTone } from '../core.js'
+import { TONE } from '../kit.js'
+import { centerRow, keyButton, nowOf, say } from './tabparts.js'
 
-export const PANE = 'landfall-vote'
-const PANE_TITLE = 'Your vote'
-// A pane opened unasked is placed only from this many columns (ui.open).
+// A console opened unasked is placed only from this many columns (ui.open).
 const DOCK_COLUMNS = 144
+// How long the Vote tab keeps saying a vote was recorded before it shows the next one.
+const RECORDED_MS = 10000
 
 // Claims already told as a toast, "<roomKey>#<seq>": never told twice.
 let told = new Set()
 // Claims a vote was recorded on: hidden until the watch stream drops them.
 let done = new Set()
-// Claims with a vote in flight: a second press does nothing.
-let busy = new Set()
+// Claims with a vote in flight, "<roomKey>#<seq>" to the position being recorded: a second press
+// does nothing.
+let busy = new Map()
 // Per room, the claims the person set aside with "later" (a new one shows).
 let aside = {}
-// What the pane shows: { roomKey, claimSeq, contesting }.
-let pane = null
-// The band's last viewport, so a new vote can open the pane where it docks.
+// What the tab shows: { roomKey, claimSeq, contesting }.
+let view = null
+// The vote just recorded: { roomKey, claimSeq, at }, said for RECORDED_MS.
+let justVoted = null
+// The band's last viewport, so a new vote can open the console where it docks.
 let lastView = null
 
-export function install(on) {
-  addCommand({ name: 'vote', description: 'Show the finding the war room is waiting on your vote for' })
-
-  on('command.run', { command: 'vote' }, async ($) => {
-    const r = currentRoom()
-    if (!r) return { text: 'This folder is not in a war room. Open a share link from the room to join it.' }
-    const v = waiting(r)[0]
-    if (!v) return { text: 'No vote is waiting on you.' }
-    pane = { roomKey: r.roomKey, claimSeq: v.claimSeq, contesting: false }
-    const opened = await $.ui.open({ id: PANE, title: PANE_TITLE, focus: true, closeOnEscape: true })
-    if (!opened.isPlaced) return { text: votesText(r) }
-    return {}
-  })
-
-  // The whole card: statement, author, positions, evidence, expiry, buttons;
-  // the reason field while contesting.
-  on('ui.render', { component: 'Pane' }, async ($, e, next) => {
-    if (e.requestId !== PANE) return next(e)
-    const k = kit($.ui.resolve(e), e)
-    const io = ioOf($, e.surface)
-    return drawPane(io, k, e.surface)
-  })
-}
+// No hooks of its own: the console owns the pane and the `/landfall` command.
+export function install(on) {}
 
 // band: the oldest or most urgent vote waiting on the person, with its keys;
 // on mobile a compact card with two buttons.
@@ -86,10 +71,8 @@ export async function band(io, e, k) {
     k.row(
       [
         k.button({ key: 'vote-corroborate', label: 'corroborate', hotkey: '5', primary: true, onPress: () => castVote(io, r.roomKey, v, 'corroborate') }),
-        canContest(k)
-          ? k.button({ key: 'vote-contest', label: 'contest', hotkey: '6', onPress: () => openPane(io, r, v, true) })
-          : null,
-        k.button({ key: 'vote-evidence', label: 'read the evidence', hotkey: '7', onPress: () => openPane(io, r, v, false) }),
+        canContest(k) ? k.button({ key: 'vote-contest', label: 'contest', hotkey: '6', onPress: () => showVote(io, r, v, true) }) : null,
+        k.button({ key: 'vote-evidence', label: 'read the evidence', hotkey: '7', onPress: () => showVote(io, r, v, false) }),
         k.button({ key: 'vote-later', label: 'later', hotkey: '8', dim: true, onPress: () => setAside(io, r) }),
       ],
       'vote-keys',
@@ -98,9 +81,10 @@ export async function band(io, e, k) {
   return rows
 }
 
-// onSnapshot: one toast per new request, and the pane opened unasked only
-// where the surface docks it beside the transcript and is wide enough
-// (review.md #11).
+// onSnapshot: one toast per new request, and the console opened on Vote, unasked, only where the
+// surface docks it beside the transcript and is wide enough, only while it is closed (an open
+// console keeps its tab; its Vote badge and the toast tell) and never over a reason the person
+// is typing (review.md #11, spec 2.4).
 export function onSnapshot(io, snap) {
   for (const r of snap.rooms) {
     for (const v of r.votes ?? []) {
@@ -108,9 +92,11 @@ export function onSnapshot(io, snap) {
       const id = idOf(r.roomKey, v)
       if (told.has(id)) continue
       told.add(id)
-      io.toast(author(v) + ' asked for your vote on #' + v.claimSeq, 8000)
-      // Never over a reason the person is typing.
-      if (r === currentOf(snap) && docks() && !(pane && pane.contesting)) void openPane(io, r, v, false, true)
+      say(io, author(v) + ' asked for your vote on #' + v.claimSeq, 8000)
+      if (r === currentOf(snap) && docks() && !consoleState.open && !(view && view.contesting)) {
+        view = { roomKey: r.roomKey, claimSeq: v.claimSeq, contesting: false }
+        openConsole(io, 'vote')
+      }
     }
   }
 }
@@ -132,11 +118,12 @@ export function waiting(r) {
 }
 
 // castVote runs `landfall vote` as the person and says what came of it.
-// `io` is register.js's io, or the pane's own (ioOf).
+// `io` is register.js's io.
 export async function castVote(io, roomKey, v, position, reason) {
   const id = idOf(roomKey, v)
   if (busy.has(id)) return
-  busy.add(id)
+  busy.set(id, position)
+  io.invalidate()
   try {
     const args = ['vote', '--room', roomKey, '--claim', String(v.claimSeq), '--position', position]
     if (reason) args.push('--reason', reason)
@@ -146,126 +133,189 @@ export async function castVote(io, roomKey, v, position, reason) {
       const word = position === 'contest' ? 'Contested' : 'Corroborated'
       let said = word + ' #' + v.claimSeq + (answer.admitted ? ' · admitted' : '')
       if (answer.note) said += '. ' + answer.note
-      io.toast(said, 6000)
-      if (pane && pane.roomKey === roomKey && pane.claimSeq === v.claimSeq) {
-        pane = null
-        await io.close(PANE)
-      }
+      say(io, said, 6000)
+      if (view && view.roomKey === roomKey && view.claimSeq === v.claimSeq) view = null
+      justVoted = { roomKey, claimSeq: v.claimSeq, at: await nowOf(io, 0) }
     } else {
-      io.toast(String(answer.error || 'The vote was not recorded.'), 8000)
+      say(io, String(answer.error || 'The vote was not recorded.'), 8000)
     }
   } catch (err) {
-    io.toast('The vote was not recorded: ' + clip(String(err), 160), 8000)
+    say(io, 'The vote was not recorded: ' + String(err), 8000)
   } finally {
     busy.delete(id)
     io.invalidate()
   }
 }
 
-// openPane shows one vote's card; `contesting` draws the reason field.
-// Unasked (a new vote on a docking surface) it opens without the keyboard.
-async function openPane(io, r, v, contesting, unasked) {
-  pane = { roomKey: r.roomKey, claimSeq: v.claimSeq, contesting: !!contesting }
-  try {
-    const opened = await io.open(PANE, PANE_TITLE, unasked ? {} : { focus: true, closeOnEscape: true })
-    if (opened && opened.isPlaced === false && !unasked) {
-      io.toast('Widen the window to see the vote, or run /vote.', 6000)
-    }
-  } catch {
-    // The band row stays; the pane is a convenience.
-  }
-  io.invalidate()
+// showVote brings one vote up in the console on Vote; `contesting` draws the reason field. The
+// person asked for it (a band key), so the console takes the keyboard (`asked`).
+function showVote(io, r, v, contesting) {
+  view = { roomKey: r.roomKey, claimSeq: v.claimSeq, contesting: !!contesting }
+  justVoted = null
+  openConsole(io, 'vote', { asked: true })
 }
 
 function setAside(io, r) {
   aside[r.roomKey] = new Set((r.votes ?? []).map((v) => v.claimSeq))
-  if (pane && pane.roomKey === r.roomKey) {
-    pane = null
-    void io.close(PANE)
-  }
+  view = null
   io.invalidate()
 }
 
-// drawPane is the full card in the 'landfall-vote' pane.
-function drawPane(io, k, surface) {
-  const { Text, Box } = k.els
-  const r = pane ? room.snapshot.rooms.find((x) => x.roomKey === pane.roomKey) : currentRoom()
-  const v = r && pane ? (r.votes ?? []).find((x) => x.claimSeq === pane.claimSeq && !x.mine) : r ? waiting(r)[0] : null
-  const close = k.button({ key: 'pane-close', label: 'close (esc)', dim: true, onPress: () => closePane(io) })
-  if (!r || !v) {
-    const said = pane && r && done.has(idOf(r.roomKey, { claimSeq: pane.claimSeq })) ? 'Your vote on #' + pane.claimSeq + ' is recorded.' : 'No vote is waiting on you.'
-    return k.col([k.header({ key: 'vp-h', title: PANE_TITLE }), Text({ key: 'vp-none', dimColor: true, children: [said] }), close], 'vp')
-  }
-  if (!pane) pane = { roomKey: r.roomKey, claimSeq: v.claimSeq, contesting: false }
-  const left = timeLeft(v)
+// current is what the tab shows: the vote on view (the one brought up, else the most urgent) and
+// whether a recorded vote is still being said.
+function current(r, nowMs) {
+  const list = waiting(r)
+  const recorded = justVoted && justVoted.roomKey === r.roomKey && nowMs - justVoted.at < RECORDED_MS ? justVoted : null
+  let v = null
+  if (view && view.roomKey === r.roomKey) v = list.find((x) => x.claimSeq === view.claimSeq) || null
+  if (!v && !recorded) v = list[0] || null
+  return { list, v, recorded }
+}
+
+// tab is the Vote tab's body (spec 4.1): the whole card, then `Also waiting`, then the footer-less
+// keys row. Console.js draws the header, the switcher and `r: refresh`, `close (esc)`.
+export function tab(k, io, nowMs, args) {
+  const { Text } = k.els
+  const r = currentRoom()
+  if (!r) return [k.dim('This folder is not in a war room.', 'vt-none')]
+  const { list, v, recorded } = current(r, nowMs)
   const rows = []
-  rows.push(k.header({ key: 'vp-h', title: 'Your vote is waiting', pills: left ? [{ text: left, tone: 'warning' }] : [] }))
-  rows.push(Text({ key: 'vp-room', dimColor: true, children: [clip(roomName(r), k.width)] }))
-  rows.push(Text({ key: 'vp-who', bold: true, children: [clip(author(v) + ' · staged #' + v.claimSeq, k.width)] }))
-  rows.push(k.row([positionsMark(k, v), Text({ key: 'vp-pos-t', children: [positionsText(v)] })], 'vp-pos', 1))
-  rows.push(Text({ key: 'vp-quote', children: ['“' + v.statement + '”'] }))
-  rows.push(Text({ key: 'vp-ev', dimColor: !v.evidence, children: [v.evidence ? 'Evidence: ' + v.evidence : 'No evidence is attached to this claim.'] }))
-  rows.push(Text({ key: 'vp-exp', dimColor: true, children: [expiryText(v)] }))
-  rows.push(
-    Text({
-      key: 'vp-note',
-      dimColor: true,
-      children: [
-        v.shortfall === 1
-          ? 'Your position admits it to the shared context. Every agent in the room reads it after that.'
-          : 'Your position counts toward admitting it to the shared context.',
-      ],
-    }),
-  )
-  const contest = canContest(k)
-  if (pane.contesting && contest) {
+  if (!v) {
+    rows.push(k.dim(recorded ? 'Your vote on #' + recorded.claimSeq + ' is recorded.' : 'No vote is waiting on you.', 'vt-none'))
+  } else {
+    const contesting = !!(view && view.roomKey === r.roomKey && view.claimSeq === v.claimSeq && view.contesting) && canContest(k)
+    const left = timeLeft(v)
+    rows.push(centerRow(k, [Text({ key: 'vt-h', bold: true, children: ['Your vote is waiting'] }), left ? k.pill(left, 'warning', 'vt-left') : null], 'vt-head', 1))
+    rows.push(Text({ key: 'vt-who', bold: true, children: [clip(author(v) + ' · staged #' + v.claimSeq, k.width)] }))
+    rows.push(centerRow(k, [positionsMark(k, v), Text({ key: 'vt-pos-t', dimColor: k.terminal, children: [positionsText(v)] })], 'vt-pos', 1))
+    rows.push(k.terminal ? Text({ key: 'vt-quote', children: ['“' + v.statement + '”'] }) : k.quote('“' + v.statement + '”', 'vt-quote'))
+    rows.push(Text({ key: 'vt-ev', dimColor: !v.evidence, children: [v.evidence ? 'Evidence: ' + v.evidence : 'No evidence is attached to this claim.'] }))
+    rows.push(Text({ key: 'vt-exp', dimColor: true, children: [expiryText(v)] }))
     rows.push(
-      k.els.Input({
-        key: 'pane-reason',
-        label: 'Why do you contest it? ',
-        placeholder: 'what the evidence does not show',
-        submitLabel: 'contest',
-        autoFocus: true,
-        onSubmit: (value) => submitContest(io, r.roomKey, v, value),
+      Text({
+        key: 'vt-note',
+        dimColor: true,
+        children: [
+          v.shortfall === 1
+            ? 'Your position admits it to the shared context. Every agent in the room reads it after that.'
+            : 'Your position counts toward admitting it to the shared context.',
+        ],
+      }),
+    )
+    if (contesting) {
+      rows.push(
+        k.els.Input({
+          key: 'vt-reason',
+          label: 'Why do you contest it? ',
+          placeholder: 'what the evidence does not show',
+          submitLabel: k.terminal ? 'contest' : 'Contest',
+          autoFocus: true,
+          onSubmit: (value) => submitContest(io, r.roomKey, v, value),
+        }),
+      )
+    }
+  }
+  const others = list.filter((x) => !v || x.claimSeq !== v.claimSeq)
+  if (others.length > 0) {
+    rows.push(Text({ key: 'vt-also', bold: true, children: ['Also waiting'] }))
+    for (const o of others) {
+      const left = timeLeft(o)
+      const words = '#' + o.claimSeq + ' ' + author(o) + (left ? ' · ' + left : '') + ' · “' + o.statement + '”'
+      rows.push(
+        k.els.Button({
+          key: 'vt-also-' + o.claimSeq,
+          label: clip(words, k.width),
+          plain: true,
+          onPress: () => {
+            view = { roomKey: r.roomKey, claimSeq: o.claimSeq, contesting: false }
+            justVoted = null
+            io.invalidate()
+          },
+        }),
+      )
+    }
+  }
+  const keyRow = keys(k, io, nowMs, args)
+  if (keyRow.length > 0) rows.push(k.row(keyRow, 'vt-keys', 2))
+  return rows
+}
+
+// keys are the Vote tab's letters, in the order of spec 2.3: `c: corroborate` (primary),
+// `x: contest…` (`x: cancel` while the reason field is drawn), `l: later`. None while no vote is
+// on view. Console.js adds `r: refresh` and `close (esc)`.
+export function keys(k, io, nowMs, args) {
+  const r = currentRoom()
+  if (!r) return []
+  const { v } = current(r, nowMs)
+  if (!v) return []
+  const id = idOf(r.roomKey, v)
+  const inFlight = busy.get(id)
+  const contesting = !!(view && view.roomKey === r.roomKey && view.claimSeq === v.claimSeq && view.contesting)
+  const words = (terminal, desktop) => (k.terminal ? terminal : desktop)
+  const out = [
+    keyButton(k, {
+      key: 'vt-corroborate',
+      label: inFlight === 'corroborate' ? words('corroborating…', 'Corroborating…') : words('corroborate', 'Corroborate'),
+      hotkey: 'c',
+      primary: true,
+      onPress: () => castVote(io, r.roomKey, v, 'corroborate'),
+    }),
+  ]
+  if (canContest(k)) {
+    out.push(
+      keyButton(k, {
+        key: 'vt-contest',
+        label: inFlight === 'contest' ? words('contesting…', 'Contesting…') : contesting ? words('cancel', 'Cancel') : words('contest…', 'Contest…'),
+        hotkey: 'x',
+        onPress: () => {
+          if (busy.has(id)) return
+          view = { roomKey: r.roomKey, claimSeq: v.claimSeq, contesting: !contesting }
+          io.invalidate()
+        },
       }),
     )
   }
-  rows.push(
-    k.row(
-      [
-        k.button({ key: 'pane-corroborate', label: 'corroborate', hotkey: '5', primary: true, onPress: () => castVote(io, r.roomKey, v, 'corroborate') }),
-        contest && !pane.contesting
-          ? k.button({
-              key: 'pane-contest',
-              label: 'contest…',
-              hotkey: '6',
-              onPress: () => {
-                pane = { ...pane, contesting: true }
-                io.invalidate()
-              },
-            })
-          : null,
-        k.button({ key: 'pane-later', label: 'later', hotkey: '8', dim: true, onPress: () => setAside(io, r) }),
-        close,
-      ],
-      'vp-keys',
-    ),
-  )
-  return Box({ flexDirection: 'column', rowGap: surface === 'terminal' ? 0 : 1, children: rows.filter(Boolean) })
+  out.push(keyButton(k, { key: 'vt-later', label: words('later', 'Later'), hotkey: 'l', dim: true, onPress: () => setAside(io, r) }))
+  return out
+}
+
+// badge is the Vote segment's count: votes waiting on the person; none at zero.
+export function badge() {
+  const r = currentRoom()
+  if (!r) return null
+  const n = waiting(r).length
+  return n > 0 ? n : null
+}
+
+// warm: the watch stream feeds this tab, so there is nothing to start.
+export function warm(io) {}
+
+// refresh: nothing to read again; the stream is the source.
+export function refresh(io) {}
+
+// text is the tab's answer where no pane can be placed (`claude -p`).
+export async function text(io, args) {
+  const r = currentRoom()
+  if (!r) return 'This folder is not in a war room. Open a share link from the room to join it.'
+  if (waiting(r).length === 0) return 'No vote is waiting on you.'
+  return votesText(r)
+}
+
+// tick: the tab stops saying a vote was recorded after RECORDED_MS.
+export function tick(io, nowMs) {
+  if (justVoted && nowMs - justVoted.at >= RECORDED_MS) {
+    justVoted = null
+    io.invalidate()
+  }
 }
 
 async function submitContest(io, roomKey, v, value) {
   const reason = String(value || '').trim()
   if (!reason) {
-    io.toast('Say why you contest it, then press Enter.', 6000)
+    say(io, 'Say why you contest it, then press Enter.', 6000)
     return
   }
   await castVote(io, roomKey, v, 'contest', reason)
-}
-
-function closePane(io) {
-  pane = null
-  void io.close(PANE)
 }
 
 // mobileCard is the band on the mobile surface: room, severity, the quote,
@@ -294,25 +344,6 @@ function mobileCard(io, k, r, v) {
     'vote-m',
     1,
   )
-}
-
-// ioOf is the pane's own io, the same closures register.js builds, spelled
-// here so `$` stays in this file.
-function ioOf($, surface) {
-  return {
-    surface: surface || 'terminal',
-    run: async (args) => {
-      try {
-        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 20000 }))
-      } catch (err) {
-        return { ok: false, error: String(err).slice(0, 200) }
-      }
-    },
-    toast: (text, ms) => $.ui.toast(text, ms ? { timeoutMs: ms } : undefined),
-    open: (id, title, opts) => $.ui.open({ id, title, ...(opts || {}) }),
-    close: (id) => $.ui.close({ id }),
-    invalidate: () => $.ui.invalidate('ui.render'),
-  }
 }
 
 function docks() {
@@ -372,14 +403,20 @@ function expiryText(v) {
   return 'Expires in ' + left.replace(/ left$/, '') + '.'
 }
 
-// positionsMark: a ring on a surface that draws vectors, dots on the terminal.
+// positionsMark: a ring on a surface that draws vectors; on the terminal meter dots in ink, a
+// `●` (bold) for each position held and a dim `○` for each still needed.
 function positionsMark(k, v) {
   const n = Math.max(0, v.positionsSoFar ?? 0)
   const total = Math.max(1, v.needed ?? n + (v.shortfall ?? 1))
-  if (k.rich) return k.svg(ringSvg(n, total), { key: 'vp-ring', alt: n + ' of ' + total + ' positions', width: 36, height: 36 })
+  if (k.rich) return k.svg(ringSvg(n, total), { key: 'vt-ring', alt: n + ' of ' + total + ' positions', width: 36, height: 36 })
   const shown = Math.min(total, 8)
   const filled = Math.min(shown, n)
-  return k.els.Text({ key: 'vp-dots', color: TONE.good, children: ['●'.repeat(filled) + '○'.repeat(shown - filled)] })
+  const { Text } = k.els
+  return k.row(
+    [filled > 0 ? Text({ key: 'vt-dots-on', bold: true, children: ['●'.repeat(filled)] }) : null, shown > filled ? Text({ key: 'vt-dots-off', dimColor: true, children: ['○'.repeat(shown - filled)] }) : null],
+    'vt-dots',
+    0,
+  )
 }
 
 export function ringSvg(n, total) {
@@ -393,7 +430,7 @@ export function ringSvg(n, total) {
   )
 }
 
-// votesText is /vote's answer where no pane can be placed (`claude -p`).
+// votesText is the Vote tab's answer where no pane can be placed (`claude -p`).
 function votesText(r) {
   const out = [roomName(r) + ' · ' + (waiting(r).length === 1 ? '1 vote waiting on you' : waiting(r).length + ' votes waiting on you')]
   for (const v of waiting(r)) {
@@ -405,18 +442,3 @@ function votesText(r) {
   out.push('Vote as yourself: landfall vote --claim <seq> --position corroborate|contest [--reason "<why>"]')
   return out.join('\n')
 }
-
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}
-
-// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
-export function tab(k, io, nowMs, args) {
-  return []
-}
-
-export function badge() {
-  return null
-}
-
-export function warm(io) {}

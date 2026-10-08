@@ -1,4 +1,7 @@
 import { expect, test } from 'claude-code/testing'
+import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabhook'
+import { consoleState } from '../hooks/core.js'
+import * as lbMod from '../hooks/components/lb.js'
 
 // `landfall lb` as the Go CLI really prints it (internal/cli/lb.go, its
 // lb_test.go fixture): 5xx is per TARGET GROUP (`fiveXxBy: "targetGroup"`),
@@ -138,13 +141,6 @@ const PARTIAL = {
 }
 const NO_ALB = '{"ok":false,"error":"The room\'s AWS connection lists no Application Load Balancers in this region."}'
 
-const PANE = { title: 'Load balancers', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } as const
-const VIEW = { columns: 140, rows: 50, isFullscreen: true }
-
-function ran(stdout: string) {
-  return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
-}
-
 // cell reads one Raster cell's code point: [codePoint, fg, bg] u32 words, base64.
 function cell(raster: any, row: number, col: number) {
   const bin = atob(raster.props.cells)
@@ -152,39 +148,51 @@ function cell(raster: any, row: number, col: number) {
   return bin.charCodeAt(at) | (bin.charCodeAt(at + 1) << 8) | (bin.charCodeAt(at + 2) << 16)
 }
 
-test('/lb draws each target group with its targets by zone and 5xx per target group per minute', async ($, on) => {
-  const runs: Array<readonly string[]> = []
-  on('process.run', ($, e) => {
-    runs.push(e.argv)
-    return ran(JSON.stringify(LB) + '\n')
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  for (const surface of ['terminal', 'desktop'] as const) {
-    await $.command.run({ command: 'lb', args: 'web-edge-alb' })
-    expect(runs.at(-1)).toEqual(['landfall', 'lb', '--host', 'claude-code', '--lb', 'web-edge-alb'])
 
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-lb', viewport: VIEW, props: PANE })
+const NEW_ROOM = () => {
+  const room = watchRoom()
+  setRoom([room])
+  return room
+}
+
+// readBoard answers `landfall lb` with `answer` and reads it, as the console's warm does.
+async function readBoard(answer: unknown, io = fakeIo({ run: async () => answer })) {
+  await lbMod.warm(io.io)
+  return io
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: the engine draws each target group with its targets by zone and 5xx per target group per minute`, async ($, on) => {
+    NEW_ROOM()
+    await readBoard(LB)
+    hookTab(on, 'd-lb', (k, io, now, args) => lbMod.tab(k, io, now, args))
+    const pane = await $.ui.mount({ ...paneProps('d-lb', { viewport: { columns: 140, rows: 50 } }), surface } as never)
     expect(await pane.find({ type: 'Text', text: 'web-edge-alb' })).toBeDefined()
     expect((await pane.find({ type: 'Text', text: '● healthy 5 of 7' }))?.props.color).toBe('#fab219')
     expect(await pane.find({ type: 'Text', text: 'us-east-1 · internet-facing' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Zones: us-east-1a, us-east-1b, us-east-1c' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'Target group web-edge-tg · HTTP 8080 · health check /healthz' })).toBeDefined()
-    // The group's latest 5xx share, in its tone; 5xx is the group's, never a target's.
+    // The short heading, and the group's latest 5xx share as a label right after it.
+    expect(await pane.find({ type: 'Text', text: 'web-edge-tg · HTTP 8080 · /healthz' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'web-edge-canary-tg · HTTP 8081' })).toBeDefined()
     expect((await pane.find({ type: 'Text', text: '● 5xx 34%' }))?.props.color).toBe('#d03b3b')
     expect((await pane.find({ type: 'Text', text: '● 5xx 0%' }))?.props.color).toBe('#0ca30c')
-    expect(await pane.find({ type: 'Text', text: /5xx 34%$/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /^■ i-07aa.*5xx/ })).toBeUndefined()
-    // Zones in order, each target in its health color; a target on another port says so.
-    for (const zone of ['us-east-1a', 'us-east-1b', 'us-east-1c']) expect(await pane.find({ type: 'Text', text: zone })).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: /^■ i-07aa/ }))?.props.color).toBe('#d03b3b')
-    expect((await pane.find({ type: 'Text', text: /^■ i-0a3f/ }))?.props.color).toBe('#0ca30c')
-    expect(await pane.find({ type: 'Text', text: /^■ 10\.0\.4\.17:9000/ })).toBeDefined()
-    // The legend, with the no-data cell.
-    expect(await pane.find({ type: 'Text', text: '▪ under 1%' })).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: '█ over 20%' }))?.props.color).toBe('#d03b3b')
-    expect(await pane.find({ type: 'Text', text: surface === 'terminal' ? '· no requests' : '□ no requests' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '5xx per target group, last 36 minutes' })).toBeDefined()
+    // Targets by zone: the square in its health tone, the id plain.
+    for (const zone of ['us-east-1a', 'us-east-1b', 'us-east-1c']) expect((await pane.findAll({ type: 'Text', text: zone })).length).toBeGreaterThan(0)
+    const squares = (await pane.findAll({ type: 'Text', text: '■' })).map((x: any) => x.props.color)
+    expect(squares.filter((c: string) => c === '#d03b3b')).toHaveLength(2)
+    expect(squares.filter((c: string) => c === '#0ca30c')).toHaveLength(5)
+    expect((await pane.find({ type: 'Text', text: 'i-07aa' }))?.props.color).toBeUndefined()
+    expect(await pane.find({ type: 'Text', text: '10.0.4.17:9000' })).toBeDefined()
+    // The legend: swatches carry the tone, the words are dim, quiet is neutral.
+    expect((await pane.find({ type: 'Text', text: '▪' }))?.props.color).toBe('#898781')
+    expect((await pane.find({ type: 'Text', text: 'under 1%' }))?.props.dimColor).toBe(true)
+    expect((await pane.find({ type: 'Text', text: '█', props: { color: '#d03b3b' } as any }))).toBeDefined()
+    expect((await pane.find({ type: 'Text', text: 'over 20%' }))?.props.dimColor).toBe(true)
+    expect(await pane.find({ type: 'Text', text: 'no requests' })).toBeDefined()
+    expect((await pane.find({ type: 'Text', text: '5xx per target group, last 36 minutes' }))?.props.dimColor).toBe(true)
+    expect(await pane.find({ type: 'Text', text: 'healthy hosts' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '5 of 7' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^live · updated 0s ago/ })).toBeDefined()
 
     if (surface === 'terminal') {
       // One Raster: rows are target groups, columns minutes.
@@ -196,100 +204,184 @@ test('/lb draws each target group with its targets by zone and 5xx per target gr
       expect(cell(heat, 0, 20)).toBe(0x2588) // 34%
       expect(cell(heat, 1, 0)).toBe(0x00b7) // the canary served nothing yet
       expect(cell(heat, 1, 35)).toBe(0x25aa)
-      expect(await pane.find({ type: 'Text', text: /^web-edge-tg +$/ })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'web-edge-canary-tg' })).toBeDefined()
-      expect((await pane.find({ type: 'Text', text: '34%' }))?.props.color).toBe('#d03b3b')
+      expect(await pane.find({ type: 'Text', text: 'web-edge-tg' })).toBeDefined()
+      expect((await pane.find({ type: 'Text', text: '● 34%' }))?.props.color).toBe('#d03b3b')
       expect(await pane.find({ type: 'Text', text: /^ +16:50 +now$/ })).toBeDefined()
-      // An unhealthy target's detail, dim, under its zone.
       expect(await pane.find({ type: 'Text', text: '  i-07aa: Request timed out' })).toBeDefined()
+      // The healthy-hosts sparkline is exactly as wide as a heat row.
+      expect((await pane.find({ type: 'Raster', key: 'lb0-hhc' }))?.props.columns).toBe(36)
       expect(await pane.findAll({ type: 'Svg' })).toHaveLength(0)
     } else {
-      // An Svg grid with a hover title per cell, and the healthy host count.
+      // One Svg row per target group with a hover title per cell, each followed by its latest share.
       const svgs = await pane.findAll({ type: 'Svg' })
-      const heat = svgs.find((x) => String(x.props.alt).startsWith('5xx per target group per minute'))
-      expect(heat?.props.alt).toBe('5xx per target group per minute, 2 target groups over 36 minutes')
-      expect(heat?.props.isInteractive).toBe(true)
-      expect(heat?.props.source).toContain('<title>web-edge-tg · 17:10Z · 5xx 34% (170 of 500 requests)</title>')
-      expect(heat?.props.source).toContain('<title>web-edge-tg · 16:50Z · 5xx 0.2% (1 of 500 requests)</title>')
-      expect(heat?.props.source).toContain('<title>web-edge-tg · 16:53Z · no requests</title>')
-      expect(heat?.props.source).toContain('stroke-dasharray="2 2"')
-      expect(svgs.find((x) => x.props.alt === 'healthy host count')).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: '■ i-07aa · unhealthy · Target.Timeout' })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'Request timed out' })).toBeDefined()
+      const heats = svgs.filter((x: any) => String(x.props.alt).startsWith('5xx per minute'))
+      expect(heats.map((x: any) => x.props.alt)).toEqual(['5xx per minute, web-edge-tg, 36 minutes', '5xx per minute, web-edge-canary-tg, 36 minutes'])
+      expect(heats[0].props.isInteractive).toBe(true)
+      expect(heats[0].props.source).toContain('<title>web-edge-tg · 17:10Z · 5xx 34% (170 of 500 requests)</title>')
+      expect(heats[0].props.source).toContain('<title>web-edge-tg · 16:53Z · no requests</title>')
+      expect(heats[0].props.source).toContain('stroke-dasharray="2 2"')
+      expect((await pane.find({ type: 'Text', text: '● 34%' }))?.props).toBeDefined()
+      const spark = svgs.find((x: any) => x.props.alt === 'healthy host count')
+      expect(spark).toBeDefined()
+      // Exactly as wide as a heat row, 44 tall.
+      expect(spark.props.width).toBe(heats[0].props.width)
+      expect(spark.props.height).toBe(44)
+      expect(await pane.find({ type: 'Text', text: '  i-07aa: Request timed out' })).toBeDefined()
       expect(await pane.findAll({ type: 'Raster' })).toHaveLength(0)
     }
-    await pane.unmount()
-  }
+  })
+
+  test(`${surface}: s shares the board through the chart path with the CLI's title, a asks about the worst zone; both are keys`, async () => {
+    const room = NEW_ROOM()
+    const k = fakeKit(surface)
+    const f = fakeIo({
+      run: async (args: string[]) => {
+        f.log.runs.push(args)
+        return args[0] === 'chart' ? { ok: true, title: '5xx per target group · web-edge-alb' } : LB
+      },
+    })
+    await lbMod.warm(f.io)
+    f.log.runs.length = 0
+    const keys = lbMod.keys(k, f.io, NOW, null)
+    expect(keys.map((b: any) => b.props.hotkey)).toEqual(['s', 'a'])
+    expect(keys[0].props.label).toBe(surface === 'terminal' ? 'share as widget' : 'Share as widget')
+    expect(keys[0].props.variant).toBe(surface === 'terminal' ? undefined : 'primary')
+    expect(keys[1].props.label).toBe((surface === 'terminal' ? 'ask about ' : 'Ask about ') + 'us-east-1c')
+    await keys[0].props.onPress()
+    expect(f.log.runs[0].slice(0, 4)).toEqual(['chart', '--host', 'claude-code', '--room'])
+    expect(f.log.runs[0][4]).toBe(room.roomKey)
+    expect(JSON.parse(f.log.runs[0][6])).toEqual(QUERY)
+    expect(f.log.toasts).toEqual(['Chart added to your dashboard in the room: 5xx per target group · web-edge-alb'])
+    await lbMod.keys(k, f.io, NOW, null)[1].props.onPress()
+    expect(f.log.filled).toEqual([{ text: 'Why are targets in us-east-1c behind web-edge-alb unhealthy or returning 5xx?', mode: undefined }])
+  })
+}
+
+test('a refused share says why, within 80 characters however long the sentence', async () => {
+  NEW_ROOM()
+  const f = fakeIo({ run: async (args: string[]) => (args[0] === 'chart' ? { ok: false, error: 'This checkout is not reading any room right now. '.repeat(3) } : LB) })
+  await lbMod.warm(f.io)
+  await lbMod.keys(fakeKit('terminal'), f.io, NOW, null)[0].props.onPress()
+  expect(f.log.toasts).toHaveLength(1)
+  expect(f.log.toasts[0].startsWith('Chart not added: This checkout is not reading any room right now.')).toBe(true)
+  expect(f.log.toasts[0].length).toBeLessThanOrEqual(80)
+  const short = fakeIo({ run: async (args: string[]) => (args[0] === 'chart' ? { ok: false, error: 'This checkout is not reading any room right now.' } : LB) })
+  await lbMod.warm(short.io)
+  await lbMod.keys(fakeKit('terminal'), short.io, NOW, null)[0].props.onPress()
+  expect(short.log.toasts).toEqual(['Chart not added: This checkout is not reading any room right now.'])
 })
 
-test('s shares the board as a widget through the chart path, with the CLI\'s own title, and a asks about the worst zone', async ($, on) => {
-  const runs: Array<readonly string[]> = []
-  const toasts: string[] = []
-  const filled: string[] = []
-  let mcpCalls = 0
-  on('process.run', ($, e) => {
-    runs.push(e.argv)
-    if (e.argv[1] === 'chart') return ran('{"ok":true,"title":"5xx per target group · web-edge-alb"}\n')
-    return ran(JSON.stringify(LB) + '\n')
-  })
-  on('mcp.call', () => {
-    mcpCalls += 1
-    return { value: { content: [], isError: false } }
-  })
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  on('prompt.fill', ($, e) => {
-    filled.push(e.text)
-    return { isFilled: true }
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
+test('the keys are none while the board cannot be read', async ($, on) => {
+  NEW_ROOM()
+  await readBoard({ ok: false, error: "The room's AWS connection lists no Application Load Balancers in this region." })
+  const k = fakeKit('terminal')
+  expect(lbMod.keys(k, fakeIo().io, NOW, null)).toEqual([])
+  hookTab(on, 'd-lb-err', (kk, io, now, args) => lbMod.tab(kk, io, now, args))
   for (const surface of ['terminal', 'desktop'] as const) {
-    runs.length = 0
-    toasts.length = 0
-    filled.length = 0
-    await $.command.run({ command: 'lb', args: '' })
-    expect(runs[0]).toEqual(['landfall', 'lb', '--host', 'claude-code'])
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-lb', viewport: VIEW, props: PANE })
-    await pane.press({ key: 'lb-share' })
-    expect(runs[1].slice(0, 4)).toEqual(['landfall', 'chart', '--host', 'claude-code'])
-    expect(runs[1][4]).toBe('--query')
-    expect(JSON.parse(runs[1][5] as string)).toEqual(QUERY)
-    expect(toasts).toEqual(['Chart added to your dashboard in the room: 5xx per target group · web-edge-alb'])
-    await pane.press({ key: 'lb-ask' })
-    expect(filled).toEqual(['Why are targets in us-east-1c behind web-edge-alb unhealthy or returning 5xx?'])
-    expect(mcpCalls).toBe(0)
-    await pane.unmount()
+    const pane = await $.ui.mount({ ...paneProps('d-lb-err'), surface } as never)
+    expect(await pane.find({ type: 'Text', text: "The room's AWS connection lists no Application Load Balancers in this region." })).toBeDefined()
+    expect(await pane.find({ type: 'Button' })).toBeUndefined()
   }
 })
 
-test('a refused share says why', async ($, on) => {
-  const toasts: string[] = []
-  on('process.run', ($, e) => {
-    if (e.argv[1] === 'chart') return ran('{"ok":false,"error":"This checkout is not reading any room right now."}\n')
-    return ran(JSON.stringify(LB) + '\n')
-  })
-  on('ui.toast', ($, e) => {
-    toasts.push(e.text)
-    return { value: undefined }
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'lb', args: '' })
-  const pane = await $.ui.mount({ plugin: 'landfall', surface: 'terminal', component: 'Pane', requestId: 'landfall-lb', viewport: VIEW, props: PANE })
-  await pane.press({ key: 'lb-share' })
-  expect(toasts).toEqual(['Chart not added: This checkout is not reading any room right now.'])
+test('a asks about a target group returning 5xx when every target is healthy', async () => {
+  NEW_ROOM()
+  const healthy = structuredClone(LB)
+  for (const t of healthy.loadBalancers[0].targetGroups[0].targets) Object.assign(t, { state: 'healthy', reason: '', detail: undefined })
+  const f = await readBoard(healthy)
+  const ask = lbMod.keys(fakeKit('terminal'), f.io, NOW, null)[1]
+  expect(ask.props.label).toBe('ask about web-edge-tg')
+  await ask.props.onPress()
+  expect(f.log.filled[0].text).toBe('Why is target group web-edge-tg behind web-edge-alb returning 5xx?')
 })
 
-test('/lb answers in text where no pane can be placed, and with the sentence when there is no ALB', async ($, on) => {
-  let out = JSON.stringify(LB)
-  on('process.run', () => ran(out + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: false, reason: 'headless' } }))
-  on('command.register', () => ({ value: undefined }))
-  const answer = await $.command.run({ command: 'lb', args: '' })
-  expect(answer.text).toBe(
+test('health or metrics that could not be read, and a cut list, are said in sentences', async ($, on) => {
+  NEW_ROOM()
+  await readBoard(PARTIAL)
+  hookTab(on, 'd-lb-partial', (k, io, now, args) => lbMod.tab(k, io, now, args))
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ ...paneProps('d-lb-partial'), surface } as never)
+    expect(await pane.find({ type: 'Text', text: "The room's AWS connection could not read load balancers. Try again shortly." })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: "5xx and healthy host counts are not shown. The room's AWS connection is not allowed to read load balancers." })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'Some load balancers or target groups are not shown. Run /landfall lb <name> to see one load balancer alone.' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'No registered targets.' })).toBeUndefined()
+    // No heat map of nothing: a grid of empty minutes would read as data.
+    expect(await pane.findAll({ type: 'Raster' })).toHaveLength(0)
+    expect((await pane.findAll({ type: 'Svg' })).filter((x: any) => String(x.props.alt).startsWith('5xx'))).toHaveLength(0)
+  }
+  expect(lbMod.keys(fakeKit('terminal'), fakeIo().io, NOW, null).map((b: any) => b.props.key)).toEqual(['lb-share'])
+})
+
+test('first read says it is reading, a failed refresh keeps the board and the footer says stale', async () => {
+  NEW_ROOM()
+  const k = fakeKit('terminal')
+  let answer: unknown = LB
+  const f = fakeIo({ run: async () => answer })
+  expect(textsOf(lbMod.tab(k, f.io, NOW, null))).toEqual(['Reading the room’s AWS connection…'])
+  await lbMod.warm(f.io)
+  answer = { ok: false, error: 'Your sign-in expired. Run landfall login.' }
+  await lbMod.refresh(f.io)
+  const texts = textsOf(lbMod.tab(k, f.io, NOW + 120000, null))
+  expect(texts).toContain('web-edge-alb')
+  expect(texts).toContain('stale · updated 2m ago · Your sign-in expired. Run landfall login.')
+})
+
+test('with no load balancer the tab says so', async () => {
+  NEW_ROOM()
+  await readBoard({ ok: true, region: 'us-east-1', loadBalancers: [] })
+  expect(textsOf(lbMod.tab(fakeKit('terminal'), fakeIo().io, NOW, null))).toContain('No load balancers in scope.')
+})
+
+test('/landfall lb <name> reads that load balancer once and offers to show them all', async () => {
+  const room = NEW_ROOM()
+  const k = fakeKit('terminal')
+  const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), LB) })
+  consoleState.args = 'web-edge-alb'
+  const tree = lbMod.tab(k, f.io, NOW, 'web-edge-alb')
+  expect(consoleState.args).toBeNull()
+  await new Promise((r) => setTimeout(r, 0))
+  expect(f.log.runs).toEqual([['lb', '--host', 'claude-code', '--room', room.roomKey, '--lb', 'web-edge-alb']])
+  expect(textsOf(tree)).toContain('Showing web-edge-alb only.')
+  // Drawn again with the same words, it does not read again.
+  lbMod.tab(k, f.io, NOW, 'web-edge-alb')
+  await new Promise((r) => setTimeout(r, 0))
+  expect(f.log.runs).toHaveLength(1)
+  // The person shows them all.
+  buttonOf(lbMod.tab(k, f.io, NOW, null), 'lb-all')!.props.onPress()
+  await new Promise((r) => setTimeout(r, 0))
+  expect(f.log.runs.at(-1)).toEqual(['lb', '--host', 'claude-code', '--room', room.roomKey])
+})
+
+test('the board reads every 60 s while the console is open, and stops when it closes', async () => {
+  NEW_ROOM()
+  const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), LB) })
+  consoleState.open = true
+  await lbMod.warm(f.io)
+  expect(f.log.runs).toHaveLength(1)
+  await lbMod.tick(f.io, NOW + 30000)
+  expect(f.log.runs).toHaveLength(1)
+  await lbMod.tick(f.io, NOW + 60000)
+  await new Promise((r) => setTimeout(r, 0))
+  expect(f.log.runs).toHaveLength(2)
+  consoleState.open = false
+  await lbMod.tick(f.io, NOW + 130000)
+  await lbMod.tick(f.io, NOW + 200000)
+  expect(f.log.runs).toHaveLength(2)
+})
+
+test('every read names the room this session is in with --room, and a different room starts the board over', async () => {
+  const room = NEW_ROOM()
+  const f = fakeIo({ run: async (args: string[]) => (f.log.runs.push(args), LB) })
+  await lbMod.warm(f.io)
+  expect(f.log.runs[0]).toContain(room.roomKey)
+  expect(textsOf(lbMod.tab(fakeKit('terminal'), f.io, NOW, null))).toContain('web-edge-alb')
+  NEW_ROOM()
+  expect(textsOf(lbMod.tab(fakeKit('terminal'), f.io, NOW, null))).toEqual(['Reading the room’s AWS connection…'])
+})
+
+test('text answers in words, with the sentence when there is no ALB, and says what could not be read', async () => {
+  NEW_ROOM()
+  expect(await lbMod.text(fakeIo({ run: async () => LB }).io, '')).toBe(
     [
       'web-edge-alb · healthy 5 of 7 · us-east-1',
       '  Target group web-edge-tg · HTTP 8080 · health check /healthz · 5xx 34% now',
@@ -300,87 +392,40 @@ test('/lb answers in text where no pane can be placed, and with the sentence whe
       '    us-east-1a: 10.0.4.17:9000 healthy',
     ].join('\n'),
   )
-
-  out = NO_ALB
-  const none = await $.command.run({ command: 'lb', args: '' })
-  expect(none.text).toBe("The room's AWS connection lists no Application Load Balancers in this region.")
-})
-
-test('the pane shows the sentence when the board cannot be read', async ($, on) => {
-  on('process.run', () => ran(NO_ALB + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'lb', args: '' })
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-lb', viewport: VIEW, props: PANE })
-    expect(await pane.find({ type: 'Text', text: "The room's AWS connection lists no Application Load Balancers in this region." })).toBeDefined()
-    expect(await pane.find({ type: 'Button', key: 'lb-share' })).toBeUndefined()
-    await pane.unmount()
-  }
-})
-
-test('the board draws on vscode and mobile too', async ($, on) => {
-  on('process.run', () => ran(JSON.stringify(LB) + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'lb', args: '' })
-  for (const surface of ['vscode', 'mobile'] as const) {
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-lb', viewport: { columns: 60, rows: 40 }, props: { ...PANE, bodyColumns: 50 } })
-    expect(await pane.find({ type: 'Text', text: '● healthy 5 of 7' })).toBeDefined()
-    expect(await pane.find({ type: 'Button', key: 'lb-share' })).toBeDefined()
-    await pane.unmount()
-  }
-})
-
-test('a asks about a target group returning 5xx when every target is healthy', async ($, on) => {
-  const filled: string[] = []
-  const healthy = structuredClone(LB)
-  for (const t of healthy.loadBalancers[0].targetGroups[0].targets) Object.assign(t, { state: 'healthy', reason: '', detail: undefined })
-  on('process.run', () => ran(JSON.stringify(healthy) + '\n'))
-  on('prompt.fill', ($, e) => {
-    filled.push(e.text)
-    return { isFilled: true }
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'lb', args: '' })
-  const pane = await $.ui.mount({ plugin: 'landfall', surface: 'terminal', component: 'Pane', requestId: 'landfall-lb', viewport: VIEW, props: PANE })
-  expect((await pane.find({ type: 'Button', key: 'lb-ask' }))?.props.label).toBe('ask about web-edge-tg')
-  await pane.press({ key: 'lb-ask' })
-  expect(filled).toEqual(['Why is target group web-edge-tg behind web-edge-alb returning 5xx?'])
-})
-
-test('health or metrics that could not be read, and a cut list, are said in sentences', async ($, on) => {
-  on('process.run', () => ran(JSON.stringify(PARTIAL) + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'lb', args: '' })
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-lb', viewport: VIEW, props: PANE })
-    expect(await pane.find({ type: 'Text', text: "The room's AWS connection could not read load balancers. Try again shortly." })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: "5xx and healthy host counts are not shown. The room's AWS connection is not allowed to read load balancers." })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'Some load balancers or target groups are not shown. Run /lb with a name to see one load balancer alone.' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'No registered targets.' })).toBeUndefined()
-    // No heat map of nothing: a grid of empty minutes would read as data.
-    expect(await pane.findAll({ type: 'Raster' })).toHaveLength(0)
-    expect((await pane.findAll({ type: 'Svg' })).filter((x) => String(x.props.alt).startsWith('5xx'))).toHaveLength(0)
-    expect(await pane.find({ type: 'Button', key: 'lb-ask' })).toBeUndefined()
-    await pane.unmount()
-  }
-})
-
-test('/lb in text says what could not be read', async ($, on) => {
-  on('process.run', () => ran(JSON.stringify(PARTIAL) + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: false, reason: 'headless' } }))
-  on('command.register', () => ({ value: undefined }))
-  const answer = await $.command.run({ command: 'lb', args: '' })
-  expect(answer.text).toBe(
+  NEW_ROOM()
+  expect(await lbMod.text(fakeIo({ run: async () => ({ ok: false, error: "The room's AWS connection lists no Application Load Balancers in this region." }) }).io, '')).toBe(
+    "The room's AWS connection lists no Application Load Balancers in this region.",
+  )
+  NEW_ROOM()
+  expect(await lbMod.text(fakeIo({ run: async () => PARTIAL }).io, '')).toBe(
     [
       'web-edge-alb · healthy 0 of 0 · us-east-1',
       '  Target group web-edge-tg · HTTP 8080 · health check /healthz',
       "    The room's AWS connection could not read load balancers. Try again shortly.",
       "5xx and healthy host counts are not shown. The room's AWS connection is not allowed to read load balancers.",
-      'Some load balancers or target groups are not shown. Run /lb with a name to see one load balancer alone.',
+      'Some load balancers or target groups are not shown. Run /landfall lb <name> to see one load balancer alone.',
     ].join('\n'),
   )
+})
+
+test('no standalone pane or command is left behind, and the tab has no badge', () => {
+  const hooks: unknown[] = []
+  lbMod.install((...a: unknown[]) => void hooks.push(a))
+  expect(hooks).toEqual([])
+  expect(lbMod.badge()).toBeNull()
+})
+
+test('the mobile tab draws the board and a share key', async () => {
+  NEW_ROOM()
+  await readBoard(LB)
+  const tree = lbMod.tab(fakeKit('mobile'), fakeIo().io, NOW, null)
+  expect(textsOf(tree)).toContain('● healthy 5 of 7')
+  expect(nodes(tree, 'Button').map((b) => b.props.key)).toEqual(['lb-share', 'lb-ask'])
+})
+
+test('on the desktop the health and 5xx labels sit on the text baseline of their rows', async () => {
+  NEW_ROOM()
+  await readBoard(LB)
+  const boxes = nodes(lbMod.tab(fakeKit('desktop'), fakeIo().io, NOW, null), 'Box')
+  for (const key of ['lb0-h', 'lb0-tg0-n', 'lb0-hr0']) expect(boxes.find((b) => b.props.key === key)?.props.alignItems).toBe('center')
 })

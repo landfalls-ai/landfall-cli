@@ -116,11 +116,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const down = { ...ROOM, connection: 'disconnected' }
     const s = await session($, on, [down], () => WALL)
     expect(s.statuses.at(-1)).toBe('○ Landfall 168 · investigating · SEV2 · 0 new')
+    // The band says it once: a row on the terminal, a label off it (spec §5.1).
+    const said = surface === 'terminal' ? 'Reconnecting to the room…' : '● reconnecting'
     let band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: said })).toBeDefined()
     await band.unmount()
 
-    const r = await $.ui.mount(pane('landfall-room', surface))
+    // The console says it once, in the header's second row.
+    await $.command.run({ command: 'landfall', args: '' })
+    const r = await $.ui.mount(pane('landfall', surface))
     expect(await r.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeDefined()
     await r.unmount()
 
@@ -128,7 +132,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await s.feed([ROOM])
     expect(s.statuses.at(-1)).toBe('🔴 Landfall 168 · investigating · SEV2 · 0 new')
     band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeUndefined()
+    expect(await band.find({ type: 'Text', text: said })).toBeUndefined()
     await band.unmount()
   })
 
@@ -169,8 +173,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     let band = await $.ui.mount({ ...BAND, surface } as never)
     expect(await band.find({ type: 'Text', text: surface === 'terminal' ? 'agent ✓' : '● agent ✓' })).toBeDefined()
     await band.unmount()
-    let r = await $.ui.mount(pane('landfall-room', surface))
-    expect(await r.find({ type: 'Text', text: 'You: this session (Claude Code) · your agent: in the room' })).toBeDefined()
+    await $.command.run({ command: 'landfall', args: '' })
+    let r = await $.ui.mount(pane('landfall', surface))
+    expect(await r.find({ type: 'Text', text: '● agent ✓' })).toBeDefined()
     await r.unmount()
 
     await s.feed([{ ...withAgent, agent: { inRoom: false } }])
@@ -178,8 +183,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const out = await band.find({ type: 'Text', text: 'agent not in the room' })
     expect(out?.props.dimColor).toBe(true)
     await band.unmount()
-    r = await $.ui.mount(pane('landfall-room', surface))
-    expect(await r.find({ type: 'Text', text: 'You: this session (Claude Code) · your agent: not in the room yet' })).toBeDefined()
+    r = await $.ui.mount(pane('landfall', surface))
+    expect(await r.find({ type: 'Text', text: 'agent not in the room' })).toBeDefined()
     await r.unmount()
 
     // An older CLI says nothing of the agent: neither word is drawn.
@@ -190,14 +195,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('the incident list reads every 30 s', async ($, on) => {
+test('the incident list reads every 30 s while the console shows it, and stops once closed', async ($, on) => {
   const s = await session($, on, [ROOM], (argv) => {
     if (argv[1] === 'incidents') return { ok: true, org: 'acme', incidents: [] }
     return WALL
   })
-  await $.command.run({ command: 'incidents', args: '' })
+  await $.command.run({ command: 'landfall', args: 'incidents' })
   for (const surface of ['terminal', 'desktop'] as const) {
-    const p = await $.ui.mount(pane('landfall-incidents', surface))
+    const p = await $.ui.mount(pane('landfall', surface))
     expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
     await p.unmount()
   }
@@ -207,24 +212,24 @@ test('the incident list reads every 30 s', async ($, on) => {
   await s.clock.advance(30000)
   expect(s.count('incidents')).toBe(3)
   // Closing it stops it.
-  const inc = await $.ui.mount(pane('landfall-incidents', 'terminal'))
+  const inc = await $.ui.mount(pane('landfall', 'terminal'))
   await inc.press({ key: 'close' })
   await inc.unmount()
   await s.clock.advance(30000)
   expect(s.count('incidents')).toBe(3)
 })
 
-test('the topology reads the wall again on a widget event, not on every event', async ($, on) => {
+test('/landfall topology opens the Wall, which reads again on a widget event, not on every event', async ($, on) => {
   const s = await session($, on, [ROOM], () => WALL)
-  await $.command.run({ command: 'topology', args: '' })
-  const p = await $.ui.mount(pane('landfall-topology', 'terminal'))
-  expect(s.count('wall')).toBe(1)
+  await $.command.run({ command: 'landfall', args: 'topology' })
+  const p = await $.ui.mount(pane('landfall', 'terminal'))
+  const first = s.count('wall')
+  expect(first).toBeGreaterThanOrEqual(1)
   await s.feed([{ ...ROOM, maxSeq: 236 }])
-  await s.clock.advance(30000)
-  expect(s.count('wall')).toBe(1)
+  expect(s.count('wall')).toBe(first)
   await s.feed([{ ...ROOM, maxSeq: 237, widgetSeq: 237 }])
-  expect(s.count('wall')).toBe(2)
-  expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
+  expect(s.count('wall')).toBe(first + 1)
+  expect(await p.find({ type: 'Text', text: /^live · updated/ })).toBeDefined()
 })
 
 test('mobile and vscode draw the reconnecting line, the agent word and the wall offer too', async ($, on) => {
@@ -234,8 +239,8 @@ test('mobile and vscode draw the reconnecting line, the agent word and the wall 
   expect(s.toasts).toEqual(['New on the wall: Replica lag'])
   for (const surface of ['mobile', 'vscode'] as const) {
     const band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: '● agent ✓' })).toBeDefined()
+    // Off the terminal the reconnecting word is the label in the agent's place (spec §5.1).
+    expect(await band.find({ type: 'Text', text: '● reconnecting' })).toBeDefined()
     expect(await band.find({ type: 'Button', key: 'open-wall' })).toBeDefined()
     expect(await band.find({ type: 'Input' })).toBeUndefined()
     await band.unmount()

@@ -14,11 +14,10 @@ const ROOM = baseRoom({
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`the band shows who is on which line, one dim row (${surface})`, async ($, on) => {
+  test(`the lines row left the band: lines live in People and on Home (spec §5.1) (${surface})`, async ($, on) => {
     await startWith($, on, { rooms: [ROOM] })
     const band = await $.ui.mount({ ...BAND, surface } as never)
-    const row = await band.find({ type: 'Text', text: 'Lines: eu-west-1 5xx (dave) · origin pool (you)' })
-    expect(row?.props.dimColor).toBe(true)
+    expect(await band.find({ type: 'Text', text: /^Lines: / })).toBeUndefined()
   })
 }
 

@@ -197,9 +197,9 @@ async function bandAll($, e, k) {
   const body = []
   try {
     const got = await bandVote(io, e, k)
-    // The vote's head and positions rows are the head's label now (§5.1: the head says
-    // `● vote waiting 4m 10s`; the band is the statement and the keys), so they are left out here.
-    if (got && got.length > 0) body.push(...got.filter((row) => !(row && row.props && (row.props.key === 'vote-h' || row.props.key === 'vote-p'))))
+    // The vote's head row is the head's label now (§5.1: the head says `● vote waiting 4m 10s`;
+    // the band is the statement and the keys), so it is left out here.
+    if (got && got.length > 0) body.push(...got.filter((row) => !['vote-h', 'vote-p'].includes(keyOf(row))))
   } catch {
     // One section failing never takes the band down.
   }
@@ -239,6 +239,12 @@ async function bandAll($, e, k) {
   if (k.terminal || k.mobile) return rows
   const sev1 = !!r && severityTone(r.status && r.status.severity) === 'critical'
   return [k.card(rows, { key: 'band-card', tone: sev1 ? 'critical' : r && notLive(r) ? 'warning' : undefined })]
+}
+
+// keyOf is an element's key wherever its constructor keeps it.
+function keyOf(el) {
+  if (!el || typeof el !== 'object') return ''
+  return String(el.key ?? (el.props && el.props.key) ?? '')
 }
 
 // startWatch runs `landfall watch` for the session's life and starts it again

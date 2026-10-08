@@ -104,6 +104,7 @@ export function bandHead(io, e, k) {
       k.mark('news-mark', 18),
       Text({ key: 'news-h', bold: true, children: [k.mobile ? clip(roomName(r), 28) : roomName(r)] }),
       st.severity ? k.pill(st.severity, severityTone(st.severity), 'news-sev') : null,
+      voteLabel,
       total > 0 ? k.pill(total === 1 ? '1 new' : total + ' new', 'neutral', 'news-count') : null,
       notLive(r) ? k.pill('reconnecting', 'warning', 'news-agent') : agentBadge(k, r),
     ].filter(Boolean),

@@ -144,8 +144,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(w.toasts).toEqual(["carol asked for your vote on #214", "bob's agent asked for your vote on #212"])
 
     const band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: /vote waiting · 4m 10s left/ })).toBeDefined()
-    expect(await band.find({ type: 'Text', text: /1 more waiting/ })).toBeDefined()
+    // The head says how many wait (spec §5.1); the statement is the most urgent one's.
+    expect(await band.find({ type: 'Text', text: '● 2 votes waiting' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: "bob's agent: “The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”" })).toBeDefined()
     expect(await band.find({ type: 'Text', text: 'positions 1 of 2 · your vote would admit it' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: /My own finding/ })).toBeUndefined()
@@ -191,10 +191,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: 6 and 7 open the console on Vote, never a pane of their own, and the person asked`, async ($, on) => {
     const w = await startWith($, on, snapshot([vote()]))
     const band = await $.ui.mount({ ...BAND, surface } as never)
+    // The person asked: the console takes the keyboard.
     await band.press({ key: 'vote-contest' })
-    expect(w.opened.at(-1)).toEqual({ id: 'landfall', focus: undefined })
+    expect(w.opened.at(-1)).toEqual({ id: 'landfall', focus: true })
     await band.press({ key: 'vote-evidence' })
-    expect(w.opened.at(-1)).toEqual({ id: 'landfall', focus: undefined })
+    expect(w.opened.at(-1)).toEqual({ id: 'landfall', focus: true })
     expect(w.opened.map((o) => o.id)).not.toContain('landfall-vote')
     // Nothing was recorded by looking.
     expect(w.votes).toEqual([])

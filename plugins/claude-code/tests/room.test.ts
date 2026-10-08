@@ -1,8 +1,8 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-// The room drawn for each surface: the terminal as text and keys (its exact
-// lines are pinned in landfall.test.ts and status.test.ts), the desktop Code
-// tab as a card with the mark, pills, avatars and real buttons.
+// The band (spec §5.1) drawn for each surface: the terminal as text and keys, the desktop Code
+// tab as one card with the mark, labels, avatars and real buttons; and the room at a glance in
+// the console's Home.
 
 const ROOM = {
   roomKey: 'k1',
@@ -42,9 +42,9 @@ const BAND = {
 const PANE = {
   plugin: 'landfall',
   component: 'Pane',
-  requestId: 'landfall-room',
-  viewport: { columns: 120, rows: 40 },
-  props: { bodyColumns: 110, bodyRows: 30, view: {} },
+  requestId: 'landfall',
+  viewport: { columns: 168, rows: 52, isFullscreen: true },
+  props: { title: 'Landfall', isFocused: true, bodyColumns: 84, placement: 'dock', scroll: { offset: 0, bodyRows: 48 }, view: {} },
 } as const
 
 const HINT = {
@@ -55,7 +55,7 @@ const HINT = {
   props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
 } as const
 
-async function startWith($: any, on: any, surface: string, snapshot = SNAPSHOT) {
+async function startWith($: any, on: any, surface: string, snapshot = SNAPSHOT, placed = true) {
   const filled: string[] = []
   const opened: string[] = []
   const closed: string[] = []
@@ -81,7 +81,7 @@ async function startWith($: any, on: any, surface: string, snapshot = SNAPSHOT) 
   on('ui.toast', () => ({ value: undefined }))
   on('ui.open', ($: any, e: any) => {
     opened.push(e.id)
-    return { value: { isPlaced: true } }
+    return { value: placed ? { isPlaced: true } : { isPlaced: false, reason: "headless" } }
   })
   on('ui.close', ($: any, e: any) => {
     closed.push(e.id)
@@ -97,55 +97,71 @@ async function startWith($: any, on: any, surface: string, snapshot = SNAPSHOT) 
   return { filled, opened, closed, drawn }
 }
 
+
+const VOTE = { claimSeq: 212, statement: 'The 5xx rise starts at 15:45Z, in the same 5-minute bucket as the web-edge deploy', authorIsAgent: true, authorHuman: 'bob', positionsSoFar: 1, needed: 2, shortfall: 1, expiresInMs: 250000, mine: false }
+const WITH_VOTE = JSON.stringify({ type: 'rooms', line: '🔴 Landfall 168 · 3 new', rooms: [{ ...ROOM, votes: [VOTE] }] }) + '\n'
+
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: the band names the room, its news and three keys that draft, open and set aside`, async ($, on) => {
+  test(`${surface}: the band names the room and its news, then catch up, the console and later`, async ($, on) => {
     const { filled, opened } = await startWith($, on, surface)
     const band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: /Landfall 168 · cloudfront-5xx-high/ })).toBeDefined()
+    if (surface === 'terminal') expect(await band.find({ type: 'Text', text: '◆ Landfall 168 · cloudfront-5xx-high · 3 new' })).toBeDefined()
+    else expect(await band.find({ type: 'Text', text: 'Landfall 168 · cloudfront-5xx-high' })).toBeDefined()
     expect(await band.find({ type: 'Text', text: /eu-west-1 explains the ~6% alert/ })).toBeDefined()
-    expect(await band.find({ type: 'Button', key: 'catch-up' })).toBeDefined()
-    expect(await band.find({ type: 'Button', key: 'show' })).toBeDefined()
+    expect((await band.find({ type: 'Button', key: 'catch-up' }))?.props.hotkey).toBe('1')
+    expect((await band.find({ type: 'Button', key: 'console' }))?.props).toMatchObject({ hotkey: '2', label: surface === 'terminal' ? 'open the console' : 'Open the console' })
+    expect((await band.find({ type: 'Button', key: 'later' }))?.props.hotkey).toBe('3')
+    // The lines row left the band.
+    expect(await band.find({ type: 'Text', text: /^Lines:/ })).toBeUndefined()
     await band.press({ key: 'catch-up' })
     expect(filled).toEqual(['Catch me up on what changed in the war room.'])
-    await band.press({ key: 'show' })
-    expect(opened).toEqual(['landfall-room'])
-    if (surface === 'terminal') {
-      // Unchanged: text and keys, no pictures.
-      expect(await band.find({ type: 'Text', text: 'Landfall · Landfall 168 · cloudfront-5xx-high · 3 new · 1 vote awaited' })).toBeDefined()
-    }
+    await band.press({ key: 'console' })
+    expect(opened).toEqual(['landfall'])
     await band.press({ key: 'later' })
     await band.unmount()
+    // Set aside: the news rows go; the band has nothing left to say.
     const again = await $.ui.mount({ ...BAND, surface } as never)
     expect(await again.find({ type: 'Button', key: 'catch-up' })).toBeUndefined()
+    expect(await again.find({ type: 'Button', key: 'console' })).toBeUndefined()
   })
 
-  test(`${surface}: /room shows the room at a glance, everyone in it, then the news`, async ($, on) => {
-    const { filled, closed } = await startWith($, on, surface)
-    const pane = await $.ui.mount({ ...PANE, surface } as never)
-    expect(await pane.find({ type: 'Text', text: /Leading theory: eu-west-1 drives the alert/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'In the room (3 here)' })).toBeDefined()
-    expect(await pane.find({ text: /bob/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /comparing 5xx by region/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'News · 3 new' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /eu-west-1 peaks at 6.1%/ })).toBeDefined()
-    await pane.press({ key: 'pane-catch-up' })
-    expect(closed).toEqual(['landfall-room'])
-    expect(filled).toEqual(['Catch me up on what changed in the war room.'])
-  })
-
-  test(`${surface}: under the prompt, the others who are here`, async ($, on) => {
-    const { drawn } = await startWith($, on, surface)
-    const hint = await $.ui.mount({ ...HINT, surface } as never)
-    if (surface === 'terminal') {
-      expect(drawn.props.tail).toBe('Here: bob (Claude Code) · carol (war room)')
-    } else {
-      // The desktop draws no `tail`: the mod draws the line itself.
-      expect(await hint.find({ type: 'Text', text: '? for shortcuts' })).toBeDefined()
-      expect(await hint.find({ type: 'Text', text: 'bob (Claude Code)' })).toBeDefined()
-      expect(await hint.find({ type: 'Text', text: 'carol (war room)' })).toBeDefined()
+  test(`${surface}: a waiting vote is a label on the head, the statement and its keys under it`, async ($, on) => {
+    await startWith($, on, surface, WITH_VOTE)
+    const band = await $.ui.mount({ ...BAND, surface } as never)
+    expect(await band.find({ type: 'Text', text: '● vote waiting 4m 10s' })).toBeDefined()
+    expect(await band.find({ type: 'Text', text: /^bob's agent: “The 5xx rise starts at 15:45Z/ })).toBeDefined()
+    // The vote's own head row is not drawn twice.
+    expect(await band.find({ type: 'Text', text: /vote waiting · / })).toBeUndefined()
+    if (surface === 'desktop') {
+      // Catch up is primary only when no vote waits; the news line gives way to the vote.
+      expect((await band.find({ type: 'Button', key: 'catch-up' }))?.props.variant).toBeUndefined()
+      expect(await band.find({ type: 'Text', text: /eu-west-1 explains the ~6% alert/ })).toBeUndefined()
     }
   })
+
+  test(`${surface}: the console's Home shows the room at a glance, everyone in it`, async ($, on) => {
+    await startWith($, on, surface)
+    await $.command.run({ command: 'landfall', args: '' })
+    const pane = await $.ui.mount({ ...PANE, surface } as never)
+    expect(await pane.find({ type: 'Text', text: surface === 'terminal' ? '◆ Landfall 168 · cloudfront-5xx-high' : 'Landfall 168 · cloudfront-5xx-high' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'Here · 3' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /bob/ })).toBeDefined()
+  })
 }
+
+test('terminal: under the prompt, the others who are here', async ($, on) => {
+  const { drawn } = await startWith($, on, 'terminal')
+  await $.ui.mount({ ...HINT, surface: 'terminal' } as never)
+  expect(drawn.props.tail).toBe('Here: bob (Claude Code) · carol (war room)')
+})
+
+test('desktop: no who-is-here line under the prompt; the header carries the avatars', async ($, on) => {
+  const { drawn } = await startWith($, on, 'desktop')
+  await $.ui.mount({ ...HINT, surface: 'desktop' } as never)
+  expect(drawn.props.hint).toBe('? for shortcuts')
+  expect(drawn.props.tail).toBeUndefined()
+})
 
 // Measured live: "collab-bob (you) · Claude · Claude: investigating · Claude:
 // investigating". Two sessions of one tool are one entry, its doing said once.
@@ -174,47 +190,33 @@ const TWICE = JSON.stringify({
   ],
 }) + '\n'
 
-for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: /room says each of a person's tools once, with its doing once`, async ($, on) => {
-    await startWith($, on, surface, TWICE)
-    const pane = await $.ui.mount({ ...PANE, surface } as never)
-    const want = surface === 'terminal' ? '● collab-bob (you) · Claude: investigating · Codex (away)' : 'Claude: investigating · Codex (away)'
-    expect(await pane.find({ type: 'Text', text: want })).toBeDefined()
-    const texts = (await pane.findAll({ type: 'Text' })).map((t: any) => (t.props?.children ?? t.children ?? []).join?.('') ?? '')
-    expect(texts.filter((t: string) => /Claude · Claude|Claude: investigating.*investigating/.test(t))).toEqual([])
-  })
-}
+test("/landfall home in text says each of a person's tools once, with its doing once", async ($, on) => {
+  await startWith($, on, 'terminal', TWICE, false)
+  const answer = await $.command.run({ command: 'landfall', args: 'home' })
+  expect(String(answer.text)).toContain('● collab-bob (you) · Claude: investigating · Codex (away)')
+  expect(String(answer.text)).not.toMatch(/Claude · Claude|Claude: investigating.*investigating/)
+})
 
-test('desktop: the band is a card with the Beacon mark, pills, avatars and a primary Catch up', async ($, on) => {
+test('desktop: the band is one card with the Beacon mark, labels, avatars and a primary Catch up', async ($, on) => {
   await startWith($, on, 'desktop')
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' } as never)
-  // An Svg has no key: the mark is the first picture, named by its alt.
   const pictures = await band.findAll({ type: 'Svg' })
   expect(pictures[0]?.props.alt).toBe('Landfall')
   expect(await band.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: '● investigating' })).toBeDefined()
   expect(await band.find({ type: 'Text', text: '● 3 new' })).toBeDefined()
-  const avatars = await band.findAll({ type: 'Svg' })
-  expect(avatars.map((a) => a.props.alt).filter((a) => a !== 'Landfall')).toEqual(['alice (you), here', 'bob, here', 'carol, here'])
-  const catchUp = await band.find({ type: 'Button', key: 'catch-up' })
-  expect(catchUp?.props).toMatchObject({ label: 'Catch up', variant: 'primary', hotkey: '1' })
-  expect(await band.find({ type: 'Text', text: /1 vote awaited · Beacon investigating/ })).toBeDefined()
+  expect(pictures.map((a) => a.props.alt).filter((a) => a !== 'Landfall')).toEqual(['alice (you), here', 'bob, here', 'carol, here'])
+  expect((await band.find({ type: 'Button', key: 'catch-up' }))?.props).toMatchObject({ label: 'Catch up', variant: 'primary', hotkey: '1' })
+  // A label is never pressable-looking: no border.
+  const labels = (await band.findAll({ type: 'Box' })).filter((b) => b.props.backgroundColor)
+  expect(labels.length).toBeGreaterThan(0)
+  expect(labels.every((b) => !b.props.borderStyle)).toBe(true)
 })
 
-test('desktop: /room draws each person with an avatar and Close as the dismiss control', async ($, on) => {
-  await startWith($, on, 'desktop')
-  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' } as never)
-  const alts = (await pane.findAll({ type: 'Svg' })).map((a) => a.props.alt)
-  expect(alts).toContain('dave, away')
-  expect(alts).toContain('alice (you), here')
-  expect((await pane.find({ type: 'Button', key: 'pane-close' }))?.props).toMatchObject({ role: 'dismiss' })
-})
-
-test('mobile: the band is compact, with a count of who is here and no pane key', async ($, on) => {
+test('mobile: the band is compact, with a count of who is here, and still opens the console', async ($, on) => {
   const { filled } = await startWith($, on, 'mobile')
   const band = await $.ui.mount({ ...BAND, surface: 'mobile' } as never)
   expect(await band.find({ type: 'Text', text: '3 here' })).toBeDefined()
-  expect(await band.find({ type: 'Button', key: 'show' })).toBeUndefined()
+  expect(await band.find({ type: 'Button', key: 'console' })).toBeDefined()
   await band.press({ key: 'catch-up' })
   expect(filled).toEqual(['Catch me up on what changed in the war room.'])
 })

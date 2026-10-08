@@ -55,8 +55,8 @@ test('a prompt carries what the Go hook delivers, run with --from-mod', async ($
   const out = await $.prompt.submit({ text: 'what broke?', wait: false, origin: { kind: 'user' } } as never)
 
   expect(out.context).toEqual(['Room update: pool exhausted'])
-  // Sending a message closes the room pane, so it cannot keep the keyboard.
-  expect(closed).toEqual(['landfall-room'])
+  // Sending a message closes nothing: the console stays docked and never holds the keys unasked.
+  expect(closed).toEqual([])
   expect(runs[0].argv).toEqual(['landfall', 'hooks', 'user-prompt-submit', '--host', 'claude-code', '--from-mod'])
   expect(JSON.parse(runs[0].stdin ?? '{}')).toMatchObject({ hook_event_name: 'UserPromptSubmit', session_id: 's1', cwd: '/work', prompt: 'what broke?' })
 })
@@ -120,7 +120,7 @@ test('the session announces the mod, and the room stream draws the band', async 
   expect(toasts).toEqual(['Landfall 166 · Checkout 5xx: maya: @alex can you check the pool?'])
 
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await band.find({ type: 'Text', text: 'Landfall · Landfall 166 · Checkout 5xx · 3 new' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '◆ Landfall 166 · Checkout 5xx · 3 new' })).toBeDefined()
   // The newest item, not the @-mention the digest lists first.
   expect(await band.find({ type: 'Text', text: 'finding admitted: #41 corroborated and admitted' })).toBeDefined()
   await band.press({ key: 'catch-up' })
@@ -130,10 +130,10 @@ test('the session announces the mod, and the room stream draws the band', async 
   await band.press({ key: 'later' })
   await band.unmount()
   const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await again.find({ type: 'Text', text: /^Landfall · / })).toBeUndefined()
+  expect(await again.find({ type: 'Text', text: /^◆ Landfall 166/ })).toBeUndefined()
 })
 
-test('/room lists every untold line, a finding labelled as one', async ($, on) => {
+test('/landfall home in text lists every untold line, a finding labelled as one', async ($, on) => {
   mock.clock(on)
   on('env.get', () => ({ value: undefined }))
   on('env.set', () => ({ value: undefined }))
@@ -150,8 +150,8 @@ test('/room lists every untold line, a finding labelled as one', async ($, on) =
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' } as never)
   for (let i = 0; i < 20; i++) await new Promise((r) => setTimeout(r, 5))
 
-  // Where no pane can be drawn, /room answers in text.
-  const answer = await $.command.run({ command: 'room', args: '' })
+  // Where no pane can be drawn, /landfall home answers in text.
+  const answer = await $.command.run({ command: 'landfall', args: 'home' })
   expect(answer.text).toBe(
     'Landfall 166 · Checkout 5xx · 3 new\n  maya: @alex can you check the pool?\n  beacon (finding, awaiting a second person): pool exhausted at 14:02\n  finding admitted: #41 corroborated and admitted',
   )

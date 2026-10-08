@@ -37,7 +37,7 @@ test("an agent's metric read becomes a chart in the room with one key: a local c
   await $.tool.call({ tool: 'mcp__landfall__query_signals', tool_use_id: 't1', source: 'cloudwatch', operation: 'getMetricData', params } as never)
 
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await band.find({ type: 'Text', text: 'Chart ready: DbCpuUtilization' })).toBeDefined()
+  expect((await band.find({ type: 'Button', key: 'pin' }))?.props.label).toBe('add chart DbCpuUtilization')
   await band.press({ key: 'pin' })
 
   expect(runs[0].slice(0, 4)).toEqual(['landfall', 'chart', '--host', 'claude-code'])
@@ -48,7 +48,7 @@ test("an agent's metric read becomes a chart in the room with one key: a local c
   await band.unmount()
   // Added once: the offer goes away.
   const again = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await again.find({ type: 'Text', text: /^Chart ready/ })).toBeUndefined()
+  expect(await again.find({ type: 'Button', key: 'pin' })).toBeUndefined()
 })
 
 test('a log read offers no chart', async ($, on) => {
@@ -56,10 +56,10 @@ test('a log read offers no chart', async ($, on) => {
   on('ui.render', () => ({ type: 'Text', props: {}, children: [''] }))
   await $.tool.call({ tool: 'mcp__landfall__query_signals', tool_use_id: 't2', source: 'cloudwatch', operation: 'filterLogEvents' } as never)
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
-  expect(await band.find({ type: 'Text', text: /^Chart ready/ })).toBeUndefined()
+  expect(await band.find({ type: 'Button', key: 'pin' })).toBeUndefined()
 })
 
-test('a refused chart says why, from /chart too', async ($, on) => {
+test('a refused chart says why, from /landfall chart too', async ($, on) => {
   const toasts: string[] = []
   on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'cloudwatch getMetricStatistics: 1 series, 5 points, 17:00 to 17:05Z.' }] } }))
   on('process.run', () => ran('{"ok":false,"error":"this checkout is not reading any room right now"}\n'))
@@ -69,12 +69,12 @@ test('a refused chart says why, from /chart too', async ($, on) => {
   })
   on('command.register', () => ({ value: undefined }))
   await $.tool.call({ tool: 'mcp__landfall__query_signals', tool_use_id: 't3', source: 'cloudwatch', operation: 'getMetricStatistics', params: { MetricName: 'CacheHitRate' } } as never)
-  await $.command.run({ command: 'chart', args: '' })
+  await $.command.run({ command: 'landfall', args: 'chart' })
   expect(toasts).toEqual(['Chart not added: this checkout is not reading any room right now'])
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: key 4 adds the chart, a real button naming the metric off the terminal`, async ($, on) => {
+  test(`${surface}: key 4 adds the chart, the key row's last key naming the metric`, async ($, on) => {
     const runs: Array<readonly string[]> = []
     on('tool.call', () => ({ result: { content: [{ type: 'text', text: 'cloudwatch getMetricData: 1 series, 60 points, 17:00 to 18:00Z.' }] } }))
     on('process.run', ($, e) => {
@@ -87,13 +87,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const band = await $.ui.mount({ ...BAND, surface })
     const pin = await band.find({ type: 'Button', key: 'pin' })
     expect(pin?.props.hotkey).toBe('4')
-    if (surface === 'terminal') {
-      expect(await band.find({ type: 'Text', text: 'Chart ready: 5xxErrorRate' })).toBeDefined()
-      expect(pin?.props.label).toBe('add it to the room')
-    } else {
-      expect(pin?.props.label).toBe('Add chart: 5xxErrorRate')
-      expect((await band.findAll({ type: 'Svg' }))[0]?.props.alt).toBe('Landfall')
-    }
+    expect(pin?.props.label).toBe(surface === 'terminal' ? 'add chart 5xxErrorRate' : 'Add chart 5xxErrorRate')
+    // The console's key is in the same row; it is never dropped.
+    expect((await band.find({ type: 'Button', key: 'console' }))?.props.hotkey).toBe('2')
     await band.press({ key: 'pin' })
     expect(runs[0].slice(0, 4)).toEqual(['landfall', 'chart', '--host', 'claude-code'])
   })

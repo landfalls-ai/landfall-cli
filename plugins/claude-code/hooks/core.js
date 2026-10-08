@@ -353,6 +353,12 @@ export const CONSOLE_COLUMNS = 84
 consoleState.focus = ''
 consoleState.offset = 0
 consoleState.closed = false
+// scrollTo   an element key the next drawing brings to the top (`/landfall topology`)
+// chosen     the person picked a tab this session (`/landfall` alone returns to it)
+// joined     { roomKey, name } of a room joined from the picker until the watch stream has it
+consoleState.scrollTo = ''
+consoleState.chosen = false
+consoleState.joined = null
 
 // TOASTS (round 4 review, issue 2). The engine draws a toast in a box 40 cells wide and cuts it
 // after 3 rows, so every toast the console raises is at most TOAST_MAX characters, the outcome

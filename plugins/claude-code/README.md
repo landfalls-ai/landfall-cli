@@ -4,7 +4,8 @@ Keeps a Claude Code session current on its Landfall war room without ever taking
 
 Requires Claude Code **2.1.287 or later** (mods are on by default from that version) and `landfall`
 v0.9.0 or later; the room at a glance (status, people, Beacon) needs v0.9.6, and an older `landfall`
-simply leaves it out. The components below need v0.10.0. Tested with Claude Code 2.1.293.
+simply leaves it out. The console needs the `landfall` that ships `whoami`, `login --json`, `brief`,
+`artifacts`, `artifact`, `wall --person` and `open`. Tested with Claude Code 2.1.294.
 
 ## Install
 
@@ -17,93 +18,63 @@ On Claude Code 2.1.287+ that installs this mod (`landfall@landfall`) beside the 
 
 ## What it does
 
+One command, `/landfall`, and one pane, the console. Keys draft prompts or run the `landfall` CLI;
+nothing starts a turn, nothing makes an MCP call, nothing changes the incident's status, severity or
+focus (those stay in the war room).
+
 | Where | What the person sees | When |
 |---|---|---|
-| Band above the prompt | `Landfall · <room> · 2 new`, the newest line, and three keys: **1** catch up, **2** show the room, **3** later | as soon as the room daemon has news, idle or not |
-| Toast | a chat message that names someone | once per message |
-| Status line | the room at a glance: `🔴 Landfall 166 · investigating · SEV2 · 4 here · Beacon investigating · 2 new · 1 held`; the dot turns 🟡 once mitigated, 🟢 once resolved | always, while the folder is in a room |
-| Hint line under the prompt | who else is here and where: `Here: bob (Claude Code) · carol (war room)` | while you are not typing |
-| Toast | `<room> is now resolved`, `<room>: Beacon concluded` | once per change |
+| Band above the prompt | `◆ Landfall 168 · cloudfront-5xx-high · 3 new  ● vote waiting 4m 10s  ● agent ✓`, the vote's statement and keys (**5** corroborate, **6** contest, **7** read the evidence, **8** later), Beacon's step or conclusion (**9**), the newest line or `New on the wall` (**w**), then **1** catch up, **2** open the console, **3** later, **4** add chart | only while something needs the person |
+| Status line | `🔴 Landfall 168 · investigating · SEV2 · 4 here · Beacon investigating · 3 new`; 🟡 mitigated, 🟢 resolved, hollow `○` while reconnecting | always, while the folder is in a room |
+| Hint line (terminal) | `Here: carol (war room) · bob (Claude Code)` | while you are not typing |
 | Prompt box | a dim "Catch me up on what changed in the war room." after a turn, Tab to take it | only when the room has news |
-| `/room` (or **2**) | the room at a glance (status, the leading theory, everyone in it with their agents and what each is doing), then every untold line, in a pane, with no model call | when typed, even mid-turn |
-| Band, second row | `Chart ready: <metric> · 4: add it to the room` | after your agent reads a metric through the room (`query_signals`) |
-| `/chart` | the same, as a command | when typed |
+| Toasts | a mention, a status change, Beacon concluding, a vote asked of you, a new widget or artifact; 80 characters at most | once each |
+| Sound | one soft chime when your incident becomes SEV1 or a vote waits on you; off until **Sound cues** is switched on in `/config`; macOS only | once per event |
 
-**4 add it to the room** puts that read on the war room's canvas as a chart, on your own
-dashboard, with no model call and nothing more to approve: the mod runs `landfall chart`, which has
-your room daemon make the same read with the room's own session and queues the chart for your
-session to publish, so nobody copies a data point. (It is a local command rather than an MCP call
-because Claude Code puts a plugin's MCP call made from a key press to its permission dialog.) Your
-agent can do the same through `share_with_room` with `fromQuery` when you ask it to chart something.
+### The console
 
-**The room at a glance** comes from the war room's context frame, which your room daemon already
-reads and caches: it never waits on the network to draw, refreshes the frame in the background
-within 30 s, and at once when the room's status changes or someone joins or leaves. "Here" means
-active in the last 45 s; a browser tab in the war room counts as being there.
+`/landfall [tab] [text]`. A segmented switcher is pinned at the top of the pane (the console moves
+its own body under it); every tab stays live while the console is open, and a tab you are not
+looking at keeps its count on the switcher. Closing the console (Esc, the mark) stops every read.
 
-**1 catch up** only drafts the prompt; the person sends it. The agent hears the room on the person's
-next message, exactly as it did with the settings hooks: the mod runs `landfall hooks
-user-prompt-submit --from-mod` and attaches what it returns as context only Claude reads.
+| Tab | Shows | `/landfall …` | Reads |
+|---|---|---|---|
+| Home | your vote, Beacon, who is here and what each last shared, the wall's tiles, load balancers, the latest events; on a short pane the last blocks give way and say where they went | `home`, `overview` | the watch stream, and the Wall, Load balancers and Timeline reads |
+| Vote | the finding the room waits on your position for; **c** corroborate, **x** contest with a reason, **l** later | `vote` | watch, `landfall vote` as you |
+| Context | the room's shared context and its artifacts; **a** adds the shared context to your agent's conversation (one appended note, no turn), Enter adds an artifact | `context`, `context artifacts` | `landfall brief`, `landfall artifacts`, `landfall artifact` |
+| Wall | the shared wall, a person's dashboard, or yours; **a** ask, **n** next widget, **d** next dashboard | `wall`, `wall <name>`, `wall mine`, `topology` | `landfall wall [--person]`, every 15 s |
+| People | who is here, their lines and latest contribution; Enter opens a person's investigation; **c** claim a line, **e** release | `people`, `who`, `people <name>` | watch |
+| Timeline | the room oldest first, kind chips, Enter quotes a row | `timeline [findings\|status\|beacon\|people\|other]` | `landfall timeline`, on each new event |
+| Load balancers | targets by zone and health, 5xx per target group; **s** share as a widget, **a** ask | `lb [name]` | `landfall lb`, every 60 s |
+| Incidents | open incidents, your rooms first; Enter joins (the shared context is added to your conversation), **b** brief only, **o** open in browser | `incidents` | `landfall incidents`, every 30 s |
+| More | Comms (stakeholder updates, read only) and Brain (the company second brain) | `more`, `comms`, `brain [text]` | `landfall comms`, `landfall brain` |
 
-### The room's components (mod 0.5.0, landfall v0.10.0)
+Three words act without opening a tab: `/landfall lines <label>` claims a line, `/landfall chart` adds
+your agent's latest metric read to the room as a chart, `/landfall sound` says whether the chime is on.
+Where no pane can be placed (`claude -p`), `/landfall <tab>` answers the tab in text.
 
-Every one draws in the terminal and, in the Code tab of the Claude desktop app, as native cards,
-pills and vector charts (VS Code and the mobile app draw compact versions). A key or button only
-drafts a prompt or runs a `landfall` command: nothing starts a turn, nothing changes the incident's
-status, severity or focus (those stay in the war room), and no button makes an MCP call.
+**The way in.** `/landfall` alone lands on Home in a room. Not in a room, it lands on Incidents as
+the incident picker, or, with no sign-in (`landfall whoami --json`), as the sign-in state: **s** runs
+`landfall login --json`, the CLI's own browser handoff (the mod never opens a browser), the console
+waits with the link and a clock, **x** cancels (ending the CLI), and once you are in it goes back to
+the picker. Enter on an incident runs `landfall join --incident`, adds the shared context to your
+conversation and switches to Home; your agent adopts the room on its next tool call.
 
-| Where | What the person sees | Runs |
-|---|---|---|
-| Band | **Your vote is waiting**: the staged finding, who staged it, positions so far, time left; **5** corroborate, **6** contest with a reason, **7** read the evidence, **8** later. A toast for each new request. On a wide fullscreen terminal the full card opens beside the conversation. Never offered for your own finding | `landfall vote` (as you, never as your agent) |
-| Band | `◆ Beacon step 6 · comparing 5xx per target group`; after a run, its conclusion with **9** to read it | watch |
-| Band | `Lines: eu-west-1 5xx (you) · origin pool (alice)` | watch |
-| `/vote` | the full vote card | `landfall vote` |
-| `/incidents` | your organization's open incidents, your rooms first; Enter joins from this session, **b** brief only, **o** open in the browser | `landfall incidents`, `landfall join --incident` |
-| `/who` | everyone in the room, where they work, and each person's latest contribution with its state; press to quote it | watch |
-| `/wall` | the room's canvas in the shared arrangement, every widget type drawn natively, data read as you | `landfall wall` |
-| `/lb [name]` | load balancers in the room's AWS connection: targets by zone and health, 5xx share per target group by minute; **s** shares it as a chart | `landfall lb` |
-| `/timeline [kind]` | the room oldest first, filters for findings, status, Beacon, people; press to quote | `landfall timeline` |
-| `/topology` | the room's graph widget, trust as line style | `landfall wall` |
-| `/lines [text]` | claim or release a line of investigation | `landfall lines` |
-| `/comms` | stakeholder updates and whether they were approved and sent (read only) | `landfall comms` |
-| `/brain [text]` | past incidents like this one from the Company second brain | `landfall brain` |
-| Tool rows | your agent's Landfall tool calls as short Landfall rows (a read as a sparkline, a share with what became of it) | none |
-| Context | the room's focus and scope as one context block for your agent | watch |
-| Sound | one soft chime when your incident becomes SEV1 or a vote waits on you; off until **Sound cues** is switched on in `/config`; macOS only | none |
-| `/landfall-sound` | whether the chime is on, and how to change it | none |
-
-### Live panes and both sides of the connection
-
-A pane reads the room again only while it is open, on the session's own clock:
-
-| Pane | Reads again |
-|---|---|
-| `/wall` | every 15 s (the web canvas's own cadence), and at once when a widget lands, changes or the shared arrangement is saved |
-| `/topology` | when a widget event lands |
-| `/lb` | every 60 s (CloudWatch's minute) |
-| `/timeline` | on every new room event; the newest page is laid over the rows shown |
-| `/incidents`, `/comms` | every 30 s |
-
-Each ends with `live · updated 12s ago`. A failed read keeps what the pane showed and says
-`stale · updated 40s ago · <why>`. While the room's connection is down, the band and the panes say
-**Reconnecting to the room…** and the status line's dot is hollow (`○`). A new widget is told as a
-toast (`New on the wall: 5xx by target group · by bob`, at most one per 10 s) and the band offers
-**w** to open the wall for a minute after. The band's head says whether your agent (`landfall
-serve`) is in the room (`agent ✓`, or `agent not in the room`), and `/room` says both: `You: this
-session (Claude Code) · your agent: in the room`. Joining from `/incidents` brings your agent in on
-its next step. These read the `landfall watch` fields `widgetSeq`, `newestWidget`, `connection` and
-`agent`; an older `landfall` that sends none of them leaves the words out and the panes read on
-their timers alone.
+A failed read keeps what the tab showed and says `stale · updated 40s ago · <why>`; while the
+room's connection is down the header and the band say **Reconnecting to the room…**.
 
 ### Layout
 
 `hooks/register.js` owns the session: the single `session.start`, the one `landfall watch` stream
-and the band. Each file in `hooks/components/` is one feature with the same five exports
-(`install`, `band`, `onSnapshot`, `start`, `tick`); `register.js` calls each by name and hands it an `io`
-object in place of `$`, because `claude plugin validate` follows `$` only into functions declared
-in the same file. `hooks/kit.js` draws Landfall's pieces for each surface; `hooks/views.js` holds
-the pure chart and graph drawings; `hooks/live.js` the bookkeeping every live pane shares (open or
-not, the last good read, stale or not, the footer).
+and the band. `hooks/console.js` owns the console: the `/landfall` command, the pane, the pinned
+switcher (`ui.scroll`), Home, the footer and keys row, and the entry flow (`hooks/components/signin.js`
+is the sign-in state machine). Each file in `hooks/components/` is one feature with the same five
+exports (`install`, `band`, `onSnapshot`, `start`, `tick`), and each console tab adds `tab`, `badge`,
+`warm` and optionally `keys`, `footer`, `refresh` and `text`; register.js and console.js call each by
+name and hand it an `io` object in place of `$`, because `claude plugin validate` follows `$` only
+into functions declared in the same file. `hooks/kit.js` draws Landfall's pieces for each surface;
+`hooks/views.js` holds the pure chart and graph drawings; `hooks/live.js` the bookkeeping every live
+read shares.
 
 ## How it fits with `landfall hooks install`
 

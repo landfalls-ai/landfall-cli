@@ -30,7 +30,6 @@ import {
   HOST,
   TABS,
   addCommand,
-  ago,
   clip,
   consoleState,
   currentRoom,
@@ -42,10 +41,9 @@ import {
   roomName,
   severityTone,
   statusTone,
-  toastText,
   whereIs,
 } from './core.js'
-import { INK, PAPER, kit, TONE } from './kit.js'
+import { kit, TONE } from './kit.js'
 import { notLive, RECONNECTING, since } from './live.js'
 import { fiveXxTone, fmt, healthyTone, hhmm, lastPct, pctCell, toneColor, values, windowWords } from './views.js'
 import { AGENT_IN, AGENT_OUT, roomText } from './components/room.js'
@@ -1336,13 +1334,3 @@ function consoleIo($, surface) {
     },
   }
 }
-
-// toastsOf: every toast this file and the entry flow raise, for the length test.
-export function designedToasts() {
-  return [NOT_PLACED, toastText('Signed in to ' + 'a'.repeat(32) + '.'), 'Sign-in cancelled.']
-}
-
-// Unused imports kept for the drawing kit's tokens.
-void INK
-void PAPER
-void ago

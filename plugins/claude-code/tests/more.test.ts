@@ -44,7 +44,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(chips[0].props.dimColor).toBeUndefined()
     expect(chips[1].props.dimColor).toBe(true)
     expect(chips.every((b: any) => b.props.variant === undefined)).toBe(true)
-    expect((await p.findAll({ type: 'Box' })).some((b: any) => b.props.backgroundColor)).toBe(false)
+    // Never filled: no chip is the ink fill the switcher's active segment alone carries (a status
+    // label's 12% tint is not a fill).
+    expect((await p.findAll({ type: 'Box' })).some((b: any) => b.props.backgroundColor === '#141414')).toBe(false)
     // Comms' own body under it, and no other key.
     expect(await p.find({ type: 'Text', text: 'Stakeholder updates' })).toBeDefined()
     expect(await p.find({ type: 'Text', text: 'Approving an update happens in the war room, in the browser.' })).toBeDefined()

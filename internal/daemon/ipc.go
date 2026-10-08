@@ -106,6 +106,12 @@ type Request struct {
 
 	// read (read.go): a room route, relative to the incident, with its query.
 	Path string `json:"path,omitempty"`
+
+	// All (subscribe) asks for every change rather than the substantive
+	// events: each event that enters the room's ring and each reader arriving
+	// or leaving (Room.SubscribeAll). A watch sends it; a daemon of an older
+	// build ignores it and streams the substantive events, as before.
+	All bool `json:"all,omitempty"`
 }
 
 // ReaderSpec is how a reader introduces itself at attach.
@@ -204,6 +210,14 @@ type RoomView struct {
 	// of the attention projection, read with no agent instance (review
 	// finding 2). VotesAwaited above stays the agent's count.
 	Votes []narrate.Vote `json:"votes,omitempty"`
+	// WidgetSeq, NewestWidget, LastEventAgoMs and Agent (peek only) are the
+	// live view a watcher draws (live.go): the wall's newest change and newest
+	// landed widget, how long since the room was last heard from, and this
+	// workspace's agent in the room.
+	WidgetSeq      int64       `json:"widgetSeq,omitempty"`
+	NewestWidget   *WidgetView `json:"newestWidget,omitempty"`
+	LastEventAgoMs *int64      `json:"lastEventAgoMs,omitempty"`
+	Agent          *AgentView  `json:"agent,omitempty"`
 }
 
 // SeatView is one agent session as `rooms` lists it.
@@ -254,7 +268,11 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		frame, _ := room.Frame(fctx)
 		fcancel()
 		harness := req.Reader.Harness
-		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace, Harness: harness, Seat: seat.Label})
+		// A terminal reader attached on its own is the person joining from the
+		// mod (`landfall join --incident`): the room goes on offer to this
+		// workspace's agent (live.go).
+		personJoined := kind == KindTerminal
+		rd := room.Attach(Reader{Name: req.Reader.Name, Kind: kind, Host: req.Reader.Host, WorkspaceKey: req.Reader.WorkspaceKey, Workspace: req.Reader.Workspace, Harness: harness, Seat: seat.Label, PersonJoined: personJoined})
 		// An agent front end runs in the person's terminal: the person becomes a
 		// reader of this room at the same moment, at the same position, so what
 		// happens from here on is untold to THEM until a hook shows it. One such
@@ -268,8 +286,11 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		d.opts.Log(fmt.Sprintf("attached %s (%s) to %s at cursor %d; %d reader(s) connected", rd.Name, rd.Kind, room.Config.IncidentID, rd.Cursor, room.ConnectedReaders()))
 		d.save()
+		if personJoined {
+			d.announceOffer()
+		}
 		res := ok()
-		res.RoomKey, res.AgentInstanceID, res.Reader, res.Frame, res.Connection = room.Key, seat.InstanceID, rd, frame, room.Connection
+		res.RoomKey, res.AgentInstanceID, res.Reader, res.Frame, res.Connection = room.Key, seat.InstanceID, rd, frame, room.ConnectionState()
 		return res
 
 	case "link":
@@ -330,7 +351,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			return fail("brief unavailable: " + err.Error())
 		}
 		res := ok()
-		res.Frame, res.Connection = frame, room.Connection
+		res.Frame, res.Connection = frame, room.ConnectionState()
 		return res
 
 	case "delta":
@@ -348,7 +369,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 		}
 		d.save()
 		res := ok()
-		res.Delta, res.Connection, res.Since = delta, room.Connection, &since
+		res.Delta, res.Connection, res.Since = delta, room.ConnectionState(), &since
 		return res
 
 	case "peek":
@@ -422,7 +443,7 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 			name := room.Name()
 			res.Rooms = append(res.Rooms, RoomView{
 				RoomKey: room.Key, IncidentID: room.Config.IncidentID, DisplayID: name.DisplayID, Title: name.Title,
-				Slug: room.Config.Slug, Connection: room.Connection, Readers: room.Readers(), Seats: seats, MaxSeq: room.MaxSeq(),
+				Slug: room.Config.Slug, Connection: room.ConnectionState(), Readers: room.Readers(), Seats: seats, MaxSeq: room.MaxSeq(),
 			})
 		}
 		return res
@@ -447,6 +468,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 
 	case "match":
 		return d.match(req)
+
+	case "adoptable":
+		return d.adoptable(req)
 
 	case "read":
 		return d.read(ctx, req)
@@ -496,13 +520,18 @@ func (d *Daemon) peek(req Request) Response {
 		}
 		res.Rooms = append(res.Rooms, RoomView{
 			RoomKey: room.Key, IncidentID: room.Config.IncidentID, DisplayID: name.DisplayID, Title: name.Title,
-			Slug: room.Config.Slug, Connection: room.Connection,
+			Slug: room.Config.Slug, Connection: room.ConnectionState(),
 			Count: len(untold), MaxSeq: room.MaxSeq(), Cursor: cursor, Digest: digest, Events: untold,
 			Attention: attention, VotesAwaited: votes,
 		})
 		st := room.StatusView()
 		res.Rooms[len(res.Rooms)-1].Status = &st
 		res.Rooms[len(res.Rooms)-1].Votes = room.VotesView()
+		view := &res.Rooms[len(res.Rooms)-1]
+		view.WidgetSeq, view.NewestWidget = room.WallView()
+		view.LastEventAgoMs = room.LastEventAgoMs()
+		agent := room.AgentFor(req.WorkspaceKey, req.Harness)
+		view.Agent = &agent
 	}
 	return res
 }
@@ -621,6 +650,9 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 	} else if req.Op == "subscribe" {
 		d.subscribe(ctx, conn, req)
 		return
+	} else if req.Op == "await-room" {
+		d.serveAwaitRoom(ctx, conn, req)
+		return
 	} else {
 		// An attach may join the room over the network (once per harness),
 		// and a link lookup may wait for a sibling's redeem; the two-second
@@ -657,10 +689,13 @@ func (d *Daemon) subscribe(ctx context.Context, conn net.Conn, req Request) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	ch, unsubscribe := room.Subscribe()
+	if req.All {
+		ch, unsubscribe = room.SubscribeAll()
+	}
 	defer unsubscribe()
 	ack := ok()
 	ack.V = answerVersion(req)
-	ack.RoomKey, ack.Connection = room.Key, room.Connection
+	ack.RoomKey, ack.Connection = room.Key, room.ConnectionState()
 	body, _ := json.Marshal(ack)
 	if _, err := conn.Write(append(body, '\n')); err != nil {
 		return
@@ -679,7 +714,13 @@ func (d *Daemon) subscribe(ctx context.Context, conn net.Conn, req Request) {
 		case <-gone:
 			return
 		case evt := <-ch:
-			line, err := json.Marshal(map[string]any{"seq": evt.SeqOr(-1), "event": evt})
+			msg := map[string]any{"seq": evt.SeqOr(-1), "event": evt}
+			if req.All {
+				// A watch only needs the moment: no payload (an executed
+				// widget can carry its whole series), just what changed.
+				msg = map[string]any{"seq": evt.SeqOr(-1), "type": evt.Type}
+			}
+			line, err := json.Marshal(msg)
 			if err != nil {
 				continue
 			}
@@ -688,6 +729,27 @@ func (d *Daemon) subscribe(ctx context.Context, conn net.Conn, req Request) {
 			}
 		}
 	}
+}
+
+// serveAwaitRoom is `await-room`, the second long-lived connection: a
+// `landfall serve` that is in no room holds it, and is answered (one line, as
+// `adoptable` would answer) the moment the person joins a room for its
+// workspace and harness from the mod, or at once when one is already on offer.
+// The connection closes with no answer when the daemon stops.
+func (d *Daemon) serveAwaitRoom(ctx context.Context, conn net.Conn, req Request) {
+	_ = conn.SetDeadline(time.Time{})
+	gone := make(chan struct{})
+	go func() {
+		_, _ = bufio.NewReader(conn).ReadByte()
+		close(gone)
+	}()
+	res := d.awaitRoom(ctx, gone, req)
+	if res == nil {
+		return
+	}
+	res.V = answerVersion(req)
+	body, _ := json.Marshal(res)
+	_, _ = conn.Write(append(body, '\n'))
 }
 
 // answerVersion is the protocol a request is answered in: its own, or 2 for a

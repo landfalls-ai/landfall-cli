@@ -50,6 +50,10 @@ type Reader struct {
 	AttachedAt time.Time `json:"attachedAt"`
 	LastSeenAt time.Time `json:"lastSeenAt"`
 	Connected  bool      `json:"connected"`
+	// PersonJoined marks a terminal reader the person attached directly from
+	// the mod (`landfall join --incident`), not one created beside an agent:
+	// the room is on offer to this workspace's agent (live.go).
+	PersonJoined bool `json:"personJoined,omitempty"`
 }
 
 // SilentReaderTTL is how long a reader that detached (or vanished) keeps its

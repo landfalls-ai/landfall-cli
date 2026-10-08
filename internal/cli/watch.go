@@ -23,9 +23,22 @@ package cli
 // the agent stays with the user-prompt-submit hook, which the mod runs on the
 // person's next message, so watching never counts as telling.
 //
-// WHEN IT WAKES. On every event a room's `subscribe` stream pushes, and on a
+// WHEN IT WAKES. On every change a room's `subscribe` stream pushes, and on a
 // slow tick as well, which picks up a room joined after start, a daemon that
-// restarted, and the held count only this checkout's spool knows.
+// restarted, and the held count only this checkout's spool knows. The stream
+// is asked for EVERY change (`all`), not the substantive events the hooks
+// read: widget rows are plumbing to a hook but are exactly what the wall and
+// its toast draw, this machine's own writes (a chart from the mod) change the
+// band too, and the agent arriving is the band's "agent ✓". Measured in
+// watch_live_test.go: a widget landing at the daemon is a line in well under a
+// millisecond locally, against a 250 ms bound; a status change still waits
+// for the frame read the daemon starts on it (the 250 ms re-poll below).
+//
+// WHEN A LINE IS WRITTEN. When the snapshot differs from the last one written
+// with the self-growing ages left out (lastEventAgoMs, agent.sinceMs): those
+// are as of the line, and a reader ages them itself. A room heard from again
+// after a quiet spell of watchHeardStep is written even so, so that ageing
+// does not run on from a stale value.
 //
 // WHAT IT COSTS. Nothing on the network per tick: the peek answers from the
 // daemon's cache, and the daemon reads the person's view (votes, claims,
@@ -88,6 +101,25 @@ type WatchRoom struct {
 	// view (contracts/cli-json.md §1 as amended by review finding 2). Always
 	// present, empty when nothing waits; VotesAwaited stays the agent's count.
 	Votes []narrate.Vote `json:"votes"`
+
+	// The live view (specs/20261008-150000-edge-components/live.md):
+	//
+	// WidgetSeq is the newest seq of a widget-shaping event (a widget landed,
+	// refreshed, failed, pinned or unpinned, an edge widget, the shared
+	// arrangement saved); 0 when none since the daemon joined. A reader that
+	// sees it move re-reads the wall.
+	WidgetSeq int64 `json:"widgetSeq"`
+	// NewestWidget is the newest widget that landed on the wall, with its
+	// title, type and who put it there, when known; omitted when none has.
+	NewestWidget *daemon.WidgetView `json:"newestWidget,omitempty"`
+	// LastEventAgoMs is how long since the daemon last heard from the room (an
+	// event or a frame read), as of this line; omitted when unknown. An age
+	// growing is not a change: the stream does not write a line only for that
+	// (see watchKey), so a reader adds the time since it received the line.
+	LastEventAgoMs *int64 `json:"lastEventAgoMs,omitempty"`
+	// Agent is this workspace's agent session (`landfall serve`) in the room.
+	// Omitted only by a daemon of an older build.
+	Agent *daemon.AgentView `json:"agent,omitempty"`
 }
 
 // WatchSnapshot is one line of the stream.
@@ -110,6 +142,31 @@ type WatchDeps struct {
 	Tick time.Duration
 	// Orphaned reports that the process that started this one is gone.
 	Orphaned func() bool
+	// Now is the clock; nil means time.Now.
+	Now func() time.Time
+}
+
+// watchHeardStep is how far the moment a room was last heard from must move
+// before that alone is worth a line: a busy room's machinery (Beacon's
+// queries) would otherwise redraw the band on every row.
+const watchHeardStep = 5 * time.Second
+
+// watchKey is a snapshot without the ages that grow by themselves, so a line
+// is written when something happened, not because a clock moved.
+func watchKey(snap WatchSnapshot) string {
+	cp := snap
+	cp.Rooms = make([]WatchRoom, len(snap.Rooms))
+	for i, r := range snap.Rooms {
+		r.LastEventAgoMs = nil
+		if r.Agent != nil {
+			a := *r.Agent
+			a.SinceMs = nil
+			r.Agent = &a
+		}
+		cp.Rooms[i] = r
+	}
+	body, _ := json.Marshal(cp)
+	return string(body)
 }
 
 // Watch writes a snapshot line whenever one differs from the last, until ctx
@@ -165,7 +222,13 @@ func Watch(ctx context.Context, deps WatchDeps) error {
 		}
 	}
 
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
 	last := ""
+	// heard is when each room was last heard from, as of the last line.
+	heard := map[string]time.Time{}
 	for {
 		snap := deps.Snapshot()
 		if snap.Rooms == nil {
@@ -185,12 +248,25 @@ func Watch(ctx context.Context, deps WatchDeps) error {
 		if refreshing {
 			soon = time.After(watchRefreshPoll)
 		}
-		body, err := json.Marshal(snap)
-		if err == nil && string(body) != last {
+		key := watchKey(snap)
+		at := now()
+		write := key != last
+		roomsHeard := map[string]time.Time{}
+		for _, r := range snap.Rooms {
+			if r.LastEventAgoMs == nil {
+				continue
+			}
+			h := at.Add(-time.Duration(*r.LastEventAgoMs) * time.Millisecond)
+			roomsHeard[r.RoomKey] = h
+			if h.Sub(heard[r.RoomKey]) >= watchHeardStep {
+				write = true
+			}
+		}
+		if body, err := json.Marshal(snap); err == nil && write {
 			if _, werr := deps.Out.Write(append(body, '\n')); werr != nil {
 				return nil // the reader is gone; so is the reason to run
 			}
-			last = string(body)
+			last, heard = key, roomsHeard
 		}
 		select {
 		case <-ctx.Done():
@@ -205,13 +281,31 @@ func Watch(ctx context.Context, deps WatchDeps) error {
 	}
 }
 
-// watchSnapshot reads the daemon's peek for this workspace's terminal reader,
-// plus the status line, which carries what only the spool knows (held items).
+// watchPeekTimeout bounds the watch's one peek. Not a hook's 250 ms: a peek
+// that reads the room's attention after a claim event waits on the network
+// (up to 900 ms, peekAttentionBudget), and a watch that gave up sooner would
+// write a line with no rooms in it, then the rooms again.
+const watchPeekTimeout = daemon.RequestTimeout
+
+// watchSnapshot reads the daemon's peek for this workspace's terminal reader.
+// The status line is formatted from that same peek (the daemon's `status` is
+// the same peek again) plus what only the spool knows (held items); only a
+// daemon that does not answer falls back to StatusLine's own reads.
 func watchSnapshot(ws hooks.Workspace) WatchSnapshot {
-	snap := WatchSnapshot{Type: "rooms", Line: StatusLine(ws)}
-	res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(ws.Dir()), Harness: ws.Harness}, hooks.SocketTimeout)
+	snap := WatchSnapshot{Type: "rooms"}
+	res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "peek", WorkspaceKey: hooks.WorkspaceKey(ws.Dir()), Harness: ws.Harness}, watchPeekTimeout)
 	if err != nil || res == nil || !res.OK {
+		snap.Line = StatusLine(ws)
 		return snap
+	}
+	if line := daemon.FormatStatusLine(res.Rooms); line != "" {
+		ids := make([]string, 0, len(res.Rooms))
+		for _, r := range res.Rooms {
+			ids = append(ids, r.IncidentID)
+		}
+		snap.Line = line + spoolSuffix(ws, ids, time.Now())
+	} else {
+		snap.Line = StatusLine(ws)
 	}
 	snap.Rooms = watchRoomsOf(res.Rooms)
 	return snap
@@ -231,7 +325,8 @@ func watchRoomsOf(rooms []daemon.RoomView) []WatchRoom {
 			RoomKey: r.RoomKey, IncidentID: r.IncidentID, DisplayID: r.DisplayID, Title: r.Title,
 			Slug: r.Slug, Connection: string(r.Connection), Count: r.Count, Addressed: addressed,
 			VotesAwaited: r.VotesAwaited, MaxSeq: r.MaxSeq, Digest: r.Digest, Status: r.Status,
-			Votes: votesOrEmpty(r.Votes),
+			Votes:     votesOrEmpty(r.Votes),
+			WidgetSeq: r.WidgetSeq, NewestWidget: r.NewestWidget, LastEventAgoMs: r.LastEventAgoMs, Agent: r.Agent,
 		})
 	}
 	return out
@@ -271,7 +366,11 @@ func subscribeOnce(ctx context.Context, socketPath, roomKey string, wake func())
 		<-ctx.Done()
 		_ = conn.Close()
 	}()
-	req, _ := json.Marshal(daemon.Request{Op: "subscribe", V: daemon.ProtocolVersion, RoomKey: roomKey})
+	// All: every change, not only the substantive events. Widget rows are
+	// plumbing to the hooks (realtime.IsPlumbing) and this machine's own
+	// writes are filtered from the substantive stream, yet both change what
+	// the band and the wall show; so does the agent arriving.
+	req, _ := json.Marshal(daemon.Request{Op: "subscribe", V: daemon.ProtocolVersion, RoomKey: roomKey, All: true})
 	if _, err := conn.Write(append(req, '\n')); err != nil {
 		return
 	}

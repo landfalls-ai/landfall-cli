@@ -74,6 +74,17 @@ func (g *joinGate) startLocked() chan struct{} {
 	return done
 }
 
+// busy reports that the startup join has not landed yet (running, or failed
+// and to be tried again on the next tool call).
+func (g *joinGate) busy() bool {
+	if g == nil {
+		return false
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.pending != nil
+}
+
 // wait blocks until the room is joined, the attempt fails, or the budget
 // runs out. A failed attempt with nothing running starts a new one first.
 func (g *joinGate) wait(ctx context.Context, budget time.Duration) error {

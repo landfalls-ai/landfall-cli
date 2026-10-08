@@ -1,4 +1,8 @@
-import { expect, mock, test } from 'claude-code/testing'
+import { expect, test } from 'claude-code/testing'
+import { Drawn, fakeIo, kitFor, openConsoleOn, setRooms, settle } from './_tab'
+import { consoleState } from '../hooks/core.js'
+import * as wallTab from '../hooks/components/wall.js'
+import * as rosterTab from '../hooks/components/roster.js'
 
 // `landfall wall` as the Go CLI prints it (internal/cli/wall.go
 // flattenWidget, wall_test.go): every widget type, data already resolved
@@ -90,86 +94,101 @@ const WALL = {
   unavailable: [{ id: 'w9', type: 'chart', title: 'RDS replica lag', reason: 'needs a connection you cannot read' }],
 }
 
-const ROOM = { roomKey: 'k168', incidentId: 'i168', displayId: 'Landfall 168', title: 'cloudfront-5xx-high', slug: 'acme', connection: 'live', count: 0, addressed: 0, votesAwaited: 0, digest: [] }
-const snap = (maxSeq: number) => JSON.stringify({ type: 'rooms', line: '', rooms: [{ ...ROOM, maxSeq }] }) + '\n'
-
-const PANE = { title: 'Wall', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } as const
-const VIEW = { columns: 140, rows: 50, isFullscreen: true }
-
-function ran(stdout: string) {
-  return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
+const ROOM = {
+  roomKey: 'k168',
+  incidentId: 'i168',
+  displayId: 'Landfall 168',
+  title: 'cloudfront-5xx-high',
+  slug: 'acme',
+  connection: 'live',
+  count: 0,
+  addressed: 0,
+  votesAwaited: 0,
+  maxSeq: 233,
+  widgetSeq: 231,
+  digest: [] as string[],
+  status: { status: 'investigating', severity: 'SEV2', people: [] as unknown[] },
 }
 
-async function settle(done: () => boolean) {
-  for (let i = 0; i < 60 && !done(); i++) await new Promise((r) => setTimeout(r, 5))
+const SURFACES = ['terminal', 'desktop'] as const
+
+// A fresh tab on a room, the way the console opens it: nothing read, nothing selected.
+function begin(rooms: unknown[] = [ROOM]) {
+  wallTab.reset()
+  rosterTab.reset()
+  setRooms(rooms)
+  openConsoleOn('wall')
 }
 
-test('/wall draws every widget type in the shared arrangement, on each surface', async ($, on) => {
-  const runs: Array<readonly string[]> = []
-  on('process.run', ($, e) => {
-    runs.push(e.argv)
-    return ran('{"note":"progress"}\n' + JSON.stringify(WALL) + '\n')
-  })
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const answer = await $.command.run({ command: 'wall', args: '' })
-    expect(answer.text).toBeUndefined()
-    expect(runs.at(-1)).toEqual(['landfall', 'wall', '--host', 'claude-code'])
+async function draw(surface: 'terminal' | 'desktop' | 'vscode' | 'mobile', io: ReturnType<typeof fakeIo>, args: string | null = null, width = 100) {
+  return new Drawn(wallTab.tab(kitFor(surface, width), io as never, io.clock.t, args))
+}
 
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-    expect(await pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeDefined()
+async function keysOf(surface: 'terminal' | 'desktop', io: ReturnType<typeof fakeIo>) {
+  return new Drawn(wallTab.keys(kitFor(surface), io as never))
+}
+
+test('the wall draws every widget type in the shared arrangement, on each surface', async () => {
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => WALL)
+    wallTab.warm(io as never)
+    await settle()
+    expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168'])
+    const pane = await draw(surface, io)
+    expect(pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: ' · last 6h' })?.props.dimColor).toBe(true)
     // Every widget is a title the person can select.
     for (const title of ['5xx error rate', 'Healthy origins', 'Logs · web-edge', 'Topology', 'Target groups', 'Deploys', 'What happened', 'Mystery widget', '5xx by region', 'Pool size', 'p99 latency']) {
-      expect(await pane.find({ type: 'Button', text: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') })).toBeDefined()
+      expect(pane.find({ type: 'Button', text: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') })).toBeDefined()
     }
-    // stat: the big value and its unit.
-    expect(await pane.find({ type: 'Text', text: '4' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '/6' })).toBeDefined()
-    // ...its change, as the web app words it, in the stat's tone, and its baseline.
-    expect((await pane.find({ type: 'Text', text: '● ↓ 2' }))?.props.color).toBe('#fab219')
-    expect(await pane.find({ type: 'Text', text: '6 an hour ago' })).toBeDefined()
-    // geo: each place in its tone, with its value.
-    expect(await pane.find({ type: 'Text', text: 'us-east-1 · N. Virginia' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '34%' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'eu-west-1' })).toBeDefined()
+    // stat: the big value and its unit, its change in the stat's tone, and its baseline.
+    expect(pane.find({ type: 'Text', text: '4' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '/6' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '● ↓ 2' })?.props.color).toBe('#fab219')
+    expect(pane.find({ type: 'Text', text: '6 an hour ago' })).toBeDefined()
+    // geo: the place plain, its share as a label in its tone.
+    expect(pane.find({ type: 'Text', text: 'us-east-1 · N. Virginia' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '● 34%' })?.props.color).toBe('#d03b3b')
+    expect(pane.find({ type: 'Text', text: 'eu-west-1' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '0.4%' })).toBeDefined()
     // codeFinding: where, then the snippet with its line numbers, and the link.
-    expect(await pane.find({ type: 'Text', text: 'acme/web-edge · src/pool.ts' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '42' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '  max: 16,' })).toBeDefined()
-    expect(await pane.find({ type: 'Link' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'acme/web-edge · src/pool.ts' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '42' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '  max: 16,' })).toBeDefined()
+    expect(pane.find({ type: 'Link' })).toBeDefined()
     // A widget with no data yet says so.
-    expect(await pane.find({ type: 'Text', text: 'No data in this window yet.' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'No data in this window yet.' })).toBeDefined()
     // logView: level-colored tags.
-    const errs = await pane.findAll({ type: 'Text', text: 'ERR' })
+    const errs = pane.all({ type: 'Text', text: 'ERR' })
     expect(errs).toHaveLength(2)
     expect(errs[0].props.color).toBe('#d03b3b')
-    expect((await pane.find({ type: 'Text', text: 'WRN' }))?.props.color).toBe('#fab219')
+    expect(pane.find({ type: 'Text', text: 'WRN' })?.props.color).toBe('#fab219')
     // table: aligned columns, header first.
-    expect(await pane.find({ type: 'Text', text: /^target\s+zone\s+state$/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: /^i-07aa\s+us-east-1c\s+unhealthy$/ })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: /^target\s+zone\s+state$/ })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: /^i-07aa\s+us-east-1c\s+unhealthy$/ })).toBeDefined()
     // events and timeline.
-    expect(await pane.find({ type: 'Text', text: /^15:29 deploy-bot UpdateService web-edge/ })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'Alarm 5xx over 2%' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: /^15:29 deploy-bot UpdateService web-edge/ })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'Alarm 5xx over 2%' })).toBeDefined()
     // an unknown type is its title alone.
-    expect(await pane.find({ type: 'Text', text: 'heatmapOfTheFuture widgets draw in the web app.' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'heatmapOfTheFuture widgets draw in the web app.' })).toBeDefined()
     // unavailable, with the reason.
-    expect(await pane.find({ type: 'Text', text: 'RDS replica lag: needs a connection you cannot read' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'RDS replica lag: needs a connection you cannot read' })).toBeDefined()
 
     if (surface === 'terminal') {
       // chart: a Raster sparkline per series and the deploy marker under it.
-      expect(await pane.find({ type: 'Raster', key: 'w-w1-s0' })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: /^ {9}↑ web-edge v2\.3\.1 15:29Z$/ })).toBeDefined()
-      expect(await pane.find({ type: 'Raster', key: 'w-w2-s' })).toBeDefined()
+      expect(pane.find({ type: 'Raster', key: 'w-w1-s0' })).toBeDefined()
+      expect(pane.find({ type: 'Text', text: /^ {9}↑ web-edge v2\.3\.1 15:29Z$/ })).toBeDefined()
+      expect(pane.find({ type: 'Raster', key: 'w-w2-s' })).toBeDefined()
       // graph: an indented tree with trust words.
-      expect(await pane.find({ type: 'Text', text: 'cloudfront' })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'confirmed' })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'established, both ways' })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'cloudfront (cdn)' })).toBeDefined()
-      expect(await pane.findAll({ type: 'Svg' })).toHaveLength(0)
+      expect(pane.find({ type: 'Text', text: 'cloudfront' })).toBeDefined()
+      expect(pane.find({ type: 'Text', text: 'confirmed' })).toBeDefined()
+      expect(pane.find({ type: 'Text', text: 'established, both ways' })).toBeDefined()
+      expect(pane.find({ type: 'Text', text: 'cloudfront (cdn)' })).toBeDefined()
+      expect(pane.all({ type: 'Svg' })).toHaveLength(0)
     } else {
       // chart: a vector line with the threshold and the deploy marker.
-      const svgs = await pane.findAll({ type: 'Svg' })
+      const svgs = pane.all({ type: 'Svg' })
       const chart = svgs.find((x) => String(x.props.alt).startsWith('5xx error rate:'))
       expect(chart?.props.source).toContain('stroke-dasharray="4 3"')
       expect(chart?.props.source).toContain('web-edge v2.3.1')
@@ -182,112 +201,122 @@ test('/wall draws every widget type in the shared arrangement, on each surface',
       expect(graph?.props.source).toContain('<title>cloudfront (cdn) · warning</title>')
       expect(graph?.props.source).toContain('<title>web-edge-alb to us-east-1c: established, both ways</title>')
       // Two columns when the pane is wide enough.
-      expect(await pane.find({ type: 'Box', key: 'wall-grid' })).toBeDefined()
-      expect(await pane.findAll({ type: 'Raster' })).toHaveLength(0)
+      expect(pane.find({ type: 'Box', key: 'w-grid' })).toBeDefined()
+      expect(pane.all({ type: 'Raster' })).toHaveLength(0)
     }
-    await pane.unmount()
   }
 })
 
-test('a on the selected widget drafts a question about it, and never sends', async ($, on) => {
-  let filled: string[] = []
-  let submitted = 0
-  let statuses = 0
-  mock.clock(on)
-  on('env.get', () => ({ value: undefined }))
-  on('env.set', () => ({ value: undefined }))
-  on('command.register', () => ({ value: undefined }))
-  on('ui.status', () => {
-    statuses += 1
-    return { value: undefined }
-  })
-  on('ui.toast', () => ({ value: undefined }))
-  on('process.spawn', async function* () {
-    yield { stream: 'stdout', text: snap(41) }
-    return { value: { code: 0, signal: null } }
-  })
-  on('process.run', () => ran(JSON.stringify(WALL) + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('prompt.fill', ($, e) => {
-    filled.push(e.text)
-    return { isFilled: true }
-  })
-  on('prompt.submit', () => {
-    submitted += 1
-    return { text: '' }
-  })
-  on('session.start', () => ({ cwd: '/work' }))
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' } as never)
-  await settle(() => statuses >= 1)
-  for (const surface of ['terminal', 'desktop'] as const) {
-    filled = []
-    await $.command.run({ command: 'wall', args: '' })
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-    await pane.press({ key: 'w-w3-t' })
-    await pane.press({ key: 'wall-ask' })
-    await pane.press({ key: 'w-w1-t' })
-    await pane.press({ key: 'wall-next' })
-    await pane.press({ key: 'wall-ask' })
-    expect(filled).toEqual(['Tell me about the Logs · web-edge widget in Landfall 168.', 'Tell me about the Healthy origins widget in Landfall 168.'])
-    expect(submitted).toBe(0)
-    await pane.unmount()
+test('a on the selected widget drafts a question about it, and never sends', async () => {
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => WALL)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    await pane.press('w-w3-t')
+    await (await keysOf(surface, io)).press('wall-ask')
+    await pane.press('w-w1-t')
+    await (await keysOf(surface, io)).press('wall-next')
+    await (await keysOf(surface, io)).press('wall-ask')
+    expect(io.filled).toEqual(['Tell me about the Logs · web-edge widget in Landfall 168.', 'Tell me about the Healthy origins widget in Landfall 168.'])
+    expect(io.appended).toEqual([])
+    // The selected widget's title carries the mark; the key names it.
+    const again = await draw(surface, io)
+    expect(again.find({ type: 'Button', text: '▸ Healthy origins' })).toBeDefined()
+    expect((await keysOf(surface, io)).find({ key: 'wall-ask' })?.props.label).toBe('ask about Healthy origins')
   }
 })
 
-// The wall's live cadence (15 s while open, a widget event at once, stale on
-// a failed read) is pinned in live.test.ts.
+test('the wall answers in text where no pane can be placed, and says why when it cannot be read', async () => {
+  begin()
+  let answer: unknown = WALL
+  const io = fakeIo(() => answer)
+  const text = await wallTab.text(io as never, '')
+  expect(text).toContain('Wall · shared by carol · Landfall 168 · cloudfront-5xx-high · last 6h')
+  expect(text).toContain('Healthy origins\n  4/6 ↓ 2\n  6 an hour ago')
+  expect(text).toContain('5xx by region\n  us-east-1 · N. Virginia 34% (critical)\n  eu-west-1 0.4%')
+  expect(text).toContain('Pool size\n  acme/web-edge · src/pool.ts\n  41  export const POOL = {\n  42    max: 16,\n  43  }\n  https://github.com/acme/web-edge/blob/abc123/src/pool.ts#L41-L43')
+  expect(text).toContain('p99 latency\n  No data in this window yet.')
+  expect(text).toContain('  5xxErrorRate: last 3.1, peak 6.1\n  marker: web-edge v2.3.1 at 15:29Z\n  threshold 2')
+  expect(text).toContain('Topology\n  cloudfront (cdn)  warning\n  └─ web-edge-alb  confirmed  warning\n     └─ us-east-1c  established, both ways  critical')
+  expect(text).toContain('  ERR upstream timeout pool=origin-b')
+  expect(text).toContain('Not shown here:\n  RDS replica lag: needs a connection you cannot read')
 
-test('/wall answers in text where no pane can be placed, and says why when the wall cannot be read', async ($, on) => {
-  let answerJson = JSON.stringify(WALL)
-  on('process.run', () => ran(answerJson + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: false, reason: 'headless' } }))
-  on('command.register', () => ({ value: undefined }))
-
-  const answer = await $.command.run({ command: 'wall', args: '' })
-  expect(answer.text).toContain('Wall · shared by carol · last 6h')
-  expect(answer.text).toContain('Healthy origins\n  4/6 ↓ 2\n  6 an hour ago')
-  expect(answer.text).toContain('5xx by region\n  us-east-1 · N. Virginia 34% (critical)\n  eu-west-1 0.4%')
-  expect(answer.text).toContain('Pool size\n  acme/web-edge · src/pool.ts\n  41  export const POOL = {\n  42    max: 16,\n  43  }\n  https://github.com/acme/web-edge/blob/abc123/src/pool.ts#L41-L43')
-  expect(answer.text).toContain('p99 latency\n  No data in this window yet.')
-  expect(answer.text).toContain('  5xxErrorRate: last 3.1, peak 6.1\n  marker: web-edge v2.3.1 at 15:29Z\n  threshold 2')
-  expect(answer.text).toContain('Topology\n  cloudfront (cdn)  warning\n  └─ web-edge-alb  confirmed  warning\n     └─ us-east-1c  established, both ways  critical')
-  expect(answer.text).toContain('  ERR upstream timeout pool=origin-b')
-  expect(answer.text).toContain('Not shown here:\n  RDS replica lag: needs a connection you cannot read')
-
-  answerJson = '{"ok":false,"error":"Your sign-in expired. Run landfall login."}'
-  const failed = await $.command.run({ command: 'wall', args: '' })
-  expect(failed.text).toBe('Your sign-in expired. Run landfall login.')
+  answer = { ok: false, error: 'Your sign-in expired. Run landfall login.' }
+  expect(await wallTab.text(io as never, '')).toBe('Your sign-in expired. Run landfall login.')
 })
 
-test('a failed read shows its sentence in the pane', async ($, on) => {
-  on('process.run', () => ran('{"ok":false,"error":"This checkout is not reading any room right now."}\n'))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  for (const surface of ['terminal', 'desktop'] as const) {
-    await $.command.run({ command: 'wall', args: '' })
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-    expect(await pane.find({ type: 'Text', text: 'This checkout is not reading any room right now.' })).toBeDefined()
-    expect(await pane.find({ type: 'Button', key: 'wall-ask' })).toBeUndefined()
-    await pane.unmount()
+test('the topology as text, and when the wall has none', async () => {
+  begin()
+  let answer: unknown = WALL
+  const io = fakeIo(() => answer)
+  expect(await wallTab.text(io as never, 'topology')).toBe(
+    ['Topology', '  cloudfront (cdn)  warning', '  └─ web-edge-alb  confirmed  warning', '     └─ us-east-1c  established, both ways  critical'].join('\n'),
+  )
+  answer = { ...WALL, widgets: [WALL.widgets[0]] }
+  expect(await wallTab.text(io as never, 'topology')).toBe('The wall has no topology yet. Ask your agent or Beacon to map the services this incident touches.')
+})
+
+test('/landfall topology selects the first graph once, and says so when the wall has none', async () => {
+  begin()
+  const io = fakeIo(() => WALL)
+  wallTab.warm(io as never)
+  await settle()
+  const pane = await draw('terminal', io, 'topology')
+  expect(pane.find({ type: 'Button', text: '▸ Topology' })).toBeDefined()
+  expect(wallTab.graphKey()).toBe('w-w4')
+  expect(consoleState.args).toBeNull()
+  // The person's own choice wins from then on.
+  await pane.press('w-w2-t')
+  expect((await draw('terminal', io)).find({ type: 'Button', text: '▸ Healthy origins' })).toBeDefined()
+
+  begin()
+  const bare = fakeIo(() => ({ ...WALL, widgets: [WALL.widgets[0]] }))
+  wallTab.warm(bare as never)
+  await settle()
+  const none = await draw('terminal', bare, 'topology')
+  expect(none.find({ type: 'Text', text: /^The wall has no topology yet\./ })).toBeDefined()
+  expect(wallTab.graphKey()).toBe('')
+})
+
+test('a failed read shows its sentence', async () => {
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => ({ ok: false, error: 'This checkout is not reading any room right now.' }))
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    expect(pane.find({ type: 'Text', text: 'This checkout is not reading any room right now.' })).toBeDefined()
+    expect((await keysOf(surface, io)).find({ key: 'wall-ask' })).toBeUndefined()
   }
 })
 
-test('the wall draws on vscode and mobile too, as vectors', async ($, on) => {
-  on('process.run', () => ran(JSON.stringify(WALL) + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: true } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'wall', args: '' })
+test('before the first read it says so, and outside a room it points at Incidents', async () => {
+  begin()
+  const io = fakeIo(() => WALL)
+  expect((await draw('terminal', io)).find({ type: 'Text', text: 'Press r to read the wall.' })).toBeDefined()
+  begin([])
+  const none = await draw('terminal', io)
+  expect(none.find({ type: 'Text', text: 'Not in a war room yet. Open Incidents above to join one, or open a share link from the room.' })).toBeDefined()
+  expect(none.find({ key: 'wall-sel' })).toBeUndefined()
+})
+
+test('the wall draws on vscode and mobile too, as vectors', async () => {
   for (const surface of ['vscode', 'mobile'] as const) {
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: { columns: 60, rows: 40 }, props: { ...PANE, bodyColumns: 50 } })
-    expect(await pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeDefined()
-    expect((await pane.findAll({ type: 'Svg' })).length).toBeGreaterThan(2)
+    begin()
+    const io = fakeIo(() => WALL)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io, null, 48)
+    expect(pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeDefined()
+    expect(pane.all({ type: 'Svg' }).length).toBeGreaterThan(2)
     // Narrow: one column.
-    expect(await pane.find({ type: 'Box', key: 'wall-grid' })).toBeUndefined()
-    await pane.unmount()
+    expect(pane.find({ type: 'Box', key: 'w-grid' })).toBeUndefined()
   }
 })
 
-test('a wall with more widgets than one read says how many there are', async ($, on) => {
+test('a wall with more widgets than one read says how many there are', async () => {
   // The CLI reads at most 40 widgets (wallWidgetsMax) and names the total.
   const many = {
     ok: true,
@@ -295,24 +324,22 @@ test('a wall with more widgets than one read says how many there are', async ($,
     unavailable: [{ id: 'u1', type: 'chart', title: 'Replica lag', reason: 'Sign in to read this widget as yourself: run landfall login.' }],
     totalWidgets: 46,
   }
-  let placed = true
-  on('process.run', () => ran(JSON.stringify(many) + '\n'))
-  on('ui.open', () => ({ value: placed ? { isPlaced: true } : { isPlaced: false, reason: 'headless' } }))
-  on('command.register', () => ({ value: undefined }))
-  await $.command.run({ command: 'wall', args: '' })
-  for (const surface of ['terminal', 'desktop'] as const) {
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-    expect(await pane.find({ type: 'Text', text: 'Showing 40 of 46 widgets. Open the war room in the browser for the rest.' })).toBeDefined()
-    await pane.unmount()
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => many)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    expect(pane.find({ type: 'Text', text: 'Showing 40 of 46 widgets. Open the war room in the browser for the rest.' })).toBeDefined()
   }
-  placed = false
-  const answer = await $.command.run({ command: 'wall', args: '' })
-  expect(answer.text).toContain('Not shown here:\n  Replica lag: Sign in to read this widget as yourself: run landfall login.\n\nShowing 40 of 46 widgets.')
+  begin()
+  const text = await wallTab.text(fakeIo(() => many) as never, '')
+  expect(text).toContain('Not shown here:\n  Replica lag: Sign in to read this widget as yourself: run landfall login.\n\nShowing 40 of 46 widgets.')
 })
 
 // Beacon's status and remediation cards are logView widgets whose lines carry
-// only a message. Measured live: every line drew behind "DBG". A line with no
-// level is prose; a markdown heading is bold, without its marks.
+// only a message. A line with no level is prose; a markdown heading is bold,
+// without its marks.
 const PROSE = {
   ok: true,
   widgets: [
@@ -332,32 +359,401 @@ const PROSE = {
   unavailable: [],
 }
 
-for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: a log line with no level draws as prose, a heading as bold, never DBG`, async ($, on) => {
-    on('process.run', () => ran(JSON.stringify(PROSE) + '\n'))
-    on('ui.open', () => ({ value: { isPlaced: true } }))
-    on('command.register', () => ({ value: undefined }))
-    await $.command.run({ command: 'wall', args: '' })
-    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
-    expect(await pane.find({ type: 'Text', text: 'DBG' })).toBeUndefined()
-    expect((await pane.find({ type: 'Text', text: 'FAST FIX  [temporary]' }))?.props.bold).toBe(true)
-    expect((await pane.find({ type: 'Text', text: 'ROOT-CAUSE MITIGATION' }))?.props.bold).toBe(true)
-    // (Clipped to the card on the desktop's two-column grid.)
-    const plain = await pane.find({ type: 'Text', text: /^No safe fast-stabilization action/ })
+test('a log line with no level draws as prose, a heading as bold, never DBG', async () => {
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => PROSE)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    expect(pane.find({ type: 'Text', text: 'DBG' })).toBeUndefined()
+    expect(pane.find({ type: 'Text', text: 'FAST FIX  [temporary]' })?.props.bold).toBe(true)
+    expect(pane.find({ type: 'Text', text: 'ROOT-CAUSE MITIGATION' })?.props.bold).toBe(true)
+    const plain = pane.find({ type: 'Text', text: /^No safe fast-stabilization action/ })
     expect(plain).toBeDefined()
     expect(plain?.props.bold).toBeFalsy()
-    // A line that names its level keeps its tag.
-    expect(await pane.find({ type: 'Text', text: 'WRN' })).toBeDefined()
-  })
+    expect(pane.find({ type: 'Text', text: 'WRN' })).toBeDefined()
+  }
+  begin()
+  const text = await wallTab.text(fakeIo(() => PROSE) as never, '')
+  expect(text).toContain('  FAST FIX  [temporary]\n  No safe fast-stabilization action found for the current event.')
+  expect(text).toContain('  WRN Root cause: not yet determined')
+  expect(text).not.toContain('DBG')
+  expect(text).not.toContain('##')
+})
+
+// A geo place whose label already names it is said once (the server's own label for a critical place).
+test('a geo place whose label already names it is said once', async () => {
+  const geo = {
+    ok: true,
+    widgets: [
+      {
+        id: 'g1',
+        type: 'geo',
+        title: '5xx Error Rate by Region',
+        points: [
+          { place: 'eu-west-1', label: 'eu-west-1 · 13.1%', value: 13.1, unit: '%', tone: 'critical' },
+          { place: 'us-east-1', value: 0.28, unit: '%', tone: 'good' },
+        ],
+      },
+    ],
+    unavailable: [],
+  }
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => geo)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    expect(pane.find({ type: 'Text', text: 'eu-west-1 · 13.1%' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: /eu-west-1 · eu-west-1/ })).toBeUndefined()
+    expect(pane.find({ type: 'Text', text: 'us-east-1' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '● 0.28%' })?.props.color).toBe('#0ca30c')
+  }
+})
+
+// ---------------------------------------------------------------------------
+// The dashboard selector (spec §4.2) and a person's dashboard (`--person`).
+
+const DAVE = { name: 'dave', you: true, here: true, humanActorId: 'h-dave', agents: [{ tool: 'Claude Code', label: 'dave-cc', here: true }] }
+const ALICE = { name: 'alice', here: true, humanActorId: 'h-alice', agents: [{ tool: 'Codex', label: 'alice-codex', here: true, doing: 'reading origin pool metrics' }] }
+// bob's row carries no humanActorId yet: the wall's people[] names him by displayName.
+const BOB = { name: 'bob', here: true, agents: [{ tool: 'Claude Code', label: 'bob-cc', here: true }] }
+const CAROL = { name: 'carol', here: true, browser: true, humanActorId: 'h-carol' }
+const ERIN = { name: 'erin', here: false, humanActorId: 'h-erin' }
+const WITH_PEOPLE = { ...ROOM, status: { ...ROOM.status, people: [DAVE, ERIN, CAROL, BOB, ALICE] } }
+
+const WALL_PEOPLE = [
+  { humanActorId: 'h-alice', displayName: 'alice', edgeAgentLabel: 'Codex', kind: 'human', widgets: 2, trail: 3, artifacts: 1, latestSeq: 220 },
+  { humanActorId: 'h-bob', displayName: 'Bob', edgeAgentLabel: 'Claude Code', kind: 'human', widgets: 0, trail: 1, artifacts: 0, latestSeq: 210 },
+  { humanActorId: 'h-carol', displayName: 'carol', edgeAgentLabel: '', kind: 'human', widgets: 1, trail: 0, artifacts: 0, latestSeq: 200 },
+  { humanActorId: 'h-dave', displayName: 'dave', edgeAgentLabel: 'Claude Code', kind: 'human', widgets: 2, trail: 0, artifacts: 0, latestSeq: 190 },
+  { humanActorId: 'h-gone', displayName: 'frank', edgeAgentLabel: '', kind: 'human', widgets: 1, trail: 0, artifacts: 0, latestSeq: 150 },
+]
+const WALL2 = { ...WALL, widgets: [{ id: 'w2', type: 'stat', title: 'Healthy origins', value: '3', unit: '/6', tone: 'serious' }] }
+const SHARED = { ...WALL, people: WALL_PEOPLE }
+
+const SNAP_AT = '2026-10-08T15:11:00Z' // 9 minutes before T0
+const ALICE_WIDGETS = [
+  { id: 'edge-widget-201', type: 'stat', title: 'Origin pool saturation', value: '94', unit: '%', tone: 'critical', spark: [40, 55, 70, 90, 94], capturedAt: SNAP_AT, seq: 201 },
+  { id: 'edge-widget-205', type: 'geo', title: 'Pool connections by zone', points: [{ place: 'us-east-1a', value: 98, unit: '%', tone: 'critical' }], capturedAt: '2026-10-08T15:13:00Z', seq: 205 },
+]
+const alicesDashboard = {
+  ok: true,
+  person: { humanActorId: 'h-alice', displayName: 'alice', edgeAgentLabel: 'Codex', kind: 'human', you: false },
+  widgets: ALICE_WIDGETS,
+  unavailable: [],
+  trail: [],
+  artifacts: [],
+  people: WALL_PEOPLE,
+  arranged: false,
 }
 
-test('/wall in text draws level-less lines as prose too', async ($, on) => {
-  on('process.run', () => ran(JSON.stringify(PROSE) + '\n'))
-  on('ui.open', () => ({ value: { isPlaced: false, reason: 'headless' } }))
-  on('command.register', () => ({ value: undefined }))
-  const answer = await $.command.run({ command: 'wall', args: '' })
-  expect(answer.text).toContain('  FAST FIX  [temporary]\n  No safe fast-stabilization action found for the current event.')
-  expect(answer.text).toContain('  WRN Root cause: not yet determined')
-  expect(answer.text).not.toContain('DBG')
-  expect(answer.text).not.toContain('##')
+function personAnswers(overrides: Record<string, unknown> = {}) {
+  return (argv: string[]) => {
+    const at = argv.indexOf('--person')
+    if (at < 0) return SHARED
+    const who = argv[at + 1]
+    if (who in overrides) return overrides[who]
+    if (who === 'h-alice') return alicesDashboard
+    if (who === 'me') return { ...alicesDashboard, person: { humanActorId: 'h-dave', displayName: 'dave', you: true }, widgets: [ALICE_WIDGETS[0], { ...ALICE_WIDGETS[1], id: 'e-3', title: 'Second' }] }
+    return { ...alicesDashboard, person: { humanActorId: who }, widgets: [] }
+  }
+}
+
+test('the selector is the chip idiom: Shared wall, each person here first, mine last, counts after the names', async () => {
+  for (const surface of SURFACES) {
+    begin([WITH_PEOPLE])
+    const io = fakeIo(personAnswers())
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    const sel = pane.find({ key: 'wall-sel' })!
+    const chips = new Drawn(sel).all({ type: 'Button' })
+    // here first (alice, bob, carol by name), then away (erin), then people who left, then mine; you are `mine`.
+    expect(chips.map((c) => c.props.label.trim())).toEqual(['▸ Shared wall', 'alice 2', 'bob', 'carol 1', 'erin', 'frank 1', 'mine 2'])
+    // No letters, no separators, no fill, no inverse: nothing in the row looks like the switcher.
+    expect(chips.every((c) => c.props.hotkey === undefined && c.props.variant === undefined)).toBe(true)
+    expect(chips.slice(1).every((c) => c.props.dimColor === true)).toBe(true)
+    expect(chips[0].props.dimColor).toBeUndefined()
+    const all: any[] = []
+    for (const n of [sel]) new Drawn(n).all({}).forEach((x) => all.push(x))
+    expect(all.some((n) => n.props.inverse || n.props.backgroundColor || n.props.hotkey)).toBe(false)
+    expect(new Drawn(sel).find({ type: 'Text', text: '│' })).toBeUndefined()
+    // Home's tiles and this tab read the same shared answer.
+    expect(wallTab.sharedAnswer()?.sharedBy).toBe('carol')
+  }
+})
+
+test('pressing a person reads their dashboard, draws it as snapshots, and the shared wall stays read', async () => {
+  for (const surface of SURFACES) {
+    begin([WITH_PEOPLE])
+    const io = fakeIo(personAnswers())
+    wallTab.warm(io as never)
+    await settle()
+    let pane = await draw(surface, io)
+    await pane.press('sel-h-alice')
+    await settle()
+    expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168', '--person', 'h-alice'])
+    pane = await draw(surface, io)
+    expect(pane.find({ type: 'Button', text: '▸ alice 2' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: "alice's dashboard" })?.props.bold).toBe(true)
+    expect(pane.find({ type: 'Text', text: ' · 2 widgets · snapshots · newest 7m ago' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'snapshot 9m ago' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'snapshot 7m ago' })).toBeDefined()
+    expect(pane.find({ type: 'Button', text: '▸ Origin pool saturation' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeUndefined()
+    expect(pane.find({ type: 'Text', text: '● 98%' })?.props.color).toBe('#d03b3b')
+    // The keys ask about a widget on their dashboard, and d goes on to the next dashboard.
+    const keys = await keysOf(surface as 'terminal' | 'desktop', io)
+    await keys.press('wall-ask')
+    expect(io.filled.at(-1)).toBe("Tell me about the Origin pool saturation widget on alice's dashboard in Landfall 168.")
+    await keys.press('wall-dash')
+    await settle()
+    const next = await draw(surface, io)
+    expect(next.find({ type: 'Button', text: '▸ bob' })).toBeDefined()
+    // bob's id came from the wall's people[] by name, and his dashboard is empty.
+    expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168', '--person', 'h-bob'])
+    expect(next.find({ type: 'Text', text: 'bob has not shared a dashboard yet.' })).toBeDefined()
+    // back to the shared wall by its chip.
+    await next.press('sel-shared')
+    expect((await draw(surface, io)).find({ type: 'Text', text: 'Wall · shared by carol' })).toBeDefined()
+  }
+})
+
+test('mine reads --person me; its empty state tells you how to fill it; erin who shared nothing needs no read', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers({ me: { ok: true, person: { humanActorId: 'h-dave', you: true }, widgets: [], unavailable: [], trail: [], artifacts: [], people: WALL_PEOPLE } }))
+  wallTab.warm(io as never)
+  await settle()
+  let pane = await draw('terminal', io)
+  await pane.press('sel-mine')
+  await settle()
+  expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168', '--person', 'me'])
+  pane = await draw('terminal', io)
+  expect(pane.find({ type: 'Text', text: 'You have not shared a dashboard yet. Ask your agent to share what it reads as a widget.' })).toBeDefined()
+  const before = io.runs.length
+  await pane.press('sel-h-erin')
+  await settle()
+  pane = await draw('terminal', io)
+  expect(pane.find({ type: 'Text', text: 'erin has not shared a dashboard yet.' })).toBeDefined()
+  expect(io.runs.length).toBe(before + 1)
+})
+
+test('a person with their own widgets: mine has its count and heading', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  wallTab.warm(io as never)
+  await settle()
+  await (await draw('terminal', io)).press('sel-mine')
+  await settle()
+  const pane = await draw('terminal', io)
+  expect(pane.find({ type: 'Text', text: 'Your dashboard' })?.props.bold).toBe(true)
+  expect(pane.find({ type: 'Text', text: ' · 2 widgets · snapshots' })).toBeDefined()
+})
+
+test('/landfall wall <name> and wall mine select that dashboard once the person is known', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  openConsoleOn('wall', 'Alice')
+  const first = await draw('terminal', io, 'Alice')
+  // Chosen from the watch stream's own names, before anything was read; the args are spent.
+  expect(consoleState.args).toBeNull()
+  expect(first.find({ type: 'Button', text: '▸ alice' })).toBeDefined()
+  await settle()
+  expect(io.runs.map((r) => r.join(' '))).toContain('wall --host claude-code --room k168 --person h-alice')
+  begin([WITH_PEOPLE])
+  const two = fakeIo(personAnswers())
+  const mine = await draw('terminal', two, 'mine')
+  expect(mine.find({ type: 'Button', text: '▸ mine' })).toBeDefined()
+  // A name nobody here has leaves the wall where it was.
+  begin([WITH_PEOPLE])
+  const three = fakeIo(personAnswers())
+  const none = await draw('terminal', three, 'zed')
+  expect(none.find({ type: 'Button', text: '▸ Shared wall' })).toBeDefined()
+})
+
+test('a person is the same person once the CLI says who they are', async () => {
+  begin([{ ...ROOM, status: { ...ROOM.status, people: [DAVE, BOB] } }])
+  const io = fakeIo(personAnswers())
+  const pane = await draw('terminal', io, 'bob')
+  expect(pane.find({ type: 'Button', text: '▸ bob' })).toBeDefined()
+  // No wall answer yet, so no id and nothing to read.
+  expect(io.runs).toEqual([])
+  wallTab.warm(io as never)
+  await settle()
+  const after = await draw('terminal', io)
+  expect(after.find({ type: 'Button', text: '▸ bob' })).toBeDefined()
+  await settle()
+  expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168', '--person', 'h-bob'])
+})
+
+test('the selector clips names, then drops counts, then wraps', async () => {
+  const long = (name: string, id: string) => ({ name, here: true, humanActorId: id })
+  const people = [DAVE, long('alexandria-the-great', 'h-1'), long('bartholomew-simpson', 'h-2'), long('christopher-robin', 'h-3'), long('dorothea-lange', 'h-4')]
+  const rows = people.slice(1).map((p, i) => ({ humanActorId: p.humanActorId, displayName: p.name, widgets: i + 1 }))
+  begin([{ ...ROOM, status: { ...ROOM.status, people } }])
+  const io = fakeIo(() => ({ ...SHARED, people: rows }))
+  wallTab.warm(io as never)
+  await settle()
+  const pane = await draw('terminal', io, null, 60)
+  const labels = new Drawn(pane.find({ key: 'wall-sel' })).all({ type: 'Button' }).map((c) => c.props.label.trim())
+  expect(labels.some((l) => l.includes('…'))).toBe(true)
+  expect(labels.every((l) => l.replace(/^▸ /, '').replace(/ \d+$/, '').length <= 8)).toBe(true)
+  const wide = await draw('terminal', io, null, 200)
+  expect(new Drawn(wide.find({ key: 'wall-sel' })).all({ type: 'Button' }).map((c) => c.props.label.trim())).toContain('alexandria-the-great 1')
+})
+
+// ---------------------------------------------------------------------------
+// The live read (live.md FR-L2, FR-L3), on the session's own clock.
+
+test('an open wall reads again every 15 s, says how old it is, and stops once the console closes', async () => {
+  begin()
+  const io = fakeIo(() => WALL)
+  wallTab.warm(io as never)
+  await settle()
+  expect(io.count('wall')).toBe(1)
+  const foot = () => {
+    const f = wallTab.footer(kitFor('terminal'), io.clock.t)
+    return f ? (f as any).children.join('') : null
+  }
+  expect(foot()).toBe('live · updated 0s ago')
+
+  io.clock.t += 10000
+  await wallTab.tick(io as never, io.clock.t)
+  await settle()
+  expect(io.count('wall')).toBe(1)
+  expect(foot()).toBe('live · updated 10s ago')
+
+  io.clock.t += 5000
+  await wallTab.tick(io as never, io.clock.t)
+  await settle()
+  expect(io.count('wall')).toBe(2)
+  expect(foot()).toBe('live · updated 0s ago')
+
+  // Closed: no more reads, however long it has been.
+  consoleState.open = false
+  io.clock.t += 120000
+  await wallTab.tick(io as never, io.clock.t)
+  await settle()
+  expect(io.count('wall')).toBe(2)
+})
+
+test('a widget event reads the open wall at once, and a failed read keeps the wall, marked stale', async () => {
+  begin()
+  let answer: unknown = WALL
+  const io = fakeIo(() => answer)
+  wallTab.warm(io as never)
+  await settle()
+  const snap = (over: Record<string, unknown>) => ({ line: '', rooms: [{ ...ROOM, ...over }] })
+  const tick = async (ms: number) => {
+    io.clock.t += ms
+    setRooms([{ ...ROOM, ...((tick as any).over ?? {}) }])
+    await wallTab.tick(io as never, io.clock.t)
+    await settle()
+  }
+  // Another room event that shapes no widget: nothing read.
+  wallTab.onSnapshot(io as never, snap({ maxSeq: 234 }) as never, null as never)
+  await settle()
+  expect(io.count('wall')).toBe(1)
+  // A widget event: read within the same moment, no tick needed.
+  answer = WALL2
+  setRooms([{ ...ROOM, maxSeq: 235, widgetSeq: 235 }])
+  wallTab.onSnapshot(io as never, snap({ maxSeq: 235, widgetSeq: 235 }) as never, null as never)
+  await settle()
+  expect(io.count('wall')).toBe(2)
+  expect((await draw('terminal', io)).find({ type: 'Text', text: '3' })).toBeDefined()
+  // The next read, 15 s on, fails: the wall stays, the line says it is stale and why.
+  answer = { ok: false, error: 'Your sign-in expired. Run landfall login.' }
+  ;(tick as any).over = { maxSeq: 235, widgetSeq: 235 }
+  await tick(17000)
+  expect(io.count('wall')).toBe(3)
+  expect((await draw('terminal', io)).find({ type: 'Text', text: '3' })).toBeDefined()
+  expect(((wallTab.footer(kitFor('terminal'), io.clock.t) as any).children as string[]).join('')).toBe('stale · updated 17s ago · Your sign-in expired. Run landfall login.')
+  // A good read clears it.
+  answer = WALL
+  await tick(15000)
+  expect(((wallTab.footer(kitFor('terminal'), io.clock.t) as any).children as string[]).join('')).toBe('live · updated 0s ago')
+  expect((await draw('terminal', io)).find({ type: 'Text', text: '4' })).toBeDefined()
+})
+
+test('a selected person reads on the same cadence and on any new room event; shared and person are read independently', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  wallTab.warm(io as never)
+  await settle()
+  await (await draw('terminal', io)).press('sel-h-alice')
+  await settle()
+  const person = () => io.runs.filter((r) => r.includes('--person')).length
+  expect(person()).toBe(1)
+  // A new event (their snapshots are events): read at once.
+  setRooms([{ ...WITH_PEOPLE, maxSeq: 240 }])
+  wallTab.onSnapshot(io as never, { line: '', rooms: [{ ...WITH_PEOPLE, maxSeq: 240 }] } as never, null as never)
+  await settle()
+  expect(person()).toBe(2)
+  // Not on another tab.
+  consoleState.tab = 'home'
+  io.clock.t += 16000
+  await wallTab.tick(io as never, io.clock.t)
+  await settle()
+  expect(person()).toBe(2)
+  consoleState.tab = 'wall'
+  io.clock.t += 16000
+  await wallTab.tick(io as never, io.clock.t)
+  await settle()
+  expect(person()).toBe(3)
+})
+
+test('while the room reconnects the wall says so, and live again it clears', async () => {
+  begin([{ ...ROOM, connection: 'disconnected' }])
+  const io = fakeIo(() => WALL)
+  wallTab.warm(io as never)
+  await settle()
+  const text = (f: any) => (f ? (f.children as string[]).join('') : null)
+  expect(text(wallTab.footer(kitFor('terminal'), io.clock.t))).toBe('Reconnecting to the room…')
+  setRooms([ROOM])
+  expect(text(wallTab.footer(kitFor('terminal'), io.clock.t))).toBe('live · updated 0s ago')
+})
+
+test('the wall reads the room this session is in, named with --room', async () => {
+  const OLD = { ...ROOM, roomKey: 'k166', displayId: 'Landfall 166', maxSeq: 10, agent: { inRoom: false }, status: { ...ROOM.status, status: 'resolved' } }
+  begin([OLD, { ...ROOM, agent: { inRoom: true } }])
+  const io = fakeIo(() => WALL)
+  wallTab.warm(io as never)
+  await settle()
+  const argv = io.runs.find((a) => a[0] === 'wall')!
+  expect(argv[argv.indexOf('--room') + 1]).toBe('k168')
+  expect(io.runs.some((a) => a.includes('k166'))).toBe(false)
+})
+
+test('a new widget is told once per 10 s, and the wall hint offers w for a minute', async () => {
+  begin()
+  const io = fakeIo(() => WALL)
+  const feed = async (over: Record<string, unknown>) => {
+    const rooms = [{ ...ROOM, ...over }]
+    setRooms(rooms)
+    wallTab.onSnapshot(io as never, { line: '', rooms } as never, null as never)
+    await settle()
+  }
+  const NW = (seq: number, title: string, by?: string) => ({ widgetSeq: seq, newestWidget: { seq, title, type: 'chart', by } })
+  await feed(NW(231, '5xx by target group', 'bob'))
+  // The first sight of the room is not news.
+  expect(io.toasts).toEqual([])
+  await feed(NW(240, 'p99 latency', 'dana'))
+  expect(io.toasts).toEqual(['New on the wall: p99 latency · by dana'])
+  // A second within the gap waits for it.
+  await feed(NW(241, 'Replica lag'))
+  expect(io.toasts).toHaveLength(1)
+  io.clock.t += 5000
+  await wallTab.tick(io as never, io.clock.t)
+  expect(io.toasts).toHaveLength(1)
+  io.clock.t += 5000
+  await wallTab.tick(io as never, io.clock.t)
+  expect(io.toasts).toEqual(['New on the wall: p99 latency · by dana', 'New on the wall: Replica lag'])
+  expect(wallTab.wallHint(io.clock.t)).toEqual({ title: 'Replica lag' })
+  // w opens the console on the Wall, and spends the hint.
+  await wallTab.openWall(io as never)
+  expect(io.opened).toEqual(['landfall'])
+  expect(consoleState.tab).toBe('wall')
+  expect(wallTab.wallHint(io.clock.t)).toBeNull()
 })

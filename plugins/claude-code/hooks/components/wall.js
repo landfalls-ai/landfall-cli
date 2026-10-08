@@ -1,17 +1,33 @@
-// A mirror of the investigation wall: /wall (proposal item 06, FR-06).
+// A mirror of the investigation wall, as the Wall tab of the console (spec
+// §4.2): the room's widgets in the arrangement the incident commander shared,
+// and, one dashboard selector away, what each colleague has built.
 //
-// `landfall wall` answers the room's widgets in the arrangement the incident
-// commander shared, each with its data read through the person's own session,
-// so the per-viewer credential wall holds: nobody sees a series they could
-// not read. The pane draws every widget type natively (vector charts on the
-// desktop, cell graphics on the terminal) and reads the wall again on `r`.
-// While the pane is open it is live (live.md FR-L2, FR-L3): it reads again
-// every 15 s, as the web canvas does, and right away when a widget event
-// lands (`widgetSeq` on the watch stream); a failed read keeps the last good
-// wall and says it is stale; the last line says how old what it shows is.
-// A new widget is told as a toast (FR-L4), and the band offers `w` to open
-// the wall for a minute after. `a` drafts a question about the selected
-// widget; it never sends.
+// `landfall wall` answers the shared wall: each widget with its data read
+// through the person's own session, so the per-viewer credential wall holds.
+// `landfall wall --person <humanActorId|me>` answers one person's dashboard
+// (their `edge.widget` snapshots, data only) plus their trail and artifacts;
+// every wall answer also lists the room's people (`people[]`), which is what
+// the selector is made of. The tab draws every widget type natively (vector
+// charts on the desktop, cell graphics on the terminal).
+//
+// While the console is open the shared wall is live (live.md FR-L2, FR-L3): it
+// reads again every 15 s, as the web canvas does, and right away when a widget
+// event lands (`widgetSeq` on the watch stream); a selected person's dashboard
+// reads on the same cadence and on any new room event (their snapshots are
+// events the watch stream counts in `maxSeq`). A failed read keeps the last
+// good answer and says it is stale. A new widget is told as a toast (FR-L4),
+// and the band offers `w` to open the wall for a minute after. `a` drafts a
+// question about the selected widget; it never sends.
+//
+// THE TAB CONTRACT (core.js CONSOLE; console.js calls these by name):
+//   tab(k, io, nowMs, args)  the body rows; args: a person's name, `mine` or `topology`
+//   badge()                  null (the Wall carries no count)
+//   warm(io)                 starts the reads; calling it again reads once more (it is also `r`)
+//   keys(k, io)              the tab's own letter Buttons: a, n, d
+//   footer(k, nowMs)         the live line of the dashboard shown, or null
+//   text(io, args)           the tab as text, where no pane can be placed
+//   sharedAnswer()           the last good shared wall answer (Home's tiles read it)
+//   graphKey()               the key of the first graph widget, to scroll to
 //
 // The shapes are the Go CLI's own (internal/cli/wall.go flattenWidget): a
 // widget with no data yet carries `empty: true`; a stat may carry trend,
@@ -19,10 +35,9 @@
 // a graph's nodes may carry kind and its edges direction; geo carries points
 // by place and codeFinding a repo, path, permalink and snippet lines. When
 // the wall holds more widgets than the CLI reads at once, `totalWidgets` says
-// how many there are and the pane says so.
+// how many there are and the tab says so.
 
-import { HOST, addCommand, currentOf, currentRoom, parseAnswer, room, roomName } from '../core.js'
-import { kit } from '../kit.js'
+import { HOST, ago, clip, consoleState, currentOf, currentRoom, openConsole, room, roomName } from '../core.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, widgetSeqOf, opened as markOpen } from '../live.js'
 import {
   chartAlt,
@@ -44,7 +59,6 @@ import {
   windowWords,
 } from '../views.js'
 
-export const PANE = 'landfall-wall'
 // The web canvas's own cadence (useLiveWidgets intervalMs): an open wall
 // reads its data again this often, and within a tick of a widget event.
 export const REFRESH_MS = WALL_MS
@@ -52,13 +66,30 @@ export const REFRESH_MS = WALL_MS
 export const NEWS_GAP_MS = 10000
 export const HINT_MS = 60000
 
-// The pane's live read (live.js): the last good `landfall wall` answer, open
-// or not, stale or not. Module state: a hot reload starts it over, and the
-// next draw of the pane marks it open again.
+const NO_ROOM = 'Not in a war room yet. Open Incidents above to join one, or open a share link from the room.'
+const NO_GRAPH = 'The wall has no topology yet. Ask your agent or Beacon to map the services this incident touches.'
+const MINE_EMPTY = 'You have not shared a dashboard yet. Ask your agent to share what it reads as a widget.'
+
+// The shared wall's live read (live.js): the last good `landfall wall`
+// answer, open or not, stale or not. Module state: a hot reload starts it
+// over, and the next draw of the tab marks it open again.
 const lp = livePane()
+// The selected person's dashboard: `landfall wall --person`.
+const pp = livePane()
 const wall = {
   roomKey: '',
+  // The selector (spec §4.2): 'shared', a member's key (their humanActorId, or
+  // `name:<name>` while the CLI has not said who they are), or 'mine'.
+  dashboard: 'shared',
+  dashName: '',
   selected: 0,
+  // What /landfall asked for (a name, `mine`), until the member is known.
+  pending: '',
+  // /landfall topology: the first graph is the selected widget, once.
+  topology: false,
+  topologyDone: false,
+  // The target the person read in `pp` is of (`me` or a humanActorId).
+  ppFor: '',
 }
 
 // New widgets (FR-L4): the newest widget seq seen per room (the first sight
@@ -66,80 +97,461 @@ const wall = {
 // toast was shown and until when the band offers `w`.
 const news = { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '' }
 
-export function install(on) {
-  addCommand({ name: 'wall', description: "Show the war room's investigation wall" })
-
-  on('command.run', { command: 'wall' }, async ($) => {
-    const r = currentRoom()
-    const opened = await $.ui.open({ id: PANE, title: paneTitle(r), focus: true, closeOnEscape: true })
-    if (!opened || !opened.isPlaced) {
-      await loadWall(paneIo($))
-      return { text: wallText(lp.last, r) }
-    }
-    markOpen(lp)
-    await loadWall(paneIo($))
-    return {}
-  })
-
-  // Closed by the person (esc, the close mark) or an unload: the wall stops
-  // reading. The mod's own close (closeWall) marks it itself, since a
-  // plugin's own $.ui.close is not raised to its own hooks.
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    closed(lp)
-    return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const k = kit($.ui.resolve(e), e)
-    // Drawn means open: after a hot reload the engine draws the pane again
-    // and the wall goes on reading.
-    drawn(lp)
-    const nowMs = await clockNow($)
-    const r = currentRoom()
-    const a = lp.answer
-    const rows = []
-    const by = a && a.ok && a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall'
-    const dim = [r ? roomName(r) : '', a && a.ok ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean).join(' · ')
-    rows.push(k.header({ key: 'wall-h', title: by, dim }))
-    if (!a) {
-      rows.push(k.text(lp.inFlight ? 'Reading the wall through your session…' : 'Press r to read the wall.', { key: 'wall-empty', dimColor: true }))
-    } else if (!a.ok) {
-      rows.push(k.text(clipText(a.error || 'The wall could not be read.', k.width), { key: 'wall-err' }))
-    } else {
-      const widgets = a.widgets || []
-      if (widgets.length === 0) rows.push(k.text('Nothing is on the wall yet.', { key: 'wall-none', dimColor: true }))
-      const two = k.rich && k.width >= 90
-      const cards = widgets.map((w, i) => card($, k, w, i, two))
-      if (two) rows.push(k.els.Box({ key: 'wall-grid', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, rowGap: 1, children: cards }))
-      else rows.push(k.col(cards, 'wall-list', 1))
-      const gone = a.unavailable || []
-      if (gone.length > 0) {
-        rows.push(k.text('Not shown here', { key: 'un-h', bold: true }))
-        gone.forEach((u, i) => rows.push(k.text((u.title || u.type || u.id) + ': ' + (u.reason || 'not available'), { key: 'un-' + i, dimColor: true })))
-      }
-      const more = moreWords(a)
-      if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
-    }
-    rows.push(liveFooter(k, lp, nowMs, r, 'wall-live'))
-    const sel = selectedWidget()
-    rows.push(
-      k.row(
-        [
-          sel ? k.button({ key: 'wall-ask', label: 'ask about ' + clipText(sel.title || sel.type, 28), hotkey: 'a', primary: true, onPress: () => askAbout($, sel) }) : null,
-          a && a.ok && (a.widgets || []).length > 1 ? k.button({ key: 'wall-next', label: 'next widget', hotkey: 'n', onPress: () => selectNext($) }) : null,
-          k.button({ key: 'wall-refresh', label: 'refresh', hotkey: 'r', onPress: () => loadWall(paneIo($)) }),
-          k.button({ key: 'wall-close', label: 'close (esc)', dim: true, onPress: () => closeWall($) }),
-        ],
-        'wall-keys',
-      ),
-    )
-    return k.col(rows.filter(Boolean), 'wall')
-  })
+// reset starts the tab's state over (tests; a hot reload does the same by itself).
+export function reset() {
+  Object.assign(lp, livePane())
+  Object.assign(pp, livePane())
+  Object.assign(wall, { roomKey: '', dashboard: 'shared', dashName: '', selected: 0, pending: '', topology: false, topologyDone: false, ppFor: '' })
+  Object.assign(news, { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '' })
 }
+
+// The tab has no command or pane of its own: /landfall wall opens the console.
+export function install(on) {}
 
 export async function band(io, e, k) {
   return null
 }
+
+// ---------------------------------------------------------------------------
+// People, keyed by humanActorId (spec §8). The watch stream's people rows carry
+// it once the CLI says so; until then a row is matched to the wall's
+// `people[].displayName` (the server's one string for both), never by position.
+
+const norm = (s) => String(s ?? '').trim().toLowerCase()
+
+// The order people are listed in: those here before those away, you last
+// among them (you know what you said), then by name.
+export function orderPeople(people) {
+  const rank = (p) => (p.here ? 0 : 2) + (p.you ? 1 : 0)
+  return [...people].sort((a, b) => rank(a) - rank(b) || String(a.name).localeCompare(String(b.name)))
+}
+
+// wallPeopleOf is the answer's people rows: {humanActorId, displayName, edgeAgentLabel, kind, widgets, trail, artifacts, latestSeq}.
+export function wallPeopleOf(a) {
+  return a && a.ok && Array.isArray(a.people) ? a.people : []
+}
+
+// idOfPerson is a watch people row's humanActorId, or '' while nothing says.
+export function idOfPerson(p, a) {
+  if (p && p.humanActorId) return String(p.humanActorId)
+  const want = norm(p && p.name)
+  if (!want) return ''
+  const row = wallPeopleOf(a).find((w) => w.humanActorId && norm(w.displayName) === want)
+  return row ? String(row.humanActorId) : ''
+}
+
+// memberList is the selector's members after `Shared wall`: every person in the
+// room as People orders them (here first, away last), then people who built
+// something and are no longer in it, then `mine` last of all. You are not a
+// member of your own: `mine` is you.
+export function memberList(r, a) {
+  const rows = wallPeopleOf(a)
+  const watch = orderPeople((r && r.status && r.status.people) || [])
+  const seen = new Set()
+  const out = []
+  const mine = { key: 'mine', id: 'me', name: 'mine', you: true, here: true, widgets: null }
+  for (const p of watch) {
+    const id = idOfPerson(p, a)
+    if (id) seen.add(id)
+    const row = id ? rows.find((w) => w.humanActorId === id) : null
+    if (p.you) {
+      if (row) mine.widgets = Number(row.widgets) || 0
+      if (id) mine.humanActorId = id
+      continue
+    }
+    out.push({ key: id || 'name:' + norm(p.name), id, name: String(p.name || 'someone'), here: !!p.here, widgets: row ? Number(row.widgets) || 0 : 0 })
+  }
+  for (const w of rows) {
+    if (!w.humanActorId || seen.has(w.humanActorId)) continue
+    out.push({ key: String(w.humanActorId), id: String(w.humanActorId), name: String(w.displayName || 'someone'), here: false, widgets: Number(w.widgets) || 0 })
+  }
+  out.push(mine)
+  return out
+}
+
+// ---------------------------------------------------------------------------
+// The selector (spec §4.2): `▸ Shared wall  alice 2  bob  carol 1  mine 2`.
+
+function items(members) {
+  const out = [{ key: 'shared', label: 'Shared wall', count: 0 }]
+  for (const m of members) {
+    let count = m.widgets || 0
+    if (m.key === 'mine' && wall.dashboard === 'mine' && pp.answer && pp.answer.ok) count = (pp.answer.widgets || []).length
+    out.push({ key: m.key, label: m.name, count })
+  }
+  return out
+}
+
+// fit says how the selector reads in `width` cells: whole, then names clipped
+// to 8, then without counts; past that it wraps (it is content, not navigation).
+function fit(list, current, width) {
+  const label = (it, clipTo, counts) => (clipTo ? clip(it.label, clipTo) : it.label) + (counts && it.count > 0 ? ' ' + it.count : '')
+  const cells = (clipTo, counts) => list.reduce((n, it) => n + label(it, clipTo, counts).length + (it.key === current ? 2 : 0), 0) + 2 * (list.length - 1)
+  for (const [clipTo, counts] of [[0, true], [8, true], [8, false]]) {
+    if (cells(clipTo, counts) <= width) return { texts: list.map((it) => label(it, clipTo, counts)), wrap: false }
+  }
+  return { texts: list.map((it) => label(it, 8, false)), wrap: true }
+}
+
+// The selector is drawn in the chip idiom the Timeline kinds and More use
+// (round 4 review, issue 1): plain Buttons with no hotkey, two spaces apart,
+// the active member `▸ <name>`, the others dim. Never inverse, never filled,
+// never primary: the console's one filled segment is the switcher's.
+function selectorRow(k, io, list, current) {
+  const { Box, Button } = k.els
+  const { texts, wrap } = fit(list, current, k.width)
+  const kids = list.map((it, i) => {
+    const active = it.key === current
+    const props = { key: 'sel-' + it.key, label: (active ? '▸ ' : '') + texts[i], onPress: () => selectDashboard(io, it.key) }
+    if (k.terminal) props.plain = true
+    if (!active) props.dimColor = true
+    return Button(props)
+  })
+  return Box({ key: 'wall-sel', flexDirection: 'row', columnGap: k.terminal ? 2 : 1, flexWrap: wrap ? 'wrap' : 'nowrap', children: kids })
+}
+
+// readTarget is what `--person` takes for a dashboard: `me`, a humanActorId, or
+// '' when there is nothing to read (the shared wall, or a person nobody has
+// heard from, who has shared nothing).
+function readTarget(key, r) {
+  if (key === 'shared') return ''
+  if (key === 'mine') return 'me'
+  const m = memberList(r || currentRoom(), lp.answer).find((x) => x.key === key)
+  return m && m.id ? m.id : ''
+}
+
+function memberOf(key, members) {
+  return members.find((m) => m.key === key) || null
+}
+
+// selectDashboard shows one dashboard and reads it when it is a person's.
+function selectDashboard(io, key) {
+  if (wall.dashboard === key) return
+  const r = currentRoom()
+  const m = memberOf(key, memberList(r, lp.answer))
+  wall.dashboard = key
+  wall.dashName = m ? norm(m.name) : ''
+  wall.selected = 0
+  wall.topology = false
+  Object.assign(pp, livePane())
+  const target = key === 'shared' ? '' : readTarget(key, r)
+  wall.ppFor = target
+  if (target) {
+    markOpen(pp)
+    void loadPerson(io)
+  }
+  io.invalidate()
+}
+
+function nextDashboard(io) {
+  const r = currentRoom()
+  const list = [{ key: 'shared' }, ...memberList(r, lp.answer)]
+  const at = Math.max(0, list.findIndex((x) => x.key === wall.dashboard))
+  selectDashboard(io, list[(at + 1) % list.length].key)
+}
+
+// takeArgs reads what /landfall passed (`wall <name>`, `wall mine`, `wall topology`).
+function takeArgs(args) {
+  if (args == null || args === '') return
+  if (consoleState.args === args) consoleState.args = null
+  wall.pending = String(args).trim()
+}
+
+// resolvePending selects the dashboard /landfall named, once its member is known.
+function resolvePending(io, members) {
+  const want = norm(wall.pending)
+  if (!want) return
+  if (want === 'topology') {
+    wall.pending = ''
+    if (wall.dashboard !== 'shared') selectDashboard(io, 'shared')
+    wall.topology = true
+    wall.topologyDone = false
+    return
+  }
+  if (want === 'shared') {
+    wall.pending = ''
+    selectDashboard(io, 'shared')
+    return
+  }
+  const m = members.find((x) => norm(x.name) === want) || members.find((x) => norm(x.name).startsWith(want))
+  if (m) {
+    wall.pending = ''
+    selectDashboard(io, m.key)
+    return
+  }
+  // Nobody by that name, once the room has been heard from: stay where we are.
+  if (lp.answer || members.length > 1) wall.pending = ''
+}
+
+// ---------------------------------------------------------------------------
+// The console contract.
+
+export function tab(k, io, nowMs, args) {
+  // Drawn means open: after a hot reload the engine draws the console again
+  // and the wall goes on reading.
+  drawn(lp)
+  const r = currentRoom()
+  if (!r) return [k.text(NO_ROOM, { key: 'wall-noroom', dimColor: true })]
+  takeArgs(args)
+  let members = memberList(r, lp.answer)
+  resolvePending(io, members)
+  members = memberList(r, lp.answer)
+  // A person whose id arrived since they were chosen is the same person.
+  if (wall.dashboard !== 'shared' && !memberOf(wall.dashboard, members)) {
+    const same = wall.dashName ? members.find((m) => norm(m.name) === wall.dashName) : null
+    if (same) wall.dashboard = same.key
+    else wall.dashboard = 'shared'
+  }
+  if (wall.dashboard !== 'shared') {
+    drawn(pp)
+    // The wall's people[] can say who a person is after they were chosen: read them then.
+    const target = readTarget(wall.dashboard, r)
+    if (target && wall.ppFor !== target) {
+      wall.ppFor = target
+      Object.assign(pp, livePane())
+      markOpen(pp)
+      void loadPerson(io)
+    }
+  }
+  const rows = [selectorRow(k, io, items(members), wall.dashboard)]
+  if (wall.dashboard === 'shared') rows.push(...sharedBody(k, io, nowMs))
+  else rows.push(...personBody(k, io, nowMs, memberOf(wall.dashboard, members)))
+  return rows
+}
+
+export function badge() {
+  return null
+}
+
+// warm starts the reads; asked again it reads once more, which is what `r` does.
+export function warm(io) {
+  markOpen(lp)
+  void loadWall(io)
+  if (wall.dashboard !== 'shared') {
+    markOpen(pp)
+    void loadPerson(io)
+  }
+}
+
+// keys are the tab's letters: a ask, n next widget, d next dashboard.
+export function keys(k, io) {
+  if (!currentRoom()) return []
+  const list = shownWidgets()
+  const sel = list[clampSel(list)]
+  return [
+    sel ? k.button({ key: 'wall-ask', label: 'ask about ' + clipText(sel.title || sel.type || 'widget', 28), hotkey: 'a', primary: true, onPress: () => askAbout(io, sel, ownerWords()) }) : null,
+    list.length > 1 ? k.button({ key: 'wall-next', label: 'next widget', hotkey: 'n', onPress: () => selectNext(io) }) : null,
+    k.button({ key: 'wall-dash', label: 'next dashboard', hotkey: 'd', onPress: () => nextDashboard(io) }),
+  ].filter(Boolean)
+}
+
+// footer is how old the dashboard shown is, or null before the first good read.
+export function footer(k, nowMs) {
+  const r = currentRoom()
+  if (wall.dashboard !== 'shared' && readTarget(wall.dashboard, r)) return liveFooter(k, pp, nowMs, r, 'wall-live')
+  return liveFooter(k, lp, nowMs, r, 'wall-live')
+}
+
+// sharedAnswer is the last good shared wall (Home draws its tiles from it).
+export function sharedAnswer() {
+  return lp.answer && lp.answer.ok ? lp.answer : null
+}
+
+// graphKey is the key of the shared wall's first graph widget, for the console to scroll to.
+export function graphKey() {
+  const a = sharedAnswer()
+  const g = graphOf(a)
+  return g ? 'w-' + (g.id || (a.widgets || []).indexOf(g)) : ''
+}
+
+// text is the tab where no pane can be placed (the old /wall, /topology).
+export async function text(io, args) {
+  await loadWall(io)
+  const r = currentRoom()
+  if (norm(args) === 'topology') return topologyText(lp.last)
+  return wallText(lp.last, r)
+}
+
+// ---------------------------------------------------------------------------
+// The bodies.
+
+function sharedBody(k, io, nowMs) {
+  const rows = []
+  const a = lp.answer
+  if (!a) {
+    rows.push(k.text(lp.inFlight ? 'Reading the wall through your session…' : 'Press r to read the wall.', { key: 'wall-empty', dimColor: true }))
+    return rows
+  }
+  if (!a.ok) {
+    rows.push(k.text(clipText(a.error || 'The wall could not be read.', k.width), { key: 'wall-err' }))
+    return rows
+  }
+  const tail = [a.windowMs ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean)
+  rows.push(heading(k, 'wall-h', a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall', tail.length ? ' · ' + tail.join(' · ') : ''))
+  const widgets = a.widgets || []
+  if (wall.topology) {
+    const g = graphOf(a)
+    if (!g) rows.push(k.text(NO_GRAPH, { key: 'wall-nograph', dimColor: true }))
+    else if (!wall.topologyDone) {
+      wall.selected = Math.max(0, widgets.indexOf(g))
+      wall.topologyDone = true
+    }
+  }
+  if (widgets.length === 0) rows.push(k.text('Nothing is on the wall yet.', { key: 'wall-none', dimColor: true }))
+  const two = k.rich && k.width >= 90
+  rows.push(...widgetCards(k, io, widgets, { prefix: 'w', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, two }))
+  const gone = a.unavailable || []
+  if (gone.length > 0) {
+    rows.push(k.text('Not shown here', { key: 'un-h', bold: true }))
+    gone.forEach((u, i) => rows.push(k.text((u.title || u.type || u.id) + ': ' + (u.reason || 'not available'), { key: 'un-' + i, dimColor: true })))
+  }
+  const more = moreWords(a)
+  if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
+  return rows
+}
+
+function personBody(k, io, nowMs, m) {
+  const rows = []
+  const mine = wall.dashboard === 'mine'
+  const name = mine ? 'Your' : (m ? m.name : 'Someone') + "'s"
+  const who = readTarget(wall.dashboard, currentRoom())
+  const none = mine ? MINE_EMPTY : (m ? m.name : 'Someone') + ' has not shared a dashboard yet.'
+  if (!who) {
+    rows.push(k.text(none, { key: 'wall-pnone', dimColor: true }))
+    return rows
+  }
+  const a = pp.answer
+  if (!a) {
+    rows.push(k.text(mine ? 'Reading your dashboard…' : 'Reading ' + (m ? m.name : 'their') + "'s dashboard…", { key: 'wall-pread', dimColor: true }))
+    return rows
+  }
+  if (!a.ok) {
+    rows.push(k.text(clipText(a.error || 'The wall could not be read.', k.width), { key: 'wall-err' }))
+    return rows
+  }
+  const widgets = a.widgets || []
+  if (widgets.length === 0) {
+    rows.push(k.text(none, { key: 'wall-pnone', dimColor: true }))
+    return rows
+  }
+  rows.push(heading(k, 'wall-h', name + ' dashboard', dashboardTail(widgets, a.totalWidgets, mine, nowMs, pp.inFlight)))
+  rows.push(...widgetCards(k, io, widgets, { prefix: 'pw', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, snapshot: true, two: k.rich && k.width >= 90 }))
+  const more = moreWords(a)
+  if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
+  return rows
+}
+
+// dashboardTail is the dim words after a person's heading:
+// ` · 2 widgets · snapshots · newest 9m ago`.
+export function dashboardTail(widgets, total, mine, nowMs, reading) {
+  const n = Math.max(total || 0, widgets.length)
+  const parts = [n + (n === 1 ? ' widget' : ' widgets'), 'snapshots']
+  if (!mine) {
+    const newest = newestAge(widgets, nowMs)
+    if (newest) parts.push('newest ' + newest)
+  }
+  if (reading) parts.push('reading…')
+  return ' · ' + parts.join(' · ')
+}
+
+// newestAge is how long ago the newest snapshot was taken: "9m ago", or "just now".
+export function newestAge(widgets, nowMs) {
+  let at = 0
+  for (const w of widgets) {
+    const t = Date.parse(w.capturedAt || '')
+    if (isFinite(t) && t > at) at = t
+  }
+  return at ? ageWords(nowMs - at) : ''
+}
+
+export function ageWords(ms) {
+  const a = ago(ms)
+  if (!a) return ''
+  return a === 'now' ? 'just now' : a + ' ago'
+}
+
+// heading is a bold title with dim words after it, on one row.
+export function heading(k, key, title, tail) {
+  const { Text } = k.els
+  return k.row([Text({ key: key + '-t', bold: true, children: [title] }), tail ? Text({ key: key + '-d', dimColor: true, children: [tail] }) : null], key, 0)
+}
+
+// widgetCards draws widgets as cards (one column, two on a wide desktop). The
+// selected one's title carries `▸`; a press on a title selects it.
+//   o: { prefix, selected, onSelect(i), nowMs, snapshot, two }
+export function widgetCards(k, io, widgets, o) {
+  const cards = widgets.map((w, i) => card(k, w, i, o))
+  if (o.two) return [k.els.Box({ key: o.prefix + '-grid', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, rowGap: 1, children: cards })]
+  return [k.col(cards, o.prefix + '-list', 1)]
+}
+
+// card is one widget: its title (a press selects it), then its body.
+function card(k, w, i, o) {
+  const key = o.prefix + '-' + (w.id || i)
+  const chosen = i === o.selected
+  const inner = o.two ? Math.max(20, Math.floor(k.width / 2) - 4) : k.width
+  const when = o.snapshot && w.capturedAt ? ageWords(o.nowMs - Date.parse(w.capturedAt)) : ''
+  const head = k.row(
+    [
+      k.els.Button({ key: key + '-t', label: (chosen ? '▸ ' : '') + clipText(w.title || w.type || 'widget', inner - 4), plain: true, onPress: () => o.onSelect(i) }),
+      w.tone && w.tone !== 'neutral' ? k.pill(w.tone, w.tone, key + '-p') : null,
+      when ? k.text('snapshot ' + when, { key: key + '-sn', dimColor: true }) : null,
+    ],
+    key + '-head',
+    1,
+  )
+  const body = widgetBody(k, w, key, o.two ? 300 : 560, inner)
+  const props = { key, flexDirection: 'column', children: [head, ...body].filter(Boolean) }
+  if (k.rich) {
+    props.borderStyle = 'round'
+    props.paddingX = 1
+    if (o.two) props.width = '48%'
+  }
+  return k.els.Box(props)
+}
+
+// ---------------------------------------------------------------------------
+// Selection.
+
+// shownWidgets are the widgets of the dashboard shown.
+function shownWidgets() {
+  const a = wall.dashboard === 'shared' ? lp.answer : pp.answer
+  return a && a.ok ? a.widgets || [] : []
+}
+
+function clampSel(list) {
+  return Math.max(0, Math.min(wall.selected, list.length - 1))
+}
+
+function selectWidget(io, i) {
+  wall.selected = i
+  wall.topology = false
+  io.invalidate()
+}
+
+function selectNext(io) {
+  const n = shownWidgets().length
+  if (n > 0) wall.selected = (clampSel(shownWidgets()) + 1) % n
+  wall.topology = false
+  io.invalidate()
+}
+
+// ownerWords says whose dashboard the shown widget is on, for the question.
+function ownerWords() {
+  if (wall.dashboard === 'shared') return ''
+  if (wall.dashboard === 'mine') return ' on your dashboard'
+  const m = memberOf(wall.dashboard, memberList(currentRoom(), lp.answer))
+  return m ? ' on ' + m.name + "'s dashboard" : ''
+}
+
+async function askAbout(io, w, owner) {
+  const r = currentRoom()
+  const where = r ? r.displayId || roomName(r) : 'the war room'
+  await io.fill('Tell me about the ' + (w.title || w.type) + ' widget' + (owner || '') + ' in ' + where + '.')
+}
+
+// ---------------------------------------------------------------------------
+// News and the live reads.
 
 // onSnapshot: a widget landed on the wall. Told as a toast (FR-L4), and an
 // open wall reads again right away (FR-L2: within 2 s of the event).
@@ -162,6 +574,7 @@ export function onSnapshot(io, snap, prev) {
   const r = wallRoom(snap)
   const ws = widgetSeqOf(r)
   if (movedRoom(r) || (ws != null && ws > lp.seq)) void loadWall(io)
+  if (personDue(r) && !pp.inFlight && r && typeof r.maxSeq === 'number' && r.maxSeq > pp.seq) void loadPerson(io)
 }
 
 export function start(io) {}
@@ -174,11 +587,22 @@ export async function tick(io, nowMs) {
     news.hintUntil = 0
     io.invalidate()
   }
+  // The console closed: the wall stops reading.
+  if (lp.open && !consoleState.open) {
+    closed(lp)
+    closed(pp)
+  }
   if (!lp.open) return
   io.invalidate()
   const r = wallRoom(room.snapshot)
   const ws = widgetSeqOf(r)
   if (due(lp, nowMs, REFRESH_MS) || ((movedRoom(r) || (ws != null && ws > lp.seq)) && !lp.inFlight)) void loadWall(io)
+  if (personDue(r) && (due(pp, nowMs, REFRESH_MS) || (!pp.inFlight && r && typeof r.maxSeq === 'number' && r.maxSeq > pp.seq))) void loadPerson(io)
+}
+
+// personDue: a person's dashboard is the one shown, so it is the one read.
+function personDue(r) {
+  return pp.open && consoleState.tab === 'wall' && wall.dashboard !== 'shared' && !!readTarget(wall.dashboard, r)
 }
 
 // announce shows the waiting new-widget toast, unless one was shown within
@@ -208,44 +632,17 @@ export function wallHint(nowMs) {
   return { title: news.hintTitle }
 }
 
-// openWall opens the wall from the band's `w` and reads it.
+// openWall opens the console on the Wall, from the band's `w`.
 export async function openWall(io) {
   news.hintUntil = 0
-  const r = currentRoom()
-  const opened = await io.open(PANE, paneTitle(r), { focus: true, closeOnEscape: true })
-  if (opened && opened.isPlaced) markOpen(lp)
-  await loadWall(io)
+  openConsole(io, 'wall')
 }
 
-// paneIo is what this file's reads take, from the hook's own `$`, shaped as
-// register.js shapes `io`, so a key, a command and the clock read the same way.
-function paneIo($) {
-  return {
-    run: async (args, opts) => {
-      try {
-        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 30000, ...(opts || {}) }))
-      } catch (err) {
-        return { ok: false, error: String(err).slice(0, 200) }
-      }
-    },
-    invalidate: () => $.ui.invalidate('ui.render'),
-    now: () => $.clock.now(),
-  }
-}
-
-async function clockNow($) {
-  try {
-    return Number(await $.clock.now())
-  } catch {
-    return lp.goodAt
-  }
-}
-
-async function ioNow(io) {
+async function ioNow(io, p = lp) {
   try {
     return Number(await io.now())
   } catch {
-    return lp.triedAt
+    return p.triedAt
   }
 }
 
@@ -272,55 +669,49 @@ async function loadWall(io) {
     io.invalidate()
     return io.run(wallArgs(r), { timeoutMs: 30000 })
   }
-  await readLive(lp, fetch, () => ioNow(io))
+  await readLive(lp, fetch, () => ioNow(io, lp))
   const n = lp.answer && lp.answer.ok ? (lp.answer.widgets || []).length : 0
-  if (wall.selected >= n) wall.selected = 0
+  if (wall.dashboard === 'shared' && wall.selected >= n) wall.selected = 0
   io.invalidate()
 }
 
-async function askAbout($, w) {
-  const r = currentRoom()
-  const where = r ? r.displayId || roomName(r) : 'the war room'
-  await $.prompt.fill({ text: 'Tell me about the ' + (w.title || w.type) + ' widget in ' + where + '.' })
-}
-
-function selectNext($) {
-  const n = lp.answer && lp.answer.ok ? (lp.answer.widgets || []).length : 0
-  if (n > 0) wall.selected = (wall.selected + 1) % n
-  $.ui.invalidate('ui.render')
-}
-
-function selectWidget($, i) {
-  wall.selected = i
-  $.ui.invalidate('ui.render')
-}
-
-async function closeWall($) {
-  closed(lp)
-  await $.ui.close({ id: PANE })
-}
-
-// card is one widget: its title (a press selects it), then its body.
-function card($, k, w, i, two) {
-  const key = 'w-' + (w.id || i)
-  const chosen = i === wall.selected
-  const inner = two ? Math.max(20, Math.floor(k.width / 2) - 4) : k.width
-  const head = k.row(
-    [
-      k.els.Button({ key: key + '-t', label: (chosen ? '▸ ' : '') + clipText(w.title || w.type || 'widget', inner - 4), plain: true, onPress: () => selectWidget($, i) }),
-      w.tone && w.tone !== 'neutral' ? k.pill(w.tone, w.tone, key + '-p') : null,
-    ],
-    key + '-head',
-    1,
-  )
-  const body = widgetBody(k, w, key, two ? 300 : 560, inner)
-  const props = { key, flexDirection: 'column', children: [head, ...body].filter(Boolean) }
-  if (k.rich) {
-    props.borderStyle = 'round'
-    props.paddingX = 1
-    if (two) props.width = '48%'
+// loadPerson runs `landfall wall --person` for the dashboard shown.
+async function loadPerson(io) {
+  const fetch = () => {
+    const r = wallRoom(room.snapshot)
+    const who = readTarget(wall.dashboard, r)
+    pp.seq = r && typeof r.maxSeq === 'number' ? r.maxSeq : -1
+    io.invalidate()
+    return who ? io.run(wallArgs(r, who), { timeoutMs: 30000 }) : { ok: false, error: 'Nobody to read.' }
   }
-  return k.els.Box(props)
+  await readLive(pp, fetch, () => ioNow(io, pp))
+  const n = pp.answer && pp.answer.ok ? (pp.answer.widgets || []).length : 0
+  if (wall.dashboard !== 'shared' && wall.selected >= n) wall.selected = 0
+  io.invalidate()
+}
+
+// graphOf is the wall's first graph widget.
+export function graphOf(a) {
+  if (!a || !a.ok) return null
+  const graphs = (a.widgets || []).filter((w) => w.type === 'graph')
+  return graphs.find((w) => !w.empty && (w.nodes || []).length > 0) || graphs[0] || null
+}
+
+// topologyText is the topology as text, where no pane can be placed.
+export function topologyText(a) {
+  if (!a) return 'The wall could not be read.'
+  if (!a.ok) return a.error || 'The wall could not be read.'
+  const g = graphOf(a)
+  if (!g) return NO_GRAPH
+  return [g.title || 'Topology', ...graphLines(g.nodes, g.edges).map((l) => '  ' + l)].join('\n')
+}
+
+// wallArgs is `landfall wall` for a room, and for one person's dashboard (a humanActorId or `me`).
+export function wallArgs(r, person) {
+  const args = ['wall', '--host', HOST]
+  if (r && r.roomKey) args.push('--room', r.roomKey)
+  if (person) args.push('--person', person)
+  return args
 }
 
 // widgetBody draws one widget by type; a type this mod does not know is its
@@ -341,12 +732,16 @@ export function widgetBody(k, w, key, px, cells) {
     case 'geo': {
       const pts = w.points || []
       if (pts.length === 0) return [k.text('No places in this window.', { key: key + '-none', dimColor: true })]
+      // A place is its name plain and its share as a label, as the load balancer row draws it.
       const out = pts.slice(0, 8).map((p, i) =>
         k.row(
           [
-            Text({ key: 'gd', color: toneColor(p.tone || 'neutral'), children: ['●'] }),
             Text({ key: 'gp', children: [clipText(geoName(p), Math.max(10, cells - 16))] }),
-            typeof p.value === 'number' ? Text({ key: 'gv', bold: true, children: [withUnit(p.value, p.unit)] }) : null,
+            typeof p.value === 'number'
+              ? p.tone && p.tone !== 'neutral'
+                ? k.pill(withUnit(p.value, p.unit), p.tone, 'gv')
+                : Text({ key: 'gv', bold: true, children: [withUnit(p.value, p.unit)] })
+              : null,
           ],
           key + '-g' + i,
           1,
@@ -511,21 +906,6 @@ function caption(k, w, key) {
   return k.text(parts.join(' · '), { key: key + '-cap', dimColor: true })
 }
 
-function selectedWidget() {
-  const a = lp.answer
-  if (!a || !a.ok) return null
-  return (a.widgets || [])[wall.selected] || null
-}
-
-function paneTitle(r) {
-  return r && r.displayId ? 'Wall · ' + r.displayId : 'Wall'
-}
-
-export function wallArgs(r) {
-  const args = ['wall', '--host', HOST]
-  if (r && r.roomKey) args.push('--room', r.roomKey)
-  return args
-}
 
 // wallText is /wall's answer where no pane can be drawn.
 export function wallText(a, r) {
@@ -605,13 +985,3 @@ function proseLine(text) {
   return m ? { text: m[1].trim(), heading: true } : { text: String(text ?? ''), heading: false }
 }
 
-// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
-export function tab(k, io, nowMs, args) {
-  return []
-}
-
-export function badge() {
-  return null
-}
-
-export function warm(io) {}

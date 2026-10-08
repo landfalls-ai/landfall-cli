@@ -147,6 +147,20 @@ func TestFlattenWidgetTypes(t *testing.T) {
 	if graph["nodes"].([]map[string]any)[0]["tone"] != "warning" || graph["edges"].([]map[string]any)[0]["trust"] != "confirmed" {
 		t.Fatalf("graph: %v", graph)
 	}
+	// A node with an entity takes its badge from the entity's kind.
+	badged := flattenWidget("g", "graph", "Topology", map[string]any{
+		"nodes": []any{
+			map[string]any{"id": "alb", "label": "web-edge-alb", "entity": map[string]any{"kind": "aws_alb", "id": "arn:aws:elasticloadbalancing:x"}},
+			map[string]any{"id": "db", "label": "orders", "kind": "database"},
+		},
+		"edges": []any{map[string]any{"from": "alb", "to": "db", "direction": "both"}},
+	})
+	if nodes := badged["nodes"].([]map[string]any); nodes[0]["kind"] != "aws_alb" || nodes[1]["kind"] != "database" {
+		t.Fatalf("graph kinds: %v", nodes)
+	}
+	if badged["edges"].([]map[string]any)[0]["direction"] != "both" {
+		t.Fatalf("graph direction: %v", badged["edges"])
+	}
 	events := flattenWidget("e", "events", "Audit", map[string]any{"events": []any{map[string]any{
 		"t": "2026-10-08T15:00:00Z", "actor": map[string]any{"kind": "user", "id": "arn:x", "label": "deploy-bot"}, "action": "UpdateService",
 		"target": map[string]any{"kind": "ecs.service", "id": "web-edge"}, "outcome": "success",

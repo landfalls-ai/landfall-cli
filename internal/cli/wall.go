@@ -388,6 +388,11 @@ func flattenWidget(id, typ, title string, data map[string]any) map[string]any {
 					node[key] = s
 				}
 			}
+			// A node that names its resource takes its badge from the entity
+			// (widget-catalog GraphNode.kind), never from a kind beside it.
+			if ek := jStr(jObj(nm, "entity"), "kind"); ek != "" {
+				node["kind"] = ek
+			}
 			nodes = append(nodes, node)
 		}
 		for _, e := range jList(data, "edges") {

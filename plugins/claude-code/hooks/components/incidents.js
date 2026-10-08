@@ -1,207 +1,29 @@
-// Incident switchboard (proposal item 02, FR-02): /incidents lists the
-// organization's open incidents, the rooms this session is in first and the
-// SEV1s nobody here has joined next. Enter joins one the way a share link does
-// (`landfall join --incident`), `b` drafts a prompt asking for its brief, `o`
-// opens it in the browser. A practice incident (a simulated one) says so, and
-// a list the CLI had to cut says that too. Every read and the join run the
-// landfall CLI.
+// The Incidents tab of the console (spec §4.6, §2.6): the organization's open incidents, the
+// rooms this session is in first and the SEV1s nobody here has joined next. Enter joins one the
+// way a share link does (`landfall join --incident`), then adds the room's shared context to the
+// person's conversation (context.js addSharedContext) and switches the console to Home. `b`
+// drafts a prompt asking for its brief, `o` copies its link for the browser. A practice incident
+// says so, and a list the CLI had to cut says that too. Every read and the join run the CLI.
 //
-// While open the list is live (live.md FR-L2): it reads again every 30 s. A
-// failed read keeps the last good list and says it is stale. A join from
-// here puts the person's agent in the room too (FR-L5): `landfall serve`
-// adopts the room the daemon holds on its next step, and the toast says so.
+// Not in a room, the tab is the way in (§2.6): the same list under `Join an incident`, or, with
+// no sign-in, the sign-in state (signin.js). Warm, the list reads again every 30 s; a failed read
+// keeps the last good list and says it is stale.
 
-import { HOST, addCommand, ago, clip, parseAnswer, room, severityTone, statusTone } from '../core.js'
-import { kit, TONE } from '../kit.js'
-import { closed, drawn, due, LIST_MS, liveFooter, livePane, readLive, opened as markOpen } from '../live.js'
+import { HOST, ago, clip, consoleState, currentRoom, openConsole, severityTone, statusTone, toastText } from '../core.js'
+import { addSharedContext } from './context.js'
+import { due, LIST_MS, livePane, readLive } from '../live.js'
+import { noteRefusal, signin, signinBody, signedOut } from './signin.js'
 
-export const PANE = 'landfall-incidents'
 export const PRACTICE = 'practice'
 export const TRUNCATED = 'Your organization has more incidents than this list shows. Open the web app to see the rest.'
-const ROOM_PANE = 'landfall-room'
+export const TAB = 'incidents'
 
-// What the pane draws: the last `landfall incidents` answer, whether one is
-// running, which incident the focus is on, and which one is being joined.
-// `lp` (live.js) holds the answer, whether a read runs and whether the pane is open.
+// The last `landfall incidents` answer and its liveness (live.js), and which incident is being
+// joined. Which one `b` and `o` act on is the console's focus ring (consoleState.focus).
 const lp = livePane()
-const board = { sel: '', joining: '' }
+const board = { joining: '' }
 
-export function install(on) {
-  addCommand({ name: 'incidents', description: "List your organization's open incidents and join one" })
-
-  on('command.run', { command: 'incidents' }, async ($) => {
-    const opened = await $.ui.open({ id: PANE, title: 'Open incidents', focus: true, closeOnEscape: true })
-    if (opened.isPlaced) markOpen(lp)
-    await load(paneIo($))
-    if (!opened.isPlaced) return { text: incidentsText(lp.last) }
-    return {}
-  })
-
-  // The person's close (esc, the close mark) reaches this hook; the mod's own
-  // closes go through closePane, since a plugin's own $.ui.close is not
-  // raised to its own hooks.
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    closed(lp)
-    return next(e)
-  })
-
-  // The focus ring names the incident `b` and `o` act on.
-  on('ui.focus', { requestId: PANE }, async ($, e, next) => {
-    if (e.element && e.element.startsWith('inc-') && e.element.slice(4) !== board.sel) {
-      board.sel = e.element.slice(4)
-      $.ui.invalidate('ui.render')
-    }
-    return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const k = kit($.ui.resolve(e), e)
-    const { Box, Text, Button, Link } = k.els
-    drawn(lp)
-    let nowMs = lp.goodAt
-    try {
-      nowMs = Number(await $.clock.now())
-    } catch {
-      // No clock: the age reads as of the last read.
-    }
-    const answer = lp.answer
-    const list = answer && answer.ok ? sortIncidents(answer.incidents || []) : []
-    const selected = list.find((i) => i.incidentId === board.sel) || list[0] || null
-
-    const join = async (inc) => {
-      if (inc.joined) {
-        await closePane($)
-        await $.ui.open({ id: ROOM_PANE, title: 'Landfall', focus: true, closeOnEscape: true })
-        return
-      }
-      board.joining = inc.incidentId
-      $.ui.invalidate('ui.render')
-      const got = await cli($, ['join', '--incident', inc.incidentId])
-      board.joining = ''
-      if (got.ok) {
-        inc.joined = true
-        inc.roomKey = got.roomKey || inc.roomKey
-        await $.ui.toast(joinedWords({ ...inc, ...pick(got) }), { timeoutMs: 8000 })
-      } else {
-        await $.ui.toast('Not joined: ' + clip(got.error || 'no answer', 200), { timeoutMs: 8000 })
-      }
-      $.ui.invalidate('ui.render')
-    }
-    const brief = async (inc) => {
-      if (!inc) return
-      await closePane($)
-      await $.prompt.fill({ text: 'Give me the brief for ' + (inc.displayId || inc.title) })
-    }
-    const openIt = async (inc, surface) => {
-      if (!inc || !inc.webUrl) return
-      const copied = await $.ui.copy({ text: inc.webUrl, surface })
-      await $.ui.toast(copied.isCopied ? 'Copied the link to ' + incName(inc) + ': ' + inc.webUrl : 'Open ' + incName(inc) + ': ' + inc.webUrl, {
-        timeoutMs: 8000,
-      })
-    }
-    const refresh = async () => {
-      await load(paneIo($))
-    }
-
-    const pills = []
-    if (answer && answer.ok) pills.push({ text: (answer.org || 'org') + ' · ' + list.length, tone: 'neutral' })
-    const rows = [k.header({ key: 'inc-hdr', title: 'Open incidents', pills, dim: lp.inFlight ? 'reading…' : '' })]
-
-    if (!answer) rows.push(Text({ key: 'inc-wait', dimColor: true, children: ['Reading open incidents…'] }))
-    else if (!answer.ok) rows.push(Text({ key: 'inc-err', children: [String(answer.error || 'The incident list did not answer.')] }))
-    else if (list.length === 0) rows.push(Text({ key: 'inc-none', dimColor: true, children: ['No open incidents in ' + (answer.org || 'your organization') + '.'] }))
-
-    list.forEach((inc, i) => {
-      const id = inc.incidentId
-      const isSel = selected && selected.incidentId === id
-      const sev = sevLabel(inc.severity)
-      const note = incidentNote(inc, board.joining === id)
-      if (k.terminal) {
-        rows.push(
-          k.row(
-            [
-              Text({ key: 'dot-' + id, color: TONE[severityTone(inc.severity)], children: ['●'] }),
-              Button({
-                key: 'inc-' + id,
-                label: clip(incName(inc), Math.max(16, k.width - 34)),
-                plain: true,
-                onPress: () => join(inc),
-                ...(i === 0 ? { autoFocus: true } : {}),
-              }),
-              sev ? Text({ key: 'sev-' + id, color: TONE[severityTone(inc.severity)], children: [sev] }) : null,
-              inc.status ? Text({ key: 'st-' + id, children: [inc.status] }) : null,
-              inc.practice ? Text({ key: 'pr-' + id, color: TONE.violet, children: [PRACTICE] }) : null,
-              Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
-            ],
-            'r-' + id,
-            1,
-          ),
-        )
-        const noteProps = inc.joined ? { color: TONE.info } : { dimColor: true }
-        rows.push(Text({ key: 'n-' + id, ...noteProps, children: ['    ' + clip(note, k.width - 4)] }))
-        if (isSel && inc.webUrl && Link) rows.push(Box({ key: 'lk-' + id, paddingLeft: 4, children: [Link({ href: inc.webUrl, label: 'open in browser' })] }))
-        return
-      }
-      // Desktop, VS Code, mobile: a card with a severity stripe and Join.
-      const tone = severityTone(inc.severity)
-      const head = k.row(
-        [
-          Text({ key: 't-' + id, bold: true, children: [incName(inc)] }),
-          sev ? k.pill(sev, tone, 'sp-' + id) : null,
-          inc.status ? k.pill(inc.status, statusTone(inc.status), 'stp-' + id) : null,
-          inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null,
-          Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
-        ],
-        'h-' + id,
-        1,
-      )
-      const actions = k.row(
-        [
-          k.button({
-            key: 'inc-' + id,
-            label: board.joining === id ? 'Joining…' : inc.joined ? 'Open the room' : 'Join',
-            primary: !inc.joined,
-            onPress: () => join(inc),
-          }),
-          k.button({ key: 'brief-' + id, label: 'Brief only', onPress: () => brief(inc) }),
-          inc.webUrl && Link ? Link({ href: inc.webUrl, label: 'Open in browser' }) : null,
-        ],
-        'a-' + id,
-        1,
-      )
-      rows.push(
-        Box({
-          key: 'card-' + id,
-          flexDirection: 'row',
-          columnGap: 1,
-          alignItems: 'stretch',
-          borderStyle: 'round',
-          borderColor: TONE[tone],
-          children: [
-            Box({ key: 'stripe-' + id, width: 1, backgroundColor: TONE[tone] }),
-            k.col([head, Text({ key: 'n-' + id, dimColor: true, children: [note] }), actions], 'c-' + id),
-          ],
-        }),
-      )
-    })
-
-    if (answer && answer.ok && answer.truncated) rows.push(Text({ key: 'inc-cut', dimColor: true, children: [TRUNCATED] }))
-    // The list is the organization's, not the room's: no reconnecting line.
-    const foot = liveFooter(k, lp, nowMs, null, 'inc-live')
-    if (foot) rows.push(foot)
-
-    const keys = []
-    if (k.terminal && list.length > 0) {
-      keys.push(Text({ key: 'enter', dimColor: true, children: ['enter: join'] }))
-      keys.push(k.button({ key: 'brief', label: 'brief only', hotkey: 'b', onPress: () => brief(selected) }))
-      keys.push(k.button({ key: 'open', label: 'open in browser', hotkey: 'o', onPress: (press) => openIt(selected, press.surface) }))
-    }
-    keys.push(k.button({ key: 'refresh', label: 'refresh', hotkey: 'r', onPress: refresh }))
-    keys.push(k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => closePane($) }))
-    rows.push(k.row(keys, 'inc-keys'))
-    return Box({ flexDirection: 'column', rowGap: k.terminal ? 0 : 1, children: rows })
-  })
-}
+export function install(on) {}
 
 export async function band(io, e, k) {
   return null
@@ -211,48 +33,210 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-// tick: an open list reads again every 30 s, and the age under it moves.
+// tick: while the console is open and this tab warm, the list reads again every 30 s.
 export async function tick(io, nowMs) {
-  if (!lp.open) return
-  io.invalidate()
-  if (due(lp, nowMs, LIST_MS) && !board.joining) void load(io)
+  if (!isWarm()) return
+  if (due({ ...lp, open: true }, nowMs, LIST_MS) && !board.joining && !signedOut()) void load(io)
 }
 
-// load runs `landfall incidents` and redraws, one read at a time.
-async function load(io) {
+function isWarm() {
+  return consoleState.open && consoleState.warm.has(TAB)
+}
+
+// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name.
+
+// warm starts the list's reads: one now, then every 30 s while the console is open.
+export function warm(io) {
+  consoleState.warm.add(TAB)
+  if (!signedOut() && !lp.inFlight) void load(io)
+}
+
+// badge is the open incidents once read; the console draws it only in the full label set.
+export function badge() {
+  const a = lp.answer
+  return a && a.ok ? (a.incidents || []).length : null
+}
+
+// tab draws the body: { rows, keys, live, footer, refresh } (console.js draws the footer, the
+// keys row with `r: refresh` and `close (esc)` after these keys).
+export function tab(k, io, nowMs, args) {
+  const r = currentRoom()
+  if (signedOut()) {
+    const s = signinBody(k, io, nowMs, () => load(io))
+    return { rows: s.rows, keys: s.keys, footer: s.footer, live: null, refresh: null }
+  }
+  const { Text } = k.els
+  const answer = lp.answer
+  const list = answer && answer.ok ? sortIncidents(answer.incidents || []) : []
+  const focused = list.find((i) => 'inc-' + i.incidentId === consoleState.focus) || list[0] || null
+  const rows = []
+  const org = (answer && answer.ok && answer.org) || (signin.org || '')
+  const heading = r ? 'Open incidents' : 'Join an incident'
+  const tail = answer && answer.ok ? [org, r ? String(list.length) : list.length + ' open'].filter(Boolean).join(' · ') : ''
+  rows.push(k.row([Text({ key: 'inc-h', bold: true, children: [heading] }), tail ? Text({ key: 'inc-h-d', dimColor: true, children: [tail] }) : null], 'inc-head', 2))
+
+  if (!answer) rows.push(Text({ key: 'inc-wait', dimColor: true, children: ['Reading open incidents…'] }))
+  else if (!answer.ok) rows.push(Text({ key: 'inc-err', children: [String(answer.error || 'The incident list did not answer.')] }))
+  else if (list.length === 0) {
+    rows.push(Text({ key: 'inc-none', dimColor: true, children: ['No open incidents in ' + (org || 'your organization') + '.'] }))
+    if (!r) rows.push(Text({ key: 'inc-again', dimColor: true, children: ['This list reads again every 30 s.'] }))
+  }
+
+  list.forEach((inc, i) => {
+    if (k.terminal) rows.push(...termRow(k, io, inc, i === 0))
+    else rows.push(card(k, io, inc, focused && focused.incidentId === inc.incidentId))
+  })
+  if (answer && answer.ok && answer.truncated) rows.push(Text({ key: 'inc-cut', dimColor: true, children: [TRUNCATED] }))
+  if (list.length > 0) {
+    const mine = focused && focused.joined && r && focused.roomKey === r.roomKey
+    const hint = r ? (mine ? 'Enter: open the room' : 'Enter: join') : 'Enter: join · your agent gets the shared context when you do'
+    rows.push(Text({ key: 'inc-hint', dimColor: true, children: [hint] }))
+  }
+
+  const keys = []
+  if (k.terminal && list.length > 0) {
+    keys.push(k.button({ key: 'brief', label: 'brief only', hotkey: 'b', onPress: () => brief(io, focused) }))
+    keys.push(k.button({ key: 'open', label: 'open in browser', hotkey: 'o', onPress: (press) => openIt(io, focused, press && press.surface) }))
+  }
+  return { rows, keys, live: lp, footer: null, refresh: () => load(io) }
+}
+
+// termRow is one incident on the terminal: the severity label, the name as a plain Button that
+// joins, the status label, practice, the age; then its note, under the name.
+function termRow(k, io, inc, first) {
+  const { Text, Button } = k.els
+  const id = inc.incidentId
+  const sev = sevLabel(inc.severity)
+  const head = k.row(
+    [
+      sev ? k.pill(sev, severityTone(inc.severity), 'sev-' + id) : null,
+      Button({ key: 'inc-' + id, label: clip(incName(inc), Math.max(16, k.width - 34)), plain: true, onPress: () => join(io, inc), ...(first ? { autoFocus: true } : {}) }),
+      inc.status ? k.pill(inc.status, statusTone(inc.status), 'st-' + id) : null,
+      inc.practice ? k.pill(PRACTICE, 'violet', 'pr-' + id) : null,
+      Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
+    ],
+    'r-' + id,
+    1,
+  )
+  const note = rowNote(inc, board.joining === id)
+  const out = [head]
+  if (note) out.push(Text({ key: 'n-' + id, dimColor: true, children: [' '.repeat(NOTE_INDENT) + clip(note, k.width - NOTE_INDENT)] }))
+  return out
+}
+
+// The note sits under the name column (round 4 review, issue 14): the severity label's cells.
+const NOTE_INDENT = 7
+
+// card is one incident off the terminal: neutral border, no stripe (the severity label carries
+// it), `Join` primary (`Open the room` once in it), `Brief only`, `Open in browser`; key chips
+// only on the focused card's buttons. Joining, only the button says so; the note stays.
+function card(k, io, inc, focused) {
+  const { Text } = k.els
+  const id = inc.incidentId
+  const sev = sevLabel(inc.severity)
+  const joining = board.joining === id
+  const head = k.row(
+    [
+      Text({ key: 't-' + id, bold: true, children: [incName(inc)] }),
+      sev ? k.pill(sev, severityTone(inc.severity), 'sp-' + id) : null,
+      inc.status ? k.pill(inc.status, statusTone(inc.status), 'stp-' + id) : null,
+      inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null,
+      Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
+    ],
+    'h-' + id,
+    1,
+  )
+  const note = rowNote(inc, false)
+  const actions = k.row(
+    [
+      k.button({ key: 'inc-' + id, label: joining ? 'Joining…' : isMine(inc) ? 'Open the room' : 'Join', primary: !isMine(inc), onPress: () => join(io, inc) }),
+      k.button({ key: 'brief-' + id, label: 'Brief only', ...(focused ? { hotkey: 'b' } : {}), onPress: () => brief(io, inc) }),
+      k.button({ key: 'open-' + id, label: 'Open in browser', ...(focused ? { hotkey: 'o' } : {}), onPress: (press) => openIt(io, inc, press && press.surface) }),
+    ],
+    'a-' + id,
+    1,
+  )
+  return k.card([head, note ? Text({ key: 'n-' + id, dimColor: true, children: [note] }) : null, actions], { key: 'card-' + id })
+}
+
+// isMine: the incident is the room this folder is in now.
+function isMine(inc) {
+  const r = currentRoom()
+  return !!(inc.joined && r && (!inc.roomKey || inc.roomKey === r.roomKey))
+}
+
+// join: Enter on an incident. The one this folder is in opens Home; any other is joined, the
+// shared context added, and the console switches to Home. Nothing here starts a turn.
+async function join(io, inc) {
+  if (board.joining) return
+  if (isMine(inc)) {
+    await openConsole(io, 'home', null, { focus: true })
+    return
+  }
+  board.joining = inc.incidentId
+  io.invalidate()
+  const got = (await io.run(['join', '--incident', inc.incidentId, '--host', HOST])) || {}
+  if (!got.ok) {
+    board.joining = ''
+    if (noteRefusal(got.error)) io.toast(toastText('Not joined: ' + (got.error || 'no answer')), 8000)
+    else io.toast(notJoinedWords(got.error), 8000)
+    io.invalidate()
+    return
+  }
+  inc.joined = true
+  inc.roomKey = got.roomKey || inc.roomKey
+  const named = { ...inc, ...pick(got) }
+  // The shared context into the conversation (§2.6, §4.10); context.js raises the one join toast
+  // ("Joined Landfall 171. Shared context added: 2 established, 3 open."), so nothing here does.
+  try {
+    await addSharedContext(io, { roomKey: inc.roomKey, joined: clip(named.displayId || named.title || 'the incident', 24) })
+  } catch (err) {
+    io.toast(toastText('Joined ' + clip(named.displayId || named.title || 'the incident', 24) + '. The shared context could not be read; add it from Context.'), 8000)
+  }
+  board.joining = ''
+  consoleState.joined = { roomKey: inc.roomKey, name: incName(named) }
+  await openConsole(io, 'home', null, { focus: true })
+}
+
+export function notJoinedWords(error) {
+  return toastText('Not joined: ' + (error || 'no answer'))
+}
+
+async function brief(io, inc) {
+  if (!inc) return
+  await io.fill('Give me the brief for ' + (inc.displayId || inc.title))
+}
+
+// openIt copies the incident's link: the mod opens nothing itself.
+async function openIt(io, inc, surface) {
+  if (!inc || !inc.webUrl) return
+  let copied = null
+  try {
+    copied = await io.copy(inc.webUrl, surface)
+  } catch {
+    copied = null
+  }
+  const name = clip(inc.displayId || inc.title || 'the incident', 24)
+  io.toast(toastText(copied && copied.isCopied ? 'Copied the link to ' + name + '. Paste it in your browser.' : 'The link to ' + name + ' could not be copied. Open it from the web app.'), 8000)
+}
+
+// load runs `landfall incidents` and redraws, one read at a time. A `Sign in to …` refusal
+// turns the tab into the sign-in state.
+export async function load(io) {
   const fetch = () => {
     io.invalidate()
     return io.run(['incidents', '--host', HOST], { timeoutMs: 20000 })
   }
   await readLive(lp, fetch, () => ioNow(io))
-  const a = lp.answer
-  if (a && a.ok && !(a.incidents || []).some((i) => i.incidentId === board.sel)) {
-    const first = sortIncidents(a.incidents || [])[0]
-    board.sel = first ? first.incidentId : ''
+  const last = lp.last
+  if (last && !last.ok && noteRefusal(last.error)) {
+    lp.answer = null
+    lp.stale = ''
+  } else if (last && last.ok && signin.signedIn !== true) {
+    signin.signedIn = true
+    if (last.org) signin.org = String(last.org)
   }
   io.invalidate()
-}
-
-// closePane closes the pane and stops its reads.
-async function closePane($) {
-  closed(lp)
-  await $.ui.close({ id: PANE })
-}
-
-// paneIo is what this file's reads take, from the hook's own `$`, shaped as
-// register.js shapes `io`.
-function paneIo($) {
-  return {
-    run: async (args, opts) => {
-      try {
-        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 20000, ...(opts || {}) }))
-      } catch (err) {
-        return { ok: false, error: clip(String(err), 200) }
-      }
-    },
-    invalidate: () => $.ui.invalidate('ui.render'),
-    now: () => $.clock.now(),
-  }
 }
 
 async function ioNow(io) {
@@ -263,19 +247,9 @@ async function ioNow(io) {
   }
 }
 
-// joinedWords is the toast after a join from here: the mod is in the room
-// now, and the person's agent follows on its next step (FR-L5).
-export function joinedWords(inc) {
-  return 'Joined ' + incName(inc) + '. Your agent joins on its next step.'
-}
-
-// cli runs `landfall <args> --host claude-code` and reads its one JSON line.
-async function cli($, args) {
-  try {
-    return parseAnswer(await $.process.run([room.bin, ...args, '--host', HOST], { timeoutMs: 20000 }))
-  } catch (err) {
-    return { ok: false, error: clip(String(err), 200) }
-  }
+// incidentsAnswer is the last answer the list read (the no-pane text uses it).
+export function incidentsAnswer() {
+  return lp.last
 }
 
 function pick(got) {
@@ -305,12 +279,25 @@ export function sevLabel(sev) {
   return String(sev || '').toUpperCase()
 }
 
+// incName is the room as every other place names it: "Landfall 171 · cache-stampede".
 export function incName(inc) {
-  return [inc.displayId, inc.title].filter(Boolean).join(' ') || 'incident'
+  return [inc.displayId, inc.title].filter(Boolean).join(' · ') || 'incident'
 }
 
-// incidentNote is the line under an incident: whether this session is in it,
-// who is there and Beacon's state (the CLI knows those only for joined rooms).
+// rowNote is the dim line under an incident in the console: whether this session is in it, who
+// is there and Beacon's state (the CLI knows those only for joined rooms); `Joining…` on the
+// terminal while it joins.
+export function rowNote(inc, joining) {
+  if (joining) return 'Joining…'
+  const out = []
+  if (isMine(inc) || (inc.joined && !currentRoom())) out.push('you are in it')
+  if (Array.isArray(inc.here) && inc.here.length > 0) out.push(inc.here.length + ' here: ' + inc.here.slice(0, 4).join(', '))
+  else if (typeof inc.hereCount === 'number') out.push(inc.hereCount === 0 ? 'nobody here yet' : inc.hereCount + ' here')
+  if (inc.beacon) out.push('Beacon ' + inc.beacon)
+  return out.join(' · ')
+}
+
+// incidentNote is the text answer's line under an incident (the old /incidents text).
 export function incidentNote(inc, joining) {
   if (joining) return 'Joining…'
   const out = []
@@ -322,7 +309,7 @@ export function incidentNote(inc, joining) {
   return out.join(' · ')
 }
 
-// incidentsText is /incidents where no pane can be drawn.
+// incidentsText is the tab where no pane can be drawn (`claude -p`).
 export function incidentsText(answer) {
   if (!answer) return 'The incident list did not answer.'
   if (!answer.ok) return String(answer.error || 'The incident list did not answer.')
@@ -330,20 +317,9 @@ export function incidentsText(answer) {
   if (list.length === 0) return 'No open incidents in ' + (answer.org || 'your organization') + '.'
   const out = ['Open incidents · ' + (answer.org || 'your organization')]
   for (const inc of list) {
-    const parts = [incName(inc), sevLabel(inc.severity), inc.status, inc.practice ? PRACTICE : '', ago(inc.ageMs)].filter(Boolean)
+    const parts = [[inc.displayId, inc.title].filter(Boolean).join(' '), sevLabel(inc.severity), inc.status, inc.practice ? PRACTICE : '', ago(inc.ageMs)].filter(Boolean)
     out.push('  ' + parts.join(' · ') + ' · ' + incidentNote(inc, false))
   }
   if (answer.truncated) out.push(TRUNCATED)
   return out.join('\n')
 }
-
-// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
-export function tab(k, io, nowMs, args) {
-  return []
-}
-
-export function badge() {
-  return null
-}
-
-export function warm(io) {}

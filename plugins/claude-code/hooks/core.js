@@ -319,11 +319,58 @@ export const TABS = ['home', 'vote', 'context', 'wall', 'people', 'timeline', 'l
 export const consoleState = { tab: 'home', open: false, args: null, warm: new Set() }
 
 // Opens (or refocuses) the console on a tab, with that tab's arguments (a person, a chip, a
-// dashboard, a load balancer). Never starts a turn.
-export function openConsole(io, tab, args) {
+// dashboard, a load balancer). Never starts a turn. `opts.focus` gives it the keyboard: only when
+// the person asked (a command, a band key, a press), never on an unasked open (spec §2.1).
+// Answers what `$.ui.open` answered ({ isPlaced }), so an asked open that was not placed can say so.
+export async function openConsole(io, tab, args, opts) {
+  if (tab && TABS.includes(tab) && tab !== consoleState.tab) consoleState.offset = 0
   if (tab && TABS.includes(tab)) consoleState.tab = tab
   consoleState.args = args || null
   consoleState.open = true
-  io.open(CONSOLE, 'Landfall')
+  consoleState.closed = false
+  const asked = !!(opts && opts.focus)
+  let got = { isPlaced: true }
+  try {
+    got = (await io.open(CONSOLE, 'Landfall', { columns: CONSOLE_COLUMNS, closeOnEscape: true, ...(asked ? { focus: true } : {}) })) || got
+  } catch (err) {
+    got = { isPlaced: false, reason: String(err).slice(0, 200) }
+  }
   io.invalidate()
+  return got
+}
+
+// The docked console asks for this many body columns (spec §2.1); the person's own width wins.
+export const CONSOLE_COLUMNS = 84
+
+// What console.js keeps beside the tab, for every tab to read while it draws:
+//   focus    the `key` of the element the console's focus ring is on ('' for none): the
+//            Incidents row `b` and `o` act on, the artifact Context previews, and the rest
+//   offset   the body's first shown row under the pinned switcher (console.js owns it)
+//   closed   the person closed it since it was last opened: a late draw does not reopen it
+// A warm tab reads only while `consoleState.open && consoleState.warm.has('<tab>')`; the
+// person's close clears both, which is what stops every tab's reads (spec §2.5).
+consoleState.focus = ''
+consoleState.offset = 0
+consoleState.closed = false
+
+// TOASTS (round 4 review, issue 2). The engine draws a toast in a box 40 cells wide and cuts it
+// after 3 rows, so every toast the console raises is at most TOAST_MAX characters, the outcome
+// and the thing named in the first 40. `toastText` holds a sentence to that; `clipMiddle` keeps a
+// long filename's head and extension (`postmortem-…-95.pdf`) so the verb and outcome survive.
+export const TOAST_MAX = 80
+
+export function toastText(text) {
+  return clip(String(text ?? '').replace(/\s+/g, ' ').trim(), TOAST_MAX)
+}
+
+export function clipMiddle(name, width = 32) {
+  const s = String(name ?? '')
+  if (s.length <= width) return s
+  const dot = s.lastIndexOf('.')
+  const ext = dot > 0 && s.length - dot <= 8 ? s.slice(dot) : ''
+  const keep = width - 1 - ext.length
+  const head = Math.ceil(keep / 2)
+  const tail = keep - head
+  const stem = s.slice(0, s.length - ext.length)
+  return stem.slice(0, head) + '…' + stem.slice(stem.length - tail) + ext
 }

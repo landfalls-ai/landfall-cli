@@ -4,14 +4,12 @@
 // offers the catch-up as a dim suggestion (Tab takes it; never sent alone).
 
 import { CATCH_UP, HOST, pending, room } from '../core.js'
-import { PANE } from './room.js'
 import { scopeChanged } from './scope.js'
 
 export function install(on) {
   on('prompt.submit', async ($, e, next) => {
-    // The person has moved on: a room pane left open would keep the keyboard
-    // and eat the first keys of their next message.
-    $.ui.close({ id: PANE }).catch(() => {})
+    // The console stays docked while the person works (spec §2.1): it never holds the
+    // keyboard unless they gave it, so it cannot eat their keys, and the mod never closes it.
     // The room's scope block (scope.js) is refreshed when it changed, so this
     // message's request carries the room as it is now.
     if (scopeChanged()) {

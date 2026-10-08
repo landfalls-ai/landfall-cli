@@ -12,14 +12,19 @@
 //
 // THE LAYOUT. core.js holds the room state, the CLI runner and the helpers;
 // kit.js draws Landfall's pieces for each surface (terminal, desktop, vscode,
-// mobile); each file in components/ is one feature with the same four exports
-// (see core.js, THE COMPONENT CONTRACT). This file is the only one that calls
-// them, each by name, because the engine's validator follows `$` only into
-// named functions. Adding a component is one import line and one line in each
-// list below.
+// mobile); console.js is the one command, `/landfall`, and the one pane, the
+// console, whose tabs are the components' `tab()` (see console.js); each file in
+// components/ is one feature with the same five exports (see core.js, THE
+// COMPONENT CONTRACT). This file is the only one that calls them, each by name,
+// because the engine's validator follows `$` only into named functions. Adding a
+// component is one import line and one line in each list below.
 
-import { HOST, declaredCommands, parseAnswer, room } from './core.js'
+import { HOST, declaredCommands, parseAnswer, room, severityTone } from './core.js'
 import { kit } from './kit.js'
+import { notLive } from './live.js'
+import { bandHead, bandHasNews, bandKeys, bandNews, bandRoom as roomOfBand } from './components/room.js'
+import { chart } from './components/chart.js'
+import { REMOVED } from './console.js'
 import { install as installRoom, band as bandRoom, onSnapshot as onSnapshotRoom, start as startRoom, tick as tickRoom } from './components/room.js'
 import { install as installChart, band as bandChart, onSnapshot as onSnapshotChart, start as startChart, tick as tickChart } from './components/chart.js'
 import { install as installDelivery, band as bandDelivery, onSnapshot as onSnapshotDelivery, start as startDelivery, tick as tickDelivery } from './components/delivery.js'
@@ -35,8 +40,9 @@ import { install as installComms, band as bandComms, onSnapshot as onSnapshotCom
 import { install as installBrain, band as bandBrain, onSnapshot as onSnapshotBrain, start as startBrain, tick as tickBrain } from './components/brain.js'
 import { install as installWall, band as bandWall, onSnapshot as onSnapshotWall, start as startWall, tick as tickWall } from './components/wall.js'
 import { install as installLb, band as bandLb, onSnapshot as onSnapshotLb, start as startLb, tick as tickLb } from './components/lb.js'
-import { install as installTopology, band as bandTopology, onSnapshot as onSnapshotTopology, start as startTopology, tick as tickTopology } from './components/topology.js'
 import { install as installTimeline, band as bandTimeline, onSnapshot as onSnapshotTimeline, start as startTimeline, tick as tickTimeline } from './components/timeline.js'
+import { install as installContext, band as bandContext, onSnapshot as onSnapshotContext, start as startContext, tick as tickContext } from './components/context.js'
+import { install as installConsole, band as bandConsole, onSnapshot as onSnapshotConsole, start as startConsole, tick as tickConsole } from './console.js'
 
 export function register(on, options) {
   // Components first: install() declares their commands, which the
@@ -56,20 +62,22 @@ export function register(on, options) {
   installBrain(on)
   installWall(on)
   installLb(on)
-  installTopology(on)
   installTimeline(on)
+  installContext(on)
+  installConsole(on)
 
   on('session.start', async ($, e, next) => {
     room.bin = (await $.env.get('LANDFALL_BIN')) || 'landfall'
     await $.env.set('LANDFALL_MOD', HOST)
-    for (const c of declaredCommands()) await $.command.register(c)
+    // One command, /landfall (spec §1.3): the commands the console replaced are not registered.
+    for (const c of declaredCommands()) if (!REMOVED.includes(c.name)) await $.command.register(c)
     await startAll($)
     startWatch($)
     $.clock.every(TICK_MS, () => tickAll($))
     return next(e)
   })
 
-  // The band above the prompt: every component's rows, in this order.
+  // The band above the prompt (spec §5.1): what needs the person, and one key to the console.
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     const k = kit($.ui.resolve(e), e)
     const rows = await bandAll($, e, k)
@@ -157,54 +165,72 @@ async function startAll($) {
     // One component's start never stops the session's.
   }
   try {
-    await startTopology(io)
+    await startTimeline(io)
   } catch {
     // One component's start never stops the session's.
   }
   try {
-    await startTimeline(io)
+    await startContext(io)
+  } catch {
+    // One component's start never stops the session's.
+  }
+  try {
+    await startConsole(io)
   } catch {
     // One component's start never stops the session's.
   }
 }
 
-// The band's order: what asks the person for something first.
+// The band's order (§5.1): the head (the room, its news count, the vote waiting, the agent),
+// the vote's statement and keys, Beacon, the news or new-widget row, then the keys row. A row
+// with nothing to say is left out; with nothing at all the band draws nothing. Off the
+// terminal the rows sit in one card, its border critical while SEV1.
 async function bandAll($, e, k) {
   const io = makeIo($, e.surface)
-  const rows = []
+  const body = []
   try {
     const got = await bandVote(io, e, k)
-    if (got && got.length > 0) rows.push(...got)
+    if (got && got.length > 0) body.push(...got)
   } catch {
     // One section failing never takes the band down.
   }
   try {
     const got = await bandBeacon(io, e, k)
-    if (got && got.length > 0) rows.push(...got)
+    if (got && got.length > 0) body.push(...got)
   } catch {
     // One section failing never takes the band down.
   }
   try {
-    const got = await bandRoom(io, e, k)
-    if (got && got.length > 0) rows.push(...got)
+    const got = await bandNews(io, e, k)
+    if (got && got.length > 0) body.push(...got)
   } catch {
     // One section failing never takes the band down.
+  }
+  let any = body.length > 0 || !!chart.ready
+  try {
+    if (!any) any = await bandHasNews(io)
+  } catch {
+    // No room news is no band.
+  }
+  const r = roomOfBand()
+  if (!any || !r) return []
+  let head = []
+  let keys = []
+  try {
+    head = bandHead(io, e, k) || []
+  } catch {
+    // A head that cannot draw leaves the rows below it.
   }
   try {
-    const got = await bandLines(io, e, k)
-    if (got && got.length > 0) rows.push(...got)
+    keys = bandKeys(io, e, k) || []
   } catch {
-    // One section failing never takes the band down.
+    // The keys row is the console's door; the rows above still draw.
   }
-  try {
-    const got = await bandChart(io, e, k)
-    if (got && got.length > 0) rows.push(...got)
-  } catch {
-    // One section failing never takes the band down.
-  }
-  return rows
+  const rows = [...head, ...body, ...keys]
+  if (k.terminal || k.mobile) return rows
+  const sev1 = severityTone(r.status && r.status.severity) === 'critical'
+  return [k.card(rows, { key: 'band-card', tone: sev1 ? 'critical' : notLive(r) ? 'warning' : undefined })]
 }
-
 
 // startWatch runs `landfall watch` for the session's life and starts it again
 // when it ends.
@@ -238,7 +264,7 @@ const RESTART_MS = 3000
 // TICK_MS is the session clock components refresh open panes on (tick).
 const TICK_MS = 5000
 
-// tickAll gives every component the clock: live panes refresh on their own
+// tickAll gives every component the clock: warm tabs refresh on their own
 // cadence (the wall's data every 15 s, as the war room's own canvas does).
 async function tickAll($) {
   const io = makeIo($, null)
@@ -319,12 +345,17 @@ async function tickAll($) {
     // One component's tick never stops the others.
   }
   try {
-    await tickTopology(io, nowMs)
+    await tickTimeline(io, nowMs)
   } catch {
     // One component's tick never stops the others.
   }
   try {
-    await tickTimeline(io, nowMs)
+    await tickContext(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickConsole(io, nowMs)
   } catch {
     // One component's tick never stops the others.
   }
@@ -418,12 +449,17 @@ function applySnapshot($, line) {
     // One component's listener never stops the others.
   }
   try {
-    onSnapshotTopology(io, room.snapshot, prev)
+    onSnapshotTimeline(io, room.snapshot, prev)
   } catch {
     // One component's listener never stops the others.
   }
   try {
-    onSnapshotTimeline(io, room.snapshot, prev)
+    onSnapshotContext(io, room.snapshot, prev)
+  } catch {
+    // One component's listener never stops the others.
+  }
+  try {
+    onSnapshotConsole(io, room.snapshot, prev)
   } catch {
     // One component's listener never stops the others.
   }
@@ -435,7 +471,7 @@ function applySnapshot($, line) {
 function makeIo($, surface) {
   return {
     surface: surface || 'terminal',
-    fill: (text) => $.prompt.fill({ text }),
+    fill: (text, mode) => $.prompt.fill(mode ? { text, mode } : { text }),
     suggest: (text) => $.prompt.suggest({ text }),
     toast: (text, ms) => $.ui.toast(text, ms ? { timeoutMs: ms } : undefined),
     status: (text) => $.ui.status(text),
@@ -450,10 +486,43 @@ function makeIo($, surface) {
         return { ok: false, error: String(err).slice(0, 200) }
       }
     },
+    // spawn starts `landfall <args>`, hands each piece to onPiece, and answers { stop, done }:
+    // stop() ends the loop, which kills the child; done settles with how it ended.
+    spawn: (args, onPiece) => {
+      const stream = $.process.spawn({ argv: [room.bin, ...args] })
+      const done = (async () => {
+        try {
+          for (;;) {
+            const step = await stream.next()
+            if (step.done) {
+              const v = step.value
+              return (v && v.value) || v || { code: null, signal: null }
+            }
+            try {
+              onPiece(step.value)
+            } catch {
+              // A piece the reader could not take never ends the child.
+            }
+          }
+        } catch (err) {
+          return { code: null, signal: null, error: String(err).slice(0, 200) }
+        }
+      })()
+      return {
+        stop: () => {
+          try {
+            void Promise.resolve(stream.return(undefined)).catch(() => {})
+          } catch {
+            // Already ended.
+          }
+        },
+        done,
+      }
+    },
     play: (asset) => $.audio.play({ asset }),
     storeGet: (key) => $.store.get(key),
     storeSet: (key, value) => $.store.set(key, value),
-    copy: (text) => $.ui.copy({ text, surface: surface || undefined }),
+    copy: (text, s) => $.ui.copy({ text, surface: s || surface || undefined }),
     now: () => $.clock.now(),
     invalidateContext: () => $.ui.invalidate('prompt.context'),
     // A user-role row the model reads and the person does not see as typed; no turn starts.

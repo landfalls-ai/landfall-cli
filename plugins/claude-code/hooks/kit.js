@@ -17,7 +17,8 @@
 // THE PIECES (k = kit($.ui.resolve(e), e)):
 //   k.surface, k.terminal, k.rich (draws Svg), k.mobile (compact: no fields), k.width
 //   k.mark(key?, px?)                      the Beacon mark, or ◆ on the terminal
-//   k.pill(text, tone?, key?)              "● SEV2" in its tone; a rounded chip off the terminal
+//   k.pill(text, tone?, key?)              "● SEV2" in its tone; a tinted, unbordered label off the terminal
+//   k.segments(items, { key })             a segmented control: [{ id, label, active, onPress }]
 //   k.header({ key, title, pills, dim })   mark, title, pills
 //   k.button({ key, label, hotkey, onPress, primary, dim, dismiss })
 //   k.row(children, key?, gap?) / k.col(children, key?, gap?) / k.text(text, props?)
@@ -28,6 +29,10 @@
 //   k.quote(text, key?)                    someone's words: italic off the terminal, dim on it
 //   k.dim(text, key?)                      a dim line
 //   k.table(rows, { key, widths })         rows of cells (strings or elements) in aligned columns
+
+// The filled segment of a segmented control, off the terminal: ink, and paper on it.
+export const INK = '#141414'
+export const PAPER = '#fafafa'
 
 export const TONE = {
   critical: '#d03b3b',
@@ -87,11 +92,36 @@ export function kit(els, e) {
     // pill is a short state word in its tone: "● SEV2". Off the terminal it is
     // a rounded chip around the same text, so a search for the text finds it
     // on every surface.
+    // A label is never pressable and never looks it (spec §6, round 0): off the terminal a
+    // tinted box (the tone at about 12% over the paper), no border, no key chip, the weight
+    // and padding of a Button.
     pill(text, tone = 'neutral', key) {
       const color = TONE[tone] || TONE.neutral
       if (terminal) return Text({ key, color, children: ['● ' + text] })
-      const label = Text({ ...(key ? { key: key + '-t' } : {}), color, bold: true, children: ['● ' + text] })
-      return Box({ key, borderStyle: 'round', borderColor: color, paddingX: 1, children: [label] })
+      const label = Text({ ...(key ? { key: key + '-t' } : {}), color, children: ['● ' + text] })
+      return Box({ key, backgroundColor: color + '1f', paddingX: 1, children: [label] })
+    },
+
+    // segments is a segmented control (spec §2.2): one row, never wrapped. Each item is
+    // { id, label, active, onPress }. The active one is not a Button: inverse bold Text
+    // labeled `▸ <label>` on the terminal, a Box filled ink with light bold Text off it. The
+    // others are plain Buttons with no hotkey (the label alone, dim), so no key chip and no
+    // digit is drawn; `│` separates them on the terminal.
+    segments(items, { key = 'seg' } = {}) {
+      const kids = []
+      items.forEach((it, i) => {
+        const id = key + '-' + it.id
+        if (terminal && i > 0) kids.push(Text({ key: id + '-sep', dimColor: true, children: ['│'] }))
+        if (it.active) {
+          if (terminal) kids.push(Text({ key: id, inverse: true, bold: true, children: [' ▸ ' + it.label + ' '] }))
+          else kids.push(Box({ key: id, backgroundColor: INK, paddingX: 1, children: [Text({ key: id + '-t', bold: true, color: PAPER, children: ['▸ ' + it.label] })] }))
+          return
+        }
+        const props = { key: id, label: terminal ? ' ' + it.label + ' ' : it.label, dimColor: true, onPress: it.onPress }
+        if (terminal) props.plain = true
+        kids.push(Button(props))
+      })
+      return Box({ key, flexDirection: 'row', flexWrap: 'nowrap', columnGap: 0, children: kids })
     },
 
     // header is the branded title row: mark, title, then pills.
@@ -137,7 +167,8 @@ export function kit(els, e) {
     //   opts.key, opts.width (cells or px), opts.tone, opts.label, opts.mark (index of a marker)
     spark(values, opts = {}) {
       const key = opts.key || 'spark'
-      const tone = opts.tone || 'info'
+      // Untoned charts draw neutral, never info blue (spec §6 Sparklines).
+      const tone = opts.tone || 'neutral'
       const vals = (values || []).filter((v) => typeof v === 'number' && isFinite(v))
       if (vals.length < 2) return null
       if (rich) {

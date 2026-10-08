@@ -55,7 +55,7 @@ const HINT = {
   props: { isDraft: false, isWorking: false, hint: '? for shortcuts' },
 } as const
 
-async function startWith($: any, on: any, surface: string) {
+async function startWith($: any, on: any, surface: string, snapshot = SNAPSHOT) {
   const filled: string[] = []
   const opened: string[] = []
   const closed: string[] = []
@@ -70,7 +70,7 @@ async function startWith($: any, on: any, surface: string) {
   on('command.register', () => ({ value: undefined }))
   on('config.list', () => ({ value: [] }))
   on('process.spawn', async function* () {
-    yield { stream: 'stdout', text: SNAPSHOT }
+    yield { stream: 'stdout', text: snapshot }
     return { value: { code: 0, signal: null } }
   })
   let statuses = 0
@@ -144,6 +144,44 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(await hint.find({ type: 'Text', text: 'bob (Claude Code)' })).toBeDefined()
       expect(await hint.find({ type: 'Text', text: 'carol (war room)' })).toBeDefined()
     }
+  })
+}
+
+// Measured live: "collab-bob (you) · Claude · Claude: investigating · Claude:
+// investigating". Two sessions of one tool are one entry, its doing said once.
+const TWICE = JSON.stringify({
+  type: 'rooms',
+  line: '',
+  rooms: [
+    {
+      ...ROOM,
+      status: {
+        ...ROOM.status,
+        people: [
+          {
+            name: 'collab-bob',
+            you: true,
+            here: true,
+            agents: [
+              { tool: 'Claude', label: 'bob-claude-desktop', here: true, doing: 'investigating' },
+              { tool: 'Claude', label: 'bob-claude-code', here: true, doing: 'investigating' },
+              { tool: 'Codex', label: 'bob-codex', here: false },
+            ],
+          },
+        ],
+      },
+    },
+  ],
+}) + '\n'
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`${surface}: /room says each of a person's tools once, with its doing once`, async ($, on) => {
+    await startWith($, on, surface, TWICE)
+    const pane = await $.ui.mount({ ...PANE, surface } as never)
+    const want = surface === 'terminal' ? '● collab-bob (you) · Claude: investigating · Codex (away)' : 'Claude: investigating · Codex (away)'
+    expect(await pane.find({ type: 'Text', text: want })).toBeDefined()
+    const texts = (await pane.findAll({ type: 'Text' })).map((t: any) => (t.props?.children ?? t.children ?? []).join?.('') ?? '')
+    expect(texts.filter((t: string) => /Claude · Claude|Claude: investigating.*investigating/.test(t))).toEqual([])
   })
 }
 

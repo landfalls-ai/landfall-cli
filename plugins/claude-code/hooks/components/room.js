@@ -31,6 +31,7 @@ import {
   severityTone,
   statusTone,
   statusWords,
+  toolsOf,
   whereIs,
   whoIsHere,
 } from '../core.js'
@@ -407,10 +408,8 @@ function paneRich(k, act) {
 // agents are doing.
 function personRow(k, p, key) {
   const { Box, Text } = k.els
-  const doing = []
-  for (const a of p.agents ?? []) if (a.doing) doing.push(a.tool + ': ' + a.doing)
-  const where = whereIs(p)
-  const detail = [where || (p.here ? '' : 'away'), ...doing].filter(Boolean).join(' · ')
+  const tools = toolsOf(p)
+  const detail = (tools.length > 0 ? tools : p.here ? [] : ['away']).join(' · ')
   const name = Text({ key: key + '-n', bold: true, dimColor: !p.here, children: [p.name + (p.you ? ' (you)' : '')] })
   if (!k.rich) return Text({ key, dimColor: !p.here, children: [personLine(p)] })
   return Box({

@@ -123,13 +123,14 @@ export function sortPeople(people) {
 }
 
 // viaLine is where a person works and what their agents are doing:
-// "Claude Code · comparing 5xx by region".
+// "Claude Code · comparing 5xx by region". A tool is named once however many
+// sessions of it the person runs, and the same doing is said once.
 export function viaLine(p) {
   const out = []
   const where = whereIs(p)
   if (where) out.push(where)
   else if (!p.here) out.push('away')
-  for (const a of p.agents ?? []) if (a.here && a.doing) out.push(a.doing)
+  for (const a of p.agents ?? []) if (a.here && a.doing && !out.includes(a.doing)) out.push(a.doing)
   return out.join(' · ')
 }
 

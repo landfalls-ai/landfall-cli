@@ -183,11 +183,7 @@ export function statusWords(st) {
 // personLine is one person in the pane ("● bob · Claude Code: querying ALB").
 export function personLine(p) {
   const name = p.name + (p.you ? ' (you)' : '')
-  const tools = []
-  if (p.browser) tools.push('war room')
-  for (const a of p.agents ?? []) {
-    tools.push(a.tool + (a.here ? '' : ' (away)') + (a.doing ? ': ' + a.doing : ''))
-  }
+  const tools = toolsOf(p)
   return (p.here ? '● ' : '○ ') + name + (tools.length > 0 ? ' · ' + tools.join(' · ') : '') + (p.here ? '' : ' · away')
 }
 
@@ -234,4 +230,25 @@ export function quoteDraft(text) {
       .map((l) => '> ' + l)
       .join('\n') + '\n\n'
   )
+}
+
+// toolsOf is where a person works, one entry per tool however many sessions
+// of it they run (two Claude sessions of one person are one "Claude"), each
+// tool's distinct doings after it once: ["war room", "Claude: investigating"].
+// A tool none of whose sessions is here reads "Codex (away)". With hereOnly,
+// sessions that are away are left out.
+export function toolsOf(p, { hereOnly = false } = {}) {
+  const out = []
+  if (p.browser) out.push('war room')
+  const byTool = new Map()
+  for (const a of p.agents ?? []) {
+    if (hereOnly && !a.here) continue
+    const tool = a.tool || 'agent'
+    let t = byTool.get(tool)
+    if (!t) byTool.set(tool, (t = { here: false, doing: [] }))
+    if (a.here) t.here = true
+    if (a.doing && !t.doing.includes(a.doing)) t.doing.push(a.doing)
+  }
+  for (const [tool, t] of byTool) out.push(tool + (t.here ? '' : ' (away)') + (t.doing.length > 0 ? ': ' + t.doing.join(', ') : ''))
+  return out
 }

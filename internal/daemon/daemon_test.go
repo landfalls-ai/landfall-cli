@@ -443,6 +443,9 @@ func TestARestoredRoomNobodyReadsIsIdleFromTheStart(t *testing.T) {
 func TestRestoreBackfillsTheRingSoUntoldItemsSurviveARestart(t *testing.T) {
 	edge := &fakeEdge{}
 	edge.updates = func(since int64) []client.Event {
+		if since == 0 {
+			return nil // the wall's one seed read (live.go seedWallAsync)
+		}
 		if since != 20 {
 			t.Fatalf("backfill must start at the lowest reader cursor (20), got %d", since)
 		}

@@ -155,7 +155,7 @@ func (r *Room) noteWallLocked(evt client.Event) {
 			meta.landed = true
 			title := meta.title
 			if title == "" {
-				title = widgetText(map[string]any{"t": id}, "t")
+				title = humanWidgetID(id)
 			}
 			r.landWidgetLocked(WidgetView{Seq: seq, Title: title, Type: meta.typ, By: meta.by})
 		}
@@ -181,6 +181,97 @@ func (r *Room) noteWallLocked(evt client.Event) {
 	if IsWidgetShaping(evt.Type) && seq > w.seq {
 		w.seq = seq
 	}
+}
+
+// THE WALL BEFORE THE DAEMON JOINED. A Beacon widget's title rides only on
+// its agent.widget.requested, and Beacon re-executes its status and
+// remediation widgets all through a run, long after the request the daemon
+// never saw: those re-executions used to land as new widgets titled with
+// their ids ("w-status"). seedWallAsync reads the room's timeline once when
+// the room opens and remembers every widget already on the wall, with its
+// title, as landed, so a later re-execution is the wall changing, not a new
+// widget. Only the memory is seeded: widgetSeq and newestWidget stay as of
+// the daemon's own arrival.
+
+// seedWallAsync reads the room's timeline once, in the background, and
+// remembers the widgets already on its wall.
+func (r *Room) seedWallAsync(ctx context.Context) {
+	r.mu.Lock()
+	cl := r.client
+	r.mu.Unlock()
+	if cl == nil {
+		return
+	}
+	go func() {
+		rctx, cancel := context.WithTimeout(ctx, personReadBudget)
+		defer cancel()
+		events, err := cl.GetUpdates(rctx, 0)
+		if err != nil {
+			r.deps.log("could not read the wall of " + r.Config.IncidentID + ": " + err.Error())
+			return
+		}
+		r.mu.Lock()
+		defer r.mu.Unlock()
+		for _, e := range events {
+			r.seedWallLocked(e)
+		}
+	}()
+}
+
+// seedWallLocked remembers one event of the wall as it stood before the
+// daemon joined: titles, types and authors, and which widgets have landed.
+func (r *Room) seedWallLocked(evt client.Event) {
+	if evt.Seq == nil {
+		return
+	}
+	p := evt.Payload
+	w := &r.wall
+	switch {
+	case strings.HasPrefix(evt.Type, "agent.widget."):
+		id, _ := p["widgetId"].(string)
+		if id == "" {
+			return
+		}
+		meta := w.byID.put(id)
+		if t := widgetText(p, "title"); t != "" {
+			meta.title = t
+		}
+		if t := firstText(p, "widgetType", "type"); t != "" && meta.typ == "" {
+			meta.typ = t
+		}
+		if by := widgetBy(evt); by != "" && meta.by == "" {
+			meta.by = by
+		}
+		if evt.Type == "agent.widget.executed" || evt.Type == "agent.widget.rendered" {
+			meta.landed = true
+		}
+	case evt.Type == "edge.widget":
+		meta := w.bySeq.put(*evt.Seq)
+		if meta.title == "" {
+			meta.title = widgetText(p, "title")
+			meta.typ = firstText(p, "widgetType", "type")
+			meta.by = widgetBy(evt)
+		}
+		meta.landed = true
+	}
+}
+
+// humanWidgetID is a widget's id as a title, for the rare widget whose title
+// no event carried: "w-status" reads "Status", "error_rate" "Error rate".
+func humanWidgetID(id string) string {
+	s := widgetText(map[string]any{"t": id}, "t")
+	for _, prefix := range []string{"w-", "w_", "widget-", "widget_"} {
+		if rest := strings.TrimPrefix(s, prefix); rest != s && rest != "" {
+			s = rest
+			break
+		}
+	}
+	s = strings.Join(strings.Fields(strings.NewReplacer("-", " ", "_", " ").Replace(s)), " ")
+	if s == "" {
+		return "Widget"
+	}
+	r := []rune(s)
+	return strings.ToUpper(string(r[0])) + string(r[1:])
 }
 
 // landWidgetLocked makes v the newest widget unless a newer one already is

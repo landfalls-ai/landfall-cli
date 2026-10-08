@@ -293,3 +293,77 @@ func TestTheOfferIsPersisted(t *testing.T) {
 		t.Fatalf("persisted reader: %+v", rd)
 	}
 }
+
+// Beacon's status and remediation widgets are requested once, before this
+// daemon joined, and re-executed all through the run. The wall is read once
+// when the room opens, so a re-execution keeps its title and is not news;
+// a widget no event ever titled reads as its id made human, not "w-status".
+// (Measured live: the band toasted "New on the wall: w-status".)
+func TestTheWallBeforeJoiningIsRemembered(t *testing.T) {
+	wire := &fakeWire{}
+	edge := &fakeEdge{}
+	edge.updates = func(since int64) []client.Event {
+		if since != 0 {
+			return nil
+		}
+		return []client.Event{
+			{Seq: seq(6), Type: "agent.widget.requested", ActorType: "system", Payload: map[string]any{"title": "Investigation status", "widgetId": "w-status", "widgetType": "logView"}},
+			{Seq: seq(7), Type: "agent.widget.executed", ActorType: "system", Payload: map[string]any{"widgetId": "w-status", "type": "logView", "status": "rendered"}},
+			{Seq: seq(12), Type: "agent.widget.requested", ActorType: "system", Payload: map[string]any{"title": "Remediation: fast fix", "widgetId": "w-remediation", "widgetType": "logView"}},
+			{Seq: seq(13), Type: "agent.widget.executed", ActorType: "system", Payload: map[string]any{"widgetId": "w-remediation", "type": "logView", "status": "rendered"}},
+		}
+	}
+	d, _ := testDaemon(t, edge, wire)
+	attachAgentAt(t, d, "ws", "claude-code", "1")
+	room := d.rooms()[0]
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		room.mu.Lock()
+		meta := room.wall.byID.get("w-status")
+		room.mu.Unlock()
+		if meta != nil && meta.landed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the wall was never read when the room opened")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if v := peekOne(t, d, "ws", "claude-code"); v.WidgetSeq != 0 || v.NewestWidget != nil {
+		t.Fatalf("the seed is memory only: seq %d newest %+v", v.WidgetSeq, v.NewestWidget)
+	}
+
+	// The status widget re-executes: the wall changed, nothing landed.
+	wire.emit(client.Event{Seq: seq(56), Type: "agent.widget.executed", ActorType: "system", Payload: map[string]any{"widgetId": "w-status", "type": "logView", "status": "rendered"}})
+	if v := peekOne(t, d, "ws", "claude-code"); v.WidgetSeq != 56 || v.NewestWidget != nil {
+		t.Fatalf("a re-execution is not a new widget: seq %d newest %+v", v.WidgetSeq, v.NewestWidget)
+	}
+
+	// A widget whose request carried its title lands under that title.
+	wire.emit(client.Event{Seq: seq(60), Type: "agent.widget.requested", ActorType: "agent", Payload: map[string]any{"title": "5xx by region", "widgetId": "w-geo", "widgetType": "geo"}})
+	wire.emit(client.Event{Seq: seq(61), Type: "agent.widget.executed", ActorType: "agent", Payload: map[string]any{"widgetId": "w-geo", "type": "geo", "status": "rendered"}})
+	if v := peekOne(t, d, "ws", "claude-code"); v.NewestWidget == nil || v.NewestWidget.Title != "5xx by region" {
+		t.Fatalf("newest = %+v", v.NewestWidget)
+	}
+
+	// One that nothing titled reads as its id made human.
+	wire.emit(client.Event{Seq: seq(62), Type: "agent.widget.executed", ActorType: "system", Payload: map[string]any{"widgetId": "w-error_budget", "type": "stat", "status": "rendered"}})
+	if v := peekOne(t, d, "ws", "claude-code"); v.NewestWidget == nil || v.NewestWidget.Title != "Error budget" {
+		t.Fatalf("newest = %+v", v.NewestWidget)
+	}
+}
+
+func TestHumanWidgetID(t *testing.T) {
+	for id, want := range map[string]string{
+		"w-status":      "Status",
+		"w-remediation": "Remediation",
+		"widget_p99":    "P99",
+		"error-rate":    "Error rate",
+		"w-":            "W",
+		"":              "Widget",
+	} {
+		if got := humanWidgetID(id); got != want {
+			t.Errorf("humanWidgetID(%q) = %q, want %q", id, got, want)
+		}
+	}
+}

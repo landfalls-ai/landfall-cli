@@ -593,6 +593,7 @@ func (r *Room) start(ctx context.Context) {
 			}
 		}
 	}()
+	r.seedWallAsync(roomCtx)
 	// The watched poll (person.go): while a watch is attached, the person's
 	// attention is read every PersonWatchedPoll, for the teammate's claims
 	// the server never pushes to an edge socket.

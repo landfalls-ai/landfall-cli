@@ -26,7 +26,7 @@
 // Home block and the band.
 
 import { ago, clip, consoleState, currentRoom, quoteDraft, reading, roomName, whereIs } from '../core.js'
-import { BUTTON_CHROME, clipToCells, textCells, TONE } from '../kit.js'
+import { BUTTON_CHROME, claimTone, clipToCells, textCells, TONE } from '../kit.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, opened as markOpen } from '../live.js'
 import { clipText, hhmm } from '../views.js'
 import { claimLine, linesOf, lineLabel, lineWords, loneLines, releaseLine } from './lines.js'
@@ -88,21 +88,20 @@ export function viaLine(p) {
 }
 
 // The words and tone for where a contribution stands.
-const STATES = {
-  staged: { word: 'staged', tone: 'warning' },
-  corroborated: { word: 'corroborated', tone: 'info' },
-  contested: { word: 'contested', tone: 'critical' },
-  admitted: { word: 'admitted', tone: 'good' },
-  withdrawn: { word: 'withdrawn', tone: 'neutral' },
-  note: { word: 'note', tone: 'neutral' },
-}
+// The tones come from the kit's one claim-state map (round 2 review, issue 4), shared with Context.
+const STATE_WORDS = ['staged', 'corroborated', 'contested', 'admitted', 'withdrawn', 'note']
 
 export function stateWord(state) {
-  return (STATES[state] && STATES[state].word) || String(state || 'shared')
+  return STATE_WORDS.includes(state) ? state : String(state || 'shared')
 }
 
 export function latestTone(state) {
-  return (STATES[state] && STATES[state].tone) || 'neutral'
+  return claimTone(state)
+}
+
+// blank is one empty row between blocks on the terminal (the console's own spacing); nothing off it.
+function gap(k, key) {
+  return k.terminal ? k.els.Text({ key, children: [' '] }) : null
 }
 
 // seqAge is "#205 · 3m".
@@ -165,7 +164,8 @@ export function keys(k, io) {
     const sel = list[Math.min(ui.selected, list.length - 1)]
     return [
       k.button({ key: 'back', label: k.terminal ? 'back to people' : 'Back to people', hotkey: 'b', onPress: () => back(io) }),
-      sel ? k.button({ key: 'pv-ask', label: 'ask about ' + clipText(sel.title || sel.type || 'widget', 28), hotkey: 'a', onPress: () => askAbout(io, sel) }) : null,
+      // The desktop's row holds three keys on one line, so the widget is not named there (round 2 review, issue 15).
+      sel ? k.button({ key: 'pv-ask', label: k.terminal ? 'ask about ' + clipText(sel.title || sel.type || 'widget', 28) : 'Ask about this', hotkey: 'a', onPress: () => askAbout(io, sel) }) : null,
       list.length > 1 ? k.button({ key: 'pv-next', label: 'next widget', hotkey: 'n', onPress: () => nextWidget(io) }) : null,
     ].filter(Boolean)
   }
@@ -217,9 +217,10 @@ function listView(k, io, r, people) {
     const name = p.name + (p.you ? ' (you)' : '')
     const via = viaWords(r, p)
     const l = p.latest
-    const quoteButton = l && l.text
-      ? Button({ key: 'quote-' + i, label: '“' + clip(l.text, Math.max(20, k.width - (k.terminal ? 8 : 2))) + '”', ...(k.terminal ? { plain: true } : {}), onPress: () => io.fill(quoteDraft(l.text)) })
-      : null
+    // Off the terminal the text is proportional: the quote takes the card's measured width (card
+    // border and padding off), cut with an ellipsis only there.
+    const quoteLabel = l && l.text ? (k.terminal ? '“' + clip(l.text, Math.max(20, k.width - 8)) + '”' : '“' + clipToCells(l.text, Math.max(12, k.width - 4 - BUTTON_CHROME - textCells('“”'))) + '”') : ''
+    const quoteButton = l && l.text ? Button({ key: 'quote-' + i, label: quoteLabel, ...(k.terminal ? { plain: true } : {}), onPress: () => io.fill(quoteDraft(l.text)) }) : null
     if (quoteButton) quotable = true
     const stateRow = l
       ? k.row([k.pill(stateWord(l.state), latestTone(l.state), 'ls-' + id), Text({ key: 'la-' + id, dimColor: true, children: [seqAge(l)] })], 'lr-' + id, 1)
@@ -241,8 +242,32 @@ function listView(k, io, r, people) {
       rows.push(Box({ key: 'pl-' + id, paddingLeft: 2, flexDirection: 'column', children: [stateRow, quoteButton].filter(Boolean) }))
       return
     }
-    // Desktop, VS Code, mobile: an avatar card. The investigation button sits flush right,
-    // one column for every card (round 4 review, issue 8).
+    // Desktop, VS Code, mobile: an avatar card. The name and where they work take what the row has
+    // left (`minWidth: 0`, cut with an ellipsis); the investigation button never shrinks, so no
+    // card loses it (round 2 review, issue 5). Below 70 cells it sits on its own row under the meta.
+    const openLabel = p.you ? 'Your investigation' : p.name + "'s investigation"
+    const stacked = k.width < 70
+    const buttonCells = textCells(openLabel) + BUTTON_CHROME
+    const metaRoom = Math.max(8, k.width - 4 - 4 - 1 - (stacked ? 0 : buttonCells + 1))
+    const openButton = Box({ key: 'ob-' + id, flexShrink: 0, ...(stacked ? { alignSelf: 'flex-start' } : {}), children: [Button({ key: 'open-' + i, label: openLabel, onPress: open })] })
+    const identity = Box({
+      key: 'nv-' + id,
+      flexDirection: 'column',
+      flexGrow: 1,
+      flexShrink: 1,
+      minWidth: 0,
+      children: [
+        Text({ key: 'nm-' + id, bold: true, dimColor: !p.here, wrap: 'truncate-end', children: [name] }),
+        via ? Text({ key: 'via-' + id, dimColor: true, wrap: 'truncate-end', children: [clipToCells(via, metaRoom)] }) : null,
+      ].filter(Boolean),
+    })
+    const head = Box({
+      key: 'ph-' + id,
+      flexDirection: 'row',
+      columnGap: 1,
+      alignItems: 'center',
+      children: [k.avatar(p.name, !!p.here, { key: 'av-' + id, you: !!p.you, px: 30 }), identity, stacked ? null : openButton].filter(Boolean),
+    })
     rows.push(
       Box({
         key: 'card-' + id,
@@ -251,37 +276,19 @@ function listView(k, io, r, people) {
         borderStyle: 'round',
         borderColor: '#d9d9d6',
         paddingX: 1,
-        children: [
-          Box({
-            key: 'ph-' + id,
-            flexDirection: 'row',
-            columnGap: 1,
-            alignItems: 'center',
-            children: [
-              k.avatar(p.name, !!p.here, { key: 'av-' + id, you: !!p.you, px: 30 }),
-              Box({
-                key: 'nv-' + id,
-                flexDirection: 'column',
-                flexGrow: 1,
-                flexShrink: 1,
-                children: [Text({ key: 'nm-' + id, bold: true, dimColor: !p.here, children: [name] }), via ? Text({ key: 'via-' + id, dimColor: true, wrap: 'truncate-end', children: [via] }) : null].filter(Boolean),
-              }),
-              Button({ key: 'open-' + i, label: p.you ? 'Your investigation' : p.name + "'s investigation", onPress: open }),
-            ],
-          }),
-          stateRow,
-          quoteButton,
-        ].filter(Boolean),
+        children: [head, stacked ? openButton : null, stateRow, quoteButton].filter(Boolean),
       }),
     )
   })
 
   const lone = loneLines(r, people)
   if (lone.length > 0) {
+    rows.push(gap(k, 'g-lines'))
     rows.push(Text({ key: 'ln-h', bold: true, children: ['Lines'] }))
     lone.forEach((l, i) => rows.push(Text({ key: 'ln-' + i, wrap: 'truncate-end', children: [lineWords(l)] })))
   }
   if (ui.claiming && hasFields(k)) {
+    rows.push(gap(k, 'g-claim'))
     rows.push(
       Input({
         key: 'claim-label',
@@ -293,10 +300,12 @@ function listView(k, io, r, people) {
       }),
     )
   } else if (!hasFields(k)) {
+    rows.push(gap(k, 'g-mobile'))
     rows.push(Text({ key: 'ln-mobile', dimColor: true, children: ['To claim a line here, type /landfall lines and what you are on.'] }))
   }
+  if (people.length > 0) rows.push(gap(k, 'g-hint'))
   if (people.length > 0) rows.push(Text({ key: 'who-hint', dimColor: true, children: [quotable ? 'Enter on a name opens their investigation; on a contribution, quotes it.' : 'Enter on a name opens their investigation.'] }))
-  return rows
+  return rows.filter(Boolean)
 }
 
 // viaWords is where a person works, what their agents are doing, and the line they hold.
@@ -421,64 +430,83 @@ function personView(k, io, nowMs, r, p) {
   const mine = !!p.you
   const name = p.name
   const rows = []
-  rows.push(Text({ key: 'pv-h', bold: true, children: [mine ? 'Your investigation' : name + "'s investigation"] }))
+  // Off the terminal the identity row names the person, so the heading does not say it again
+  // (round 2 review, issue 15).
+  rows.push(Text({ key: 'pv-h', bold: true, children: [k.terminal ? (mine ? 'Your investigation' : name + "'s investigation") : 'Investigation'] }))
   rows.push(personRow(k, r, p))
   const empty = mine ? 'You have not shared anything yet.' : name + ' has not shared anything yet.'
   const target = readTarget(p)
   if (!target) {
+    rows.push(gap(k, 'g-msg'))
     rows.push(Text({ key: 'pv-none', dimColor: true, children: [empty] }))
-    return rows
+    return rows.filter(Boolean)
   }
   const a = pv.answer
   if (!a) {
+    rows.push(gap(k, 'g-msg'))
     rows.push(Text({ key: 'pv-read', dimColor: true, children: [mine ? 'Reading your investigation…' : 'Reading ' + name + "'s investigation…"] }))
-    return rows
+    return rows.filter(Boolean)
   }
   if (!a.ok) {
+    rows.push(gap(k, 'g-msg'))
     rows.push(Text({ key: 'pv-err', children: [clipText(a.error || 'The investigation could not be read.', k.width)] }))
-    return rows
+    return rows.filter(Boolean)
   }
   const trail = a.trail || []
   const widgets = a.widgets || []
   const arts = a.artifacts || []
   if (trail.length === 0 && widgets.length === 0 && arts.length === 0) {
+    rows.push(gap(k, 'g-msg'))
     rows.push(Text({ key: 'pv-none', dimColor: true, children: [empty] }))
-    return rows
+    return rows.filter(Boolean)
   }
 
   if (trail.length > 0) {
     const total = Math.max(a.totalTrail || 0, trail.length)
+    rows.push(gap(k, 'g-findings'))
     rows.push(Text({ key: 'pv-f-h', bold: true, children: ['Findings · ' + total] }))
     trail.slice(0, TRAIL_MAX).forEach((t, i) => {
       const state = t.state ? k.pill(stateWord(t.state), latestTone(t.state), 'pv-s' + i) : null
       const words = trailWords(t)
       // Every finding is a quote button, on both surfaces: curly quotes where a desktop draws it as one.
-      // On the terminal the budget is characters; off it the text is proportional, so the row's
-      // real width is measured (time, glyph, gaps and the state label taken off the pane) and the
-      // finding takes what is left, cut with an ellipsis only there (round 1 cut it at ~25 chars).
-      let label
       if (k.terminal) {
-        label = clipText(words, Math.max(10, k.width - 5 - 2 - 2 - (t.state ? stateWord(t.state).length + 4 : 0)))
-      } else {
-        // The state label wraps under the finding when both do not fit one row (the row is
-        // `flexWrap: wrap`), so the finding is budgeted without it: it takes the full width.
-        const taken = textCells(hhmm(t.at)) + textCells(GLYPH[t.kind] || '·') + 3
-        const room = Math.max(8, k.width + 2 - 1 - taken - BUTTON_CHROME - textCells('“”'))
-        label = '“' + clipToCells(words, room) + '”'
+        const label = clipText(words, Math.max(10, k.width - 5 - 2 - 2 - (t.state ? stateWord(t.state).length + 4 : 0)))
+        rows.push(
+          Box({
+            key: 'pv-t' + i,
+            flexDirection: 'row',
+            columnGap: 1,
+            alignItems: 'center',
+            children: [
+              Text({ key: 'pv-ti' + i, dimColor: true, children: [hhmm(t.at)] }),
+              Text({ key: 'pv-g' + i, children: [GLYPH[t.kind] || '·'] }),
+              Button({ key: 'trail-' + i, label, plain: true, onPress: () => io.fill(quoteDraft(words)) }),
+              state ? Box({ key: 'pv-sp' + i, flexGrow: 1 }) : null,
+              state,
+            ].filter(Boolean),
+          }),
+        )
+        return
       }
+      // Off the terminal one row: time, glyph in a fixed slot, the state label, then the quote
+      // button. The label comes before the text so it can never wrap under it, and the text takes
+      // what is measured to be left (time, glyph slot, label and gaps off the pane), cut with an
+      // ellipsis only there (rounds 1 and 2 cut it or wrapped the label).
+      const labelCells = t.state ? textCells('● ' + stateWord(t.state)) + 2 : 0
+      const taken = textCells(hhmm(t.at)) + 2 + labelCells + (t.state ? 1 : 0) + 3
+      const room = Math.max(8, k.width + 2 - 1 - taken - BUTTON_CHROME - textCells('“”'))
+      const label = '“' + clipToCells(words, room) + '”'
       rows.push(
         Box({
           key: 'pv-t' + i,
           flexDirection: 'row',
           columnGap: 1,
           alignItems: 'center',
-          ...(k.terminal ? {} : { flexWrap: 'wrap' }),
           children: [
             Text({ key: 'pv-ti' + i, dimColor: true, children: [hhmm(t.at)] }),
-            Text({ key: 'pv-g' + i, children: [GLYPH[t.kind] || '·'] }),
-            Button({ key: 'trail-' + i, label, ...(k.terminal ? { plain: true } : {}), onPress: () => io.fill(quoteDraft(words)) }),
-            state ? Box({ key: 'pv-sp' + i, flexGrow: 1 }) : null,
+            Box({ key: 'pv-gs' + i, width: 2, flexShrink: 0, justifyContent: 'center', children: [Text({ key: 'pv-g' + i, children: [GLYPH[t.kind] || '·'] })] }),
             state,
+            Box({ key: 'pv-qb' + i, flexShrink: 1, minWidth: 0, children: [Button({ key: 'trail-' + i, label, onPress: () => io.fill(quoteDraft(words)) })] }),
           ].filter(Boolean),
         }),
       )
@@ -486,6 +514,7 @@ function personView(k, io, nowMs, r, p) {
     if (total > TRAIL_MAX) rows.push(Text({ key: 'pv-more', dimColor: true, children: ['+' + (total - TRAIL_MAX) + ' earlier in Timeline'] }))
   }
 
+  rows.push(gap(k, 'g-dash'))
   rows.push(heading(k, 'pv-d', 'Dashboard', dashboardTail(widgets, a.totalWidgets, true, nowMs, pv.inFlight)))
   if (widgets.length === 0) rows.push(Text({ key: 'pv-dnone', dimColor: true, children: [mine ? 'You have not shared a dashboard yet.' : name + ' has not shared a dashboard yet.'] }))
   else {
@@ -497,6 +526,7 @@ function personView(k, io, nowMs, r, p) {
   }
 
   if (arts.length > 0) {
+    rows.push(gap(k, 'g-arts'))
     rows.push(Text({ key: 'pv-a-h', bold: true, children: ['Artifacts · ' + arts.length] }))
     arts.slice(0, 8).forEach((x, i) => {
       const nameWidth = Math.max(...arts.slice(0, 8).map((y) => String(y.filename || '').length))
@@ -505,8 +535,9 @@ function personView(k, io, nowMs, r, p) {
     })
     if (arts.length > 8) rows.push(Text({ key: 'pv-a-more', dimColor: true, children: ['+' + (arts.length - 8) + ' more in the war room'] }))
   }
+  rows.push(gap(k, 'g-pvhint'))
   rows.push(Text({ key: 'pv-hint', dimColor: true, children: ['Enter on a finding quotes it; on an artifact, adds it to your context'] }))
-  return rows
+  return rows.filter(Boolean)
 }
 
 // personRow is the person as the list draws them, without the press: presence dot,

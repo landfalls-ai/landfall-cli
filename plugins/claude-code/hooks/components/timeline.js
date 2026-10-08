@@ -131,7 +131,7 @@ export function keys(k, io, nowMs, args) {
 // tab is the Timeline tab's body (spec 4.4): the chips, `m: earlier events` while there is more,
 // one row per event and the hint. The console draws the footer and keys. `args` is `/landfall timeline <chip>`.
 export function tab(k, io, nowMs, args) {
-  const { Text } = k.els
+  const { Box, Text } = k.els
   drawn(lp)
   const r = currentRoom()
   forRoom(r)
@@ -141,7 +141,9 @@ export function tab(k, io, nowMs, args) {
   rows.push(
     chipRow(
       k,
-      KINDS.map((c) => ({ key: 'kind-' + c.kind, name: c.label, hotkey: c.hotkey, active: c.kind === tl.kind, onPress: () => setKind(io, c.kind) })),
+      // The docked desktop draws no key chip beside a kind (six chips with letters wrap to two rows,
+      // round 2 review, issue 13); the terminal keeps its letters.
+      KINDS.map((c) => ({ key: 'kind-' + c.kind, name: c.label, hotkey: k.terminal ? c.hotkey : undefined, active: c.kind === tl.kind, onPress: () => setKind(io, c.kind) })),
       'tl-kinds',
     ),
   )
@@ -153,7 +155,10 @@ export function tab(k, io, nowMs, args) {
   else if (tl.events.length === 0) rows.push(k.text(tl.kind === 'all' ? 'Nothing on the timeline yet.' : 'Nothing of this kind yet.', { key: 'tl-none', dimColor: true }))
   const space = Math.max(20, k.width - 10)
   for (const ev of tl.events) {
-    const glyph = Text({ key: 'g', color: toneColor(ev.tone || 'neutral'), children: [ev.glyph || '·'] })
+    const mark = Text({ key: 'g', color: toneColor(ev.tone || 'neutral'), children: [ev.glyph || '·'] })
+    // Off the terminal the glyphs differ in width, so each sits centered in one fixed slot and every
+    // event's text starts at the same x (round 2 review, issue 13).
+    const glyph = k.terminal ? mark : Box({ key: 'gs', width: 2, flexShrink: 0, justifyContent: 'center', children: [mark] })
     const label = clipText(eventWords(ev), space)
     const press = k.els.Button({ key: 'ev-' + ev.seq, label, plain: true, onPress: () => quote(io, ev) })
     const line = k.row([Text({ key: 't', dimColor: true, children: [hhmm(ev.at)] }), glyph, press], 'row-' + ev.seq, 1)

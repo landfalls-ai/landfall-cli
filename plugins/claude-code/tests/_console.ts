@@ -66,7 +66,7 @@ export async function world($: any, on: any, opts: Opts = {}) {
   const runs: string[][] = []
   const toasts: string[] = []
   const filled: string[] = []
-  const opened: Array<{ id: string; focus?: boolean; columns?: number }> = []
+  const opened: Array<{ id: string; focus?: boolean; columns?: number; title?: string }> = []
   const closed: string[] = []
   const copied: string[] = []
   const spawned: string[][] = []
@@ -127,7 +127,7 @@ export async function world($: any, on: any, opts: Opts = {}) {
     return { value: { isCopied: true } }
   })
   on('ui.open', ($: any, e: any) => {
-    opened.push({ id: e.id, focus: e.focus, columns: e.columns })
+    opened.push({ id: e.id, focus: e.focus, columns: e.columns, title: e.title })
     return { value: opts.placed === false ? { isPlaced: false, reason: 'headless' } : { isPlaced: true } }
   })
   on('prompt.fill', ($: any, e: any) => {

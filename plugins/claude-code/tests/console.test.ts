@@ -1,5 +1,5 @@
 import { expect, test } from 'claude-code/testing'
-import { NOT_PLACED, OPENED, UNKNOWN, clampOffset, estRows, flatten, moreWords, offsetShowing, parseArgs, planHome, readingWords, segmentLabels } from '../hooks/console.js'
+import { NOT_PLACED, UNKNOWN, clampOffset, estRows, flatten, moreWords, offsetShowing, parseArgs, planHome, readingWords, segmentLabels } from '../hooks/console.js'
 import { TABS, TOAST_MAX, clipMiddle, toastText } from '../hooks/core.js'
 import { elapsed, reasonWords, webHost } from '../hooks/components/signin.js'
 import { notJoinedWords } from '../hooks/components/incidents.js'
@@ -80,8 +80,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: /landfall in a room opens the one pane on Home, asked, at 84 columns`, async ($, on) => {
     const w = await world($, on, { rooms: [roomOf()], surface })
     const answer = await $.command.run({ command: 'landfall', args: '' })
-    expect(answer.text).toBe(OPENED)
-    expect(w.opened).toEqual([{ id: 'landfall', focus: true, columns: 84 }])
+    expect(answer.text).toBeUndefined() // a successful open leaves no row in the transcript
+    expect(w.opened).toEqual([{ id: 'landfall', focus: true, columns: 84, title: 'Landfall · Home' }])
     const pane = await $.ui.mount(consolePane(surface) as never)
     const drawn: any = await pane.drawn()
     // The switcher is the pane's first row, outside the body that scrolls under it.
@@ -402,7 +402,7 @@ test('band key 2 opens the console on Home, asked; while it is open it reads go 
   const band = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
   expect((await band.find({ type: 'Button', key: 'console' }))?.props).toMatchObject({ hotkey: '2', label: 'open the console' })
   await band.press({ key: 'console' })
-  expect(w.opened).toEqual([{ id: 'landfall', focus: true, columns: 84 }])
+  expect(w.opened).toEqual([{ id: 'landfall', focus: true, columns: 84, title: 'Landfall · Home' }])
   await band.unmount()
   const again = await $.ui.mount({ ...BAND, surface: 'terminal' } as never)
   expect((await again.find({ type: 'Button', key: 'console' }))?.props.label).toBe('go to the console')

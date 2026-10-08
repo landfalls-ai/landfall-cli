@@ -49,7 +49,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount({ ...paneProps('d-tl'), surface } as never)
     // The chips: letters, the active one `▸ <kind>` at full strength, the others dim.
     const chips = (await pane.findAll({ type: 'Button' })).filter((b: any) => /^kind-/.test(String(b.key)))
-    expect(chips.map((b: any) => b.props.hotkey)).toEqual(['a', 'f', 's', 'b', 'p', 'o'])
+    // The docked desktop draws no key chip beside a kind, so six chips stay on one row.
+    expect(chips.map((b: any) => b.props.hotkey)).toEqual(surface === 'terminal' ? ['a', 'f', 's', 'b', 'p', 'o'] : [undefined, undefined, undefined, undefined, undefined, undefined])
     expect(chips[0].text).toBe(surface === 'terminal' ? '▸ all' : '▸ All')
     expect(chips[0].props.dimColor).toBeUndefined()
     expect(chips[3].text).toBe(surface === 'terminal' ? 'Beacon' : 'Beacon')

@@ -205,6 +205,8 @@ export function signinBody(k, io, nowMs, onSignedIn) {
   const host = webHost(signin.web)
   rows.push(Text({ key: 'si-1', children: ['Your browser opens the Landfall sign-in page' + (host ? ' at ' + host : '') + '. Finish there; this console continues on its own.'] }))
   rows.push(Text({ key: 'si-2', dimColor: true, children: ['Signing in is what lets you join an incident from here. A room you join by share link works without it.'] }))
+  // No blank row of our own before the keys: these states draw no footer, so the console adds the
+  // one blank row there (round 2 review, issue 16), never two.
   keys.push(k.button({ key: 'si-go', label: k.terminal ? 'sign in with your browser' : 'Sign in with your browser', hotkey: 's', primary: true, onPress: () => startSignin(io, onSignedIn) }))
   return { rows, keys, footer }
 }

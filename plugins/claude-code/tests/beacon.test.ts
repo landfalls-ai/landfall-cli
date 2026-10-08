@@ -78,6 +78,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       const track = (await band.findAll({ type: 'Svg' })).find((x: any) => x.props.alt === 'Beacon at step 6') as any
       expect(track).toBeDefined()
       expect(track.props.source).toContain('Step 5: listing target groups')
+      // A plain image: an interactive frame is a white page on a dark band (round 2 review, issue 3).
+      expect(track.props.isInteractive).toBeFalsy()
     }
     expect(await band.find({ type: 'Button', key: 'beacon-read' })).toBeUndefined()
   })

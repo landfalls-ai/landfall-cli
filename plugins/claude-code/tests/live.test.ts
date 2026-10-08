@@ -115,7 +115,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: while the room reconnects the band, the panes and the status line say so`, async ($, on) => {
     const down = { ...ROOM, connection: 'disconnected' }
     const s = await session($, on, [down], () => WALL)
-    expect(s.statuses.at(-1)).toBe('○ Landfall 168 · investigating · SEV2 · 0 new')
+    expect(s.statuses.at(-1)).toBe('○ Landfall 168 · SEV2 · investigating · 0 new')
     // The band says it once: a row on the terminal, a label off it (spec §5.1).
     const said = surface === 'terminal' ? 'Reconnecting to the room…' : '● reconnecting'
     let band = await $.ui.mount({ ...BAND, surface } as never)
@@ -130,7 +130,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     // Live again: the line clears, the dot fills, a band with no news is gone.
     await s.feed([ROOM])
-    expect(s.statuses.at(-1)).toBe('🔴 Landfall 168 · investigating · SEV2 · 0 new')
+    expect(s.statuses.at(-1)).toBe('Landfall 168 · SEV2 · investigating · 0 new')
     band = await $.ui.mount({ ...BAND, surface } as never)
     expect(await band.find({ type: 'Text', text: said })).toBeUndefined()
     await band.unmount()

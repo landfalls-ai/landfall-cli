@@ -211,6 +211,11 @@ function selectorRow(k, io, list, current) {
   return Box({ key: 'wall-sel', flexDirection: 'row', columnGap: k.terminal ? 2 : 1, flexWrap: wrap ? 'wrap' : 'nowrap', children: kids })
 }
 
+// gap is one blank row between blocks on the terminal, nothing elsewhere.
+function gap(k, key) {
+  return k.terminal ? k.text(' ', { key }) : null
+}
+
 // readTarget is what `--person` takes for a dashboard: `me`, a humanActorId, or
 // '' when there is nothing to read (the shared wall, or a person nobody has
 // heard from, who has shared nothing).
@@ -315,6 +320,8 @@ export function tab(k, io, nowMs, args) {
     }
   }
   const rows = [selectorRow(k, io, items(members), wall.dashboard)]
+  // The terminal spends one blank row between blocks (round 2 issue 16); cards space themselves.
+  if (k.terminal) rows.push(gap(k, 'wall-g-sel'))
   if (wall.dashboard === 'shared') rows.push(...sharedBody(k, io, nowMs))
   else rows.push(...personBody(k, io, nowMs, memberOf(wall.dashboard, members)))
   return rows
@@ -403,12 +410,26 @@ function sharedBody(k, io, nowMs) {
   rows.push(...widgetCards(k, io, widgets, { prefix: 'w', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, two }))
   const gone = a.unavailable || []
   if (gone.length > 0) {
+    rows.push(gap(k, 'un-g'))
     rows.push(k.text('Not shown here', { key: 'un-h', bold: true }))
-    gone.forEach((u, i) => rows.push(k.text((u.title || u.type || u.id) + ': ' + (u.reason || 'not available'), { key: 'un-' + i, dimColor: true })))
+    gone.forEach((u, i) => rows.push(k.text(unavailableWords(u), { key: 'un-' + i, dimColor: true })))
   }
   const more = moreWords(a, widgets.length)
-  if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
-  return rows
+  if (more) {
+    rows.push(gap(k, 'wall-g-more'))
+    rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
+  }
+  return rows.filter(Boolean)
+}
+
+// unavailableWords is one widget the wall cannot show here, widget first and the reason in plain
+// words, with at most one colon (round 2 issue 19): `RDS replica lag · needs your sign-in. Run
+// landfall login.`
+export function unavailableWords(u) {
+  const name = u.title || u.type || u.id || 'A widget'
+  const reason = String(u.reason || 'not available').trim()
+  if (/sign in|signed in|sign-in|login/i.test(reason)) return name + ' · needs your sign-in. Run landfall login.'
+  return name + ' · ' + reason.replace(/:\s+/g, ', ').replace(/^./, (c) => c.toLowerCase())
 }
 
 function personBody(k, io, nowMs, m) {
@@ -438,8 +459,11 @@ function personBody(k, io, nowMs, m) {
   rows.push(heading(k, 'wall-h', name + ' dashboard', dashboardTail(widgets, a.totalWidgets, mine, nowMs, pp.inFlight)))
   rows.push(...widgetCards(k, io, widgets, { prefix: 'pw', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, snapshot: true, two: k.rich && k.width >= 90 }))
   const more = moreWords(a, widgets.length)
-  if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
-  return rows
+  if (more) {
+    rows.push(gap(k, 'wall-g-more'))
+    rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
+  }
+  return rows.filter(Boolean)
 }
 
 // dashboardTail is the dim words after a person's heading:
@@ -536,8 +560,8 @@ function fitRows(k, widgets, o) {
     return widgets
   }
   // Rows the tab spends on everything but cards: the switcher, header, selector, heading, the
-  // unavailable list, the 'Showing' line, footer and keys.
-  const budget = Math.max(8, consoleState.bodyRows - 16 - (o.gone ? o.gone + 1 : 0))
+  // unavailable list, the 'Showing' line, the blank rows between those blocks, footer and keys.
+  const budget = Math.max(8, consoleState.bodyRows - 18 - (o.gone ? o.gone + 2 : 0))
   const out = []
   let used = 0
   for (let i = 0; i < widgets.length; i++) {
@@ -777,9 +801,13 @@ export function widgetBody(k, w, key, px, cells) {
       const value = Text({ key: key + '-v', bold: true, color: toneColor(w.tone || 'neutral'), children: [String(w.value ?? 'no value')] })
       const unit = w.unit ? Text({ key: key + '-u', dimColor: true, children: [String(w.unit)] }) : null
       const delta = deltaText(w)
-      const out = [k.row([k.row([value, unit], key + '-vu', 0), delta ? k.pill(delta, deltaTone(w), key + '-d') : null], key + '-vr', 2)]
-      if (w.baselineLabel) out.push(k.text(String(w.baselineLabel), { key: key + '-b', dimColor: true }))
-      out.push(k.spark(w.spark, { key: key + '-s', tone: w.tone && w.tone !== 'neutral' ? w.tone : 'info', width: Math.min(40, cells), px, height: 34, label: (w.title || 'stat') + ' trend' }))
+      // A change is a label only when the widget carries a tone, in that tone; a rise nobody toned is
+      // dim text, as Home draws it (round 2 issue 6).
+      const toned = w.tone && w.tone !== 'neutral'
+      const deltaEl = delta ? (toned ? k.pill(delta, deltaTone(w), key + '-d') : Text({ key: key + '-d', dimColor: true, children: [delta] })) : null
+      const out = [k.row([k.row([value, unit], key + '-vu', 0), deltaEl], key + '-vr', 2)]
+      if (w.baselineLabel) out.push(k.text(baselineWords(w.baselineLabel), { key: key + '-b', dimColor: true }))
+      out.push(k.spark(w.spark, { key: key + '-s', tone: toned ? w.tone : 'neutral', width: Math.min(40, cells), px, height: 34, label: (w.title || 'stat') + ' trend' }))
       return out
     }
     case 'geo': {
@@ -836,7 +864,7 @@ export function widgetBody(k, w, key, px, cells) {
       const cols = Math.min(60, Math.max(10, cells - 2))
       series.slice(0, 4).forEach((s, i) => {
         const v = values(s)
-        const tone = seriesTone(i, w.tone)
+        const tone = seriesTone(i, w.tone, Math.min(series.length, 4))
         out.push(k.text(clipText((s.label || 'series ' + (i + 1)) + '  last ' + fmt(v[v.length - 1]) + '  peak ' + fmt(Math.max(...v)), cells), { key: key + '-l' + i, dimColor: true }))
         const over = typeof w.threshold === 'number' ? (x) => (x >= w.threshold ? 'critical' : tone) : undefined
         out.push(k.spark(v, { key: key + '-s' + i, tone, width: cols, toneFor: over, label: s.label }))
@@ -928,6 +956,19 @@ export function deltaTone(w) {
   return 'critical'
 }
 
+// baselineWords is the stat's comparison line, as the CLI sends it (`6 an hour ago`: the value the
+// stat had, then when), said without joining a count to a humanized phrase: `6 · 1h ago`, `6 · 6m
+// ago`, `as of 2h ago` (round 2 issue 7). A line that does not have that shape is said as it came.
+export function baselineWords(label) {
+  const text = String(label ?? '').trim()
+  const m = /^(?:(.*?)\s+)?(?:(an?|\d+)\s+(second|minute|hour|day)s?\s+ago)$/i.exec(text)
+  if (!m) return text
+  const n = /^an?$/i.test(m[2]) ? 1 : Number(m[2])
+  const unit = { second: 's', minute: 'm', hour: 'h', day: 'd' }[m[3].toLowerCase()]
+  const age = n + unit + ' ago'
+  return m[1] ? m[1] + ' · ' + age : 'as of ' + age
+}
+
 // withUnit is a value and its unit: "34%", "120 ms".
 function withUnit(v, unit) {
   if (!unit) return fmt(v)
@@ -978,7 +1019,7 @@ export function wallText(a, r) {
   if (gone.length > 0) {
     out.push('')
     out.push('Not shown here:')
-    for (const u of gone) out.push('  ' + (u.title || u.type || u.id) + ': ' + (u.reason || 'not available'))
+    for (const u of gone) out.push('  ' + unavailableWords(u))
   }
   const more = moreWords(a)
   if (more) {
@@ -993,7 +1034,7 @@ function widgetLines(w) {
   switch (w.type) {
     case 'stat': {
       const out = [[String(w.value ?? 'no value') + (w.unit || ''), deltaText(w)].filter(Boolean).join(' ')]
-      if (w.baselineLabel) out.push(String(w.baselineLabel))
+      if (w.baselineLabel) out.push(baselineWords(w.baselineLabel))
       return out
     }
     case 'geo':

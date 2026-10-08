@@ -172,25 +172,32 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await pane.find({ type: 'Text', text: 'us-east-1 · internet-facing' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Zones: us-east-1a, us-east-1b, us-east-1c' })).toBeDefined()
     // The short heading, and the group's latest 5xx share as a label right after it.
-    expect(await pane.find({ type: 'Text', text: 'web-edge-tg · HTTP 8080 · /healthz' })).toBeDefined()
+    if (surface === 'terminal') expect(await pane.find({ type: 'Text', text: 'web-edge-tg · HTTP 8080 · /healthz' })).toBeDefined()
+    else {
+      // Desktop: the path is the useful part, so it has its own dim line and is never clipped.
+      expect(await pane.find({ type: 'Text', text: 'web-edge-tg · HTTP 8080' })).toBeDefined()
+      expect((await pane.find({ type: 'Text', text: 'health check /healthz' }))?.props.dimColor).toBe(true)
+    }
     expect(await pane.find({ type: 'Text', text: 'web-edge-canary-tg · HTTP 8081' })).toBeDefined()
     expect((await pane.find({ type: 'Text', text: '● 5xx 34%' }))?.props.color).toBe('#d03b3b')
     expect((await pane.find({ type: 'Text', text: '● 5xx 0%' }))?.props.color).toBe('#0ca30c')
     // Targets by zone: the square in its health tone, the id plain.
     for (const zone of ['us-east-1a', 'us-east-1b', 'us-east-1c']) expect((await pane.findAll({ type: 'Text', text: zone })).length).toBeGreaterThan(0)
     const squares = (await pane.findAll({ type: 'Text', text: '■' })).map((x: any) => x.props.color)
-    expect(squares.filter((c: string) => c === '#d03b3b')).toHaveLength(2)
-    expect(squares.filter((c: string) => c === '#0ca30c')).toHaveLength(5)
+    // The desktop legend draws its swatches as squares too: one more red, one more green.
+    const legend = surface === 'terminal' ? 0 : 1
+    expect(squares.filter((c: string) => c === '#d03b3b')).toHaveLength(2 + legend)
+    expect(squares.filter((c: string) => c === '#0ca30c')).toHaveLength(5 + legend)
     expect((await pane.find({ type: 'Text', text: 'i-07aa' }))?.props.color).toBeUndefined()
     expect(await pane.find({ type: 'Text', text: '10.0.4.17:9000' })).toBeDefined()
     // The legend: swatches carry the tone, the words are dim, quiet is neutral.
-    expect((await pane.find({ type: 'Text', text: '▪' }))?.props.color).toBe('#898781')
-    expect((await pane.find({ type: 'Text', text: 'under 1%' }))?.props.dimColor).toBe(true)
-    expect((await pane.find({ type: 'Text', text: '█', props: { color: '#d03b3b' } as any }))).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: 'over 20%' }))?.props.dimColor).toBe(true)
+    expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? '▪' : '■', props: { color: '#898781' } as any }))).toBeDefined()
+    expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? 'under 1%' : '<1%' }))?.props.dimColor).toBe(true)
+    expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? '█' : '■', props: { color: '#d03b3b' } as any }))).toBeDefined()
+    expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? 'over 20%' : '>20%' }))?.props.dimColor).toBe(true)
     expect(await pane.find({ type: 'Text', text: 'no requests' })).toBeDefined()
     expect((await pane.find({ type: 'Text', text: '5xx per target group, last 36 minutes' }))?.props.dimColor).toBe(true)
-    expect(await pane.find({ type: 'Text', text: 'healthy hosts' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: surface === 'terminal' ? 'healthy hosts' : 'Healthy hosts' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: '5 of 7' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: /^live · updated 0s ago/ })).toBeDefined()
 

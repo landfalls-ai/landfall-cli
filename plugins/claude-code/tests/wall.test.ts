@@ -148,7 +148,7 @@ test('the wall draws every widget type in the shared arrangement, on each surfac
     expect(pane.find({ type: 'Text', text: '4' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: '/6' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: '● ↓ 2' })?.props.color).toBe('#fab219')
-    expect(pane.find({ type: 'Text', text: '6 an hour ago' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: '6 · 1h ago' })).toBeDefined()
     // geo: the place plain, its share as a label in its tone.
     expect(pane.find({ type: 'Text', text: 'us-east-1 · N. Virginia' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: '● 34%' })?.props.color).toBe('#d03b3b')
@@ -175,7 +175,7 @@ test('the wall draws every widget type in the shared arrangement, on each surfac
     // an unknown type is its title alone.
     expect(pane.find({ type: 'Text', text: 'heatmapOfTheFuture widgets draw in the web app.' })).toBeDefined()
     // unavailable, with the reason.
-    expect(pane.find({ type: 'Text', text: 'RDS replica lag: needs a connection you cannot read' })).toBeDefined()
+    expect(pane.find({ type: 'Text', text: 'RDS replica lag · needs a connection you cannot read' })).toBeDefined()
 
     if (surface === 'terminal') {
       // chart: a Raster sparkline per series and the deploy marker under it.
@@ -226,7 +226,7 @@ test('a on the selected widget drafts a question about it, and never sends', asy
     // The selected widget's title carries the mark; the key names it.
     const again = await draw(surface, io)
     expect(again.find({ type: 'Button', text: '▸ Healthy origins' })).toBeDefined()
-    expect((await keysOf(surface, io)).find({ key: 'wall-ask' })?.props.label).toBe('ask about Healthy origins')
+    expect((await keysOf(surface, io)).find({ key: 'wall-ask' })?.props.label).toBe(surface === 'terminal' ? 'ask about Healthy origins' : 'Ask about Healthy origins')
   }
 })
 
@@ -236,14 +236,14 @@ test('the wall answers in text where no pane can be placed, and says why when it
   const io = fakeIo(() => answer)
   const text = await wallTab.text(io as never, '')
   expect(text).toContain('Wall · shared by carol · Landfall 168 · cloudfront-5xx-high · last 6h')
-  expect(text).toContain('Healthy origins\n  4/6 ↓ 2\n  6 an hour ago')
+  expect(text).toContain('Healthy origins\n  4/6 ↓ 2\n  6 · 1h ago')
   expect(text).toContain('5xx by region\n  us-east-1 · N. Virginia 34% (critical)\n  eu-west-1 0.4%')
   expect(text).toContain('Pool size\n  acme/web-edge · src/pool.ts\n  41  export const POOL = {\n  42    max: 16,\n  43  }\n  https://github.com/acme/web-edge/blob/abc123/src/pool.ts#L41-L43')
   expect(text).toContain('p99 latency\n  No data in this window yet.')
   expect(text).toContain('  5xxErrorRate: last 3.1, peak 6.1\n  marker: web-edge v2.3.1 at 15:29Z\n  threshold 2')
   expect(text).toContain('Topology\n  cloudfront (cdn)  warning\n  └─ web-edge-alb  confirmed  warning\n     └─ us-east-1c  established, both ways  critical')
   expect(text).toContain('  ERR upstream timeout pool=origin-b')
-  expect(text).toContain('Not shown here:\n  RDS replica lag: needs a connection you cannot read')
+  expect(text).toContain('Not shown here:\n  RDS replica lag · needs a connection you cannot read')
 
   answer = { ok: false, error: 'Your sign-in expired. Run landfall login.' }
   expect(await wallTab.text(io as never, '')).toBe('Your sign-in expired. Run landfall login.')
@@ -362,7 +362,7 @@ test('a wall with more widgets than one read says how many there are', async () 
   }
   begin()
   const text = await wallTab.text(fakeIo(() => many) as never, '')
-  expect(text).toContain('Not shown here:\n  Replica lag: Sign in to read this widget as yourself: run landfall login.\n\nShowing 40 of 46 widgets.')
+  expect(text).toContain('Not shown here:\n  Replica lag · needs your sign-in. Run landfall login.\n\nShowing 40 of 46 widgets.')
 })
 
 // Beacon's status and remediation cards are logView widgets whose lines carry

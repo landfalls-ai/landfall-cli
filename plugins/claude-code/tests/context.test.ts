@@ -476,10 +476,11 @@ test('desktop status labels are tinted boxes with no border, centred on their ro
   let row: any
   walk(tree, (n) => {
     if (n.t === 'Box' && String(n.key).endsWith('-st')) staged = n
-    if (n.t === 'Box' && n.key === 'cx-o1') row = n
+    if (n.t === 'Box' && n.key === 'cx-o1-m2') row = n
   })
   expect(staged.borderStyle).toBeUndefined()
   expect(staged.backgroundColor).toBeTruthy()
+  // The label sits in the dim line under the statement, centred with it (round 2 review, issue 12).
   expect(row.alignItems).toBe('center')
 })
 

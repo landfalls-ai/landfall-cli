@@ -316,6 +316,12 @@ export async function appendNote(io, text) {
 // importing console.js. Tab keys, in the switcher's order (spec §2.7).
 export const CONSOLE = 'landfall'
 export const TABS = ['home', 'vote', 'context', 'wall', 'people', 'timeline', 'lb', 'incidents', 'more']
+// The pane's title names the tab in full (round 2 review, decision 1.6): the switcher's words may
+// be cut to fit a narrow dock, so the title carries the real one.
+export const TAB_TITLES = { home: 'Home', vote: 'Vote', context: 'Context', wall: 'Wall', people: 'People', timeline: 'Timeline', lb: 'Load balancers', incidents: 'Incidents', more: 'More' }
+export function consoleTitle(tab) {
+  return TAB_TITLES[tab] ? 'Landfall · ' + TAB_TITLES[tab] : 'Landfall'
+}
 export const consoleState = { tab: 'home', open: false, args: null, warm: new Set() }
 
 // Opens (or refocuses) the console on a tab, with that tab's arguments (a person, a chip, a
@@ -332,7 +338,7 @@ export async function openConsole(io, tab, args, opts) {
   const asked = !!(opts && opts.focus) || !!(args && typeof args === 'object' && args.asked === true)
   let got = { isPlaced: true }
   try {
-    got = (await io.open(CONSOLE, 'Landfall', { columns: CONSOLE_COLUMNS, closeOnEscape: true, ...(asked ? { focus: true } : {}) })) || got
+    got = (await io.open(CONSOLE, consoleTitle(consoleState.tab), { columns: CONSOLE_COLUMNS, closeOnEscape: true, ...(asked ? { focus: true } : {}) })) || got
   } catch (err) {
     got = { isPlaced: false, reason: String(err).slice(0, 200) }
   }

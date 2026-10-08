@@ -82,13 +82,13 @@ async function startWith($: any, on: any, lines: string[]) {
 
 test('the status line says the status, severity, who is here and Beacon', async ($, on) => {
   const { statuses } = await startWith($, on, [line('investigating', 'investigating')])
-  expect(statuses.at(-1)).toBe('🔴 Acme 82 · investigating · SEV2 · 3 here · Beacon investigating · 2 new')
+  expect(statuses.at(-1)).toBe('Acme 82 · SEV2 · investigating · 3 here · Beacon investigating · 2 new')
 })
 
-test('a mitigated incident turns the dot yellow, a resolved one green', async ($, on) => {
+test('the status line carries no emoji: the status word says where the incident is', async ($, on) => {
   const { statuses } = await startWith($, on, [line('mitigated', ''), line('resolved', 'concluded')])
-  expect(statuses[0]).toBe('🟡 Acme 82 · mitigated · SEV2 · 3 here · 2 new')
-  expect(statuses[1]).toBe('🟢 Acme 82 · resolved · SEV2 · 3 here · Beacon concluded · 2 new')
+  expect(statuses[0]).toBe('Acme 82 · SEV2 · mitigated · 3 here · 2 new')
+  expect(statuses[1]).toBe('Acme 82 · SEV2 · resolved · 3 here · Beacon concluded · 2 new')
 })
 
 test('a status change and Beacon ending are told once, the first sight is not', async ($, on) => {

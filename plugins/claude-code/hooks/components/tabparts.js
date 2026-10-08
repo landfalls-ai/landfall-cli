@@ -3,14 +3,14 @@
 // never calls it. kit.js stays as it is; what a tab needs beyond it lives here.
 
 import { clip } from '../core.js'
-import { TONE } from '../kit.js'
+import { TONE, cap } from '../kit.js'
 import { livePane, liveWords, notLive, since } from '../live.js'
 
 // keyButton is a Button the way the console draws every key: a plain `k: label` on the terminal,
 // a native Button elsewhere (`primary` fills it), and `dim` dims the label on BOTH surfaces
 // (kit.button dims on the terminal only), so an inactive chip reads the same everywhere.
 export function keyButton(k, { key, label, hotkey, onPress, primary, dim }) {
-  const props = { key, label, onPress }
+  const props = { key, label: k.terminal ? label : cap(label), onPress }
   if (hotkey) props.hotkey = hotkey
   if (k.terminal) props.plain = true
   else if (primary) props.variant = 'primary'
@@ -18,11 +18,8 @@ export function keyButton(k, { key, label, hotkey, onPress, primary, dim }) {
   return k.els.Button(props)
 }
 
-// cap is a word with its first letter capital: the desktop's form of a terminal label.
-export function cap(text) {
-  const s = String(text ?? '')
-  return s.charAt(0).toUpperCase() + s.slice(1)
-}
+// cap lives in kit.js; re-exported so the tabs keep importing it from here.
+export { cap }
 
 // chipRow is a row of identical Buttons with letters, the active one labeled `▸ <name>` at full
 // strength and the others dim (the Timeline idiom; More uses it too). `chips` are
@@ -35,7 +32,9 @@ export function chipRow(k, chips, key) {
       return keyButton(k, { key: c.key, label, hotkey: c.hotkey, onPress: c.onPress, dim: !c.active })
     }),
     key,
-    2,
+    // A native chip carries its own padding: a one-cell gap keeps the six Timeline chips on one row
+    // of the docked pane (round 2 review, issue 13).
+    k.terminal ? 2 : 1,
   )
 }
 

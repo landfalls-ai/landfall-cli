@@ -22,7 +22,7 @@
 // addSharedContext(io, opts).
 
 import { CONSOLE, HOST, ago, appendNote, clip, consoleState, currentOf, currentRoom, parseAnswer, reading, room as coreRoom, roomArgs, whereIs } from '../core.js'
-import { TONE } from '../kit.js'
+import { TONE, claimTone } from '../kit.js'
 import { keep, liveWords, livePane, refresh as refreshLive } from '../live.js'
 import { hhmm } from '../views.js'
 
@@ -570,36 +570,23 @@ function label(k, text, tone, key) {
   })
 }
 
-const STATE_TONE = { staged: 'neutral', contested: 'serious', corroborated: 'info', admitted: 'good', withdrawn: 'neutral' }
 
-// itemRow is one brief item: "#205 statement · carol", a state label at the right edge for a
-// claim, and under an established one how it got in, dim, indented 5.
+// itemRow is one brief item (round 2 review, issue 12): the statement as one wrapping Text, then a
+// dim second line, "bob's agent · #212", with a claim's state label right after the number, never
+// at the far edge of the row. Under an established one, how it got in, dim.
 function itemRow(k, it, key) {
   const { Text, Box } = k.els
-  const left = Box({
-    key: key + '-l',
+  const meta = [it.by, '#' + it.seq].filter(Boolean).join(' · ')
+  const second = Box({
+    key: key + '-m2',
     flexDirection: 'row',
     columnGap: 1,
-    flexShrink: 1,
-    flexGrow: 1,
-    children: [
-      Text({ key: key + '-n', dimColor: true, children: ['#' + it.seq] }),
-      // Text takes no flexShrink (the engine refuses the whole tree): the Box around it shrinks.
-      Box({ key: key + '-sb', flexShrink: 1, children: [Text({ key: key + '-s', children: [String(it.statement || '')] })] }),
-      it.by ? Text({ key: key + '-b', dimColor: true, children: ['· ' + it.by] }) : null,
-    ].filter(Boolean),
+    alignItems: 'center',
+    children: [Text({ key: key + '-b', dimColor: true, children: [meta] }), it.state ? label(k, it.state, claimTone(it.state), key + '-st') : null].filter(Boolean),
   })
-  const kids = [left]
-  if (it.state) kids.push(label(k, it.state, STATE_TONE[it.state] || 'neutral', key + '-st'))
-  const row = Box({ key, flexDirection: 'row', columnGap: 1, justifyContent: 'space-between', alignItems: 'center', children: kids })
-  if (!it.admission) return row
-  return k.col(
-    [
-      row,
-      Box({ key: key + '-ab', paddingLeft: 5, children: [Text({ key: key + '-a', dimColor: true, wrap: 'truncate-end', children: [String(it.admission)] })] }),
-    ],
-    key + '-c',
-  )
+  const kids = [Text({ key: key + '-s', children: [String(it.statement || '')] }), second]
+  if (it.admission) kids.push(Text({ key: key + '-a', dimColor: true, wrap: 'truncate-end', children: [String(it.admission)] }))
+  return Box({ key, flexDirection: 'column', children: kids })
 }
 
 // participantsWords: "carol (war room), bob (Claude Code), alice (Codex), dave (you)". Where each
@@ -651,6 +638,11 @@ function addKeyDrawn(roomKey) {
   return !ctx.added[roomKey] || changedSince(roomKey)
 }
 
+// gap is one empty row between blocks on the terminal (the console's rhythm); nothing off it.
+function gap(k, key) {
+  return k.terminal ? k.els.Text({ key, children: [' '] }) : null
+}
+
 function sharedBlock(k, io, r, nowMs) {
   const { Text } = k.els
   const rows = []
@@ -677,21 +669,25 @@ function sharedBlock(k, io, r, nowMs) {
   const open = b.open || []
   if (est.length === 0 && open.length === 0) rows.push(k.dim('No established or open items yet.', 'cx-fresh'))
   if (est.length > 0) {
+    rows.push(gap(k, 'cx-g-e'))
     rows.push(Text({ key: 'cx-eh', bold: true, children: ['Established · ' + est.length] }))
     est.forEach((it, i) => rows.push(itemRow(k, it, 'cx-e' + i)))
   }
   if (open.length > 0) {
+    rows.push(gap(k, 'cx-g-o'))
     rows.push(Text({ key: 'cx-oh', bold: true, children: ['Open · ' + open.length] }))
     open.forEach((it, i) => rows.push(itemRow(k, it, 'cx-o' + i)))
   }
   const who = participantsWords(b, r)
+  const notes = (b.scope || []).length > 0 || (b.focus && b.focus.text) || b.listening === false || b.instructionsVersion != null
+  if (who || notes) rows.push(gap(k, 'cx-g-p'))
   if (who) rows.push(k.text('Participants: ' + who, { key: 'cx-people' }))
   ;(b.scope || []).forEach((s, i) => rows.push(k.text(scopeWords(s), { key: 'cx-scope' + i })))
   if (b.focus && b.focus.text) rows.push(k.text(focusWords(b.focus), { key: 'cx-focus' }))
   if (b.listening === false) rows.push(k.dim('Beacon is not listening to chat in this room.', 'cx-listen'))
   if (b.instructionsVersion != null) rows.push(k.dim('Organization instructions · version ' + b.instructionsVersion + ' · included when added', 'cx-instr'))
   if (!k.terminal && addKeyDrawn(r.roomKey)) rows.push(addButton(k, io, true))
-  return rows
+  return rows.filter(Boolean)
 }
 
 function addButton(k, io, primary) {
@@ -726,20 +722,28 @@ export function artifactRow(k, a, opts = {}) {
       children: [k.els.Button({ key, label: text, plain: true, onPress: press }), busy ? null : Text({ key: key + '-m', dimColor: true, wrap: 'truncate-end', children: [meta] })].filter(Boolean),
     })
   }
+  // Two lines on every row, so the button beside it centres on both and every row is as tall as
+  // the next (round 2 review, issue 15): the name, then the dim meta.
   const head = Box({
     key: key + '-h',
-    flexDirection: 'row',
-    columnGap: 0,
+    flexDirection: 'column',
+    flexGrow: 1,
     flexShrink: 1,
-    flexWrap: 'wrap',
+    minWidth: 0,
     children: [
-      Box({ key: key + '-slot', width: 2, flexShrink: 0, children: [Text({ key: key + '-mk', children: [mark.trim() || ' '] })] }),
-      Text({ key: key + '-n', bold: true, children: [a.filename] }),
-      Text({ key: key + '-m', dimColor: true, children: ['  ' + meta] }),
+      Box({
+        key: key + '-nr',
+        flexDirection: 'row',
+        children: [
+          Box({ key: key + '-slot', width: 2, flexShrink: 0, children: [Text({ key: key + '-mk', children: [mark.trim() || ' '] })] }),
+          Text({ key: key + '-n', bold: true, wrap: 'truncate-end', children: [a.filename] }),
+        ],
+      }),
+      Box({ key: key + '-mr', paddingLeft: 2, children: [Text({ key: key + '-m', dimColor: true, wrap: 'truncate-end', children: [meta] })] }),
     ],
   })
   const button = k.button({ key: 'art-add-' + a.artifactId, label: busy ? 'adding…' : 'Add to my context', onPress: press })
-  return Box({ key, flexDirection: 'row', columnGap: 1, justifyContent: 'space-between', alignItems: 'center', children: [head, button] })
+  return Box({ key, flexDirection: 'row', columnGap: 1, alignItems: 'center', children: [head, Box({ key: key + '-bb', flexShrink: 0, children: [button] })] })
 }
 
 function artifactsBlock(k, io, r, nowMs, sharedKeyDrawn) {

@@ -12,6 +12,7 @@
 import { HOST, ago, clip, consoleState, currentRoom, openConsole, severityTone, statusTone, toastText } from '../core.js'
 import { addSharedContext } from './context.js'
 import { due, LIST_MS, livePane, readLive } from '../live.js'
+import { BUTTON_CHROME, clipToCells, textCells } from '../kit.js'
 import { noteRefusal, signin, signinBody, signedOut } from './signin.js'
 
 export const PRACTICE = 'practice'
@@ -136,22 +137,35 @@ const NOTE_INDENT = 7
 // it), `Join` primary (`Open the room` once in it), `Brief only`, `Open in browser`; key chips
 // only on the focused card's buttons. Joining, only the button says so; the note stays.
 function card(k, io, inc, focused) {
-  const { Text } = k.els
+  const { Box, Text } = k.els
   const id = inc.incidentId
   const sev = sevLabel(inc.severity)
   const joining = board.joining === id
-  const head = k.row(
-    [
-      Text({ key: 't-' + id, bold: true, children: [incName(inc)] }),
-      sev ? k.pill(sev, severityTone(inc.severity), 'sp-' + id) : null,
-      inc.status ? k.pill(inc.status, statusTone(inc.status), 'stp-' + id) : null,
-      inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null,
-      Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
-    ],
-    'h-' + id,
-    1,
-  )
-  const note = rowNote(inc, false)
+  // The mockup's order, on one row: the severity, the title, the status, the age. The title takes
+  // what the labels leave and clips at its end with an ellipsis (round 2 review, issue 17); a label
+  // never wraps onto a second row.
+  const age = ago(inc.ageMs)
+  const labelCells = (text) => BUTTON_CHROME + textCells('● ' + text) * 0.8
+  const taken = (sev ? labelCells(sev) + 1 : 0) + (inc.status ? labelCells(inc.status) + 1 : 0) + (age ? textCells(age) + 1 : 0) + 4
+  const name = clipToCells(incName(inc), Math.max(8, k.width - taken))
+  const head = Box({
+    key: 'h-' + id,
+    flexDirection: 'row',
+    flexWrap: 'nowrap',
+    alignItems: 'center',
+    columnGap: 1,
+    children: [
+      sev ? Box({ key: 'sp-w-' + id, flexShrink: 0, children: [k.pill(sev, severityTone(inc.severity), 'sp-' + id)] }) : null,
+      Box({ key: 't-w-' + id, flexShrink: 1, minWidth: 0, children: [Text({ key: 't-' + id, bold: true, wrap: 'truncate-end', children: [name] })] }),
+      inc.status ? Box({ key: 'stp-w-' + id, flexShrink: 0, children: [k.pill(inc.status, statusTone(inc.status), 'stp-' + id)] }) : null,
+      age ? Text({ key: 'age-' + id, dimColor: true, children: [age] }) : null,
+    ].filter(Boolean),
+  })
+  const noteText = rowNote(inc, false)
+  const note =
+    inc.practice || noteText
+      ? k.row([inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null, noteText ? Text({ key: 'n-' + id, dimColor: true, children: [noteText] }) : null], 'meta-' + id, 1)
+      : null
   const actions = k.row(
     [
       k.button({ key: 'inc-' + id, label: joining ? 'Joining…' : isMine(inc) ? 'Open the room' : 'Join', primary: !isMine(inc), onPress: () => join(io, inc) }),
@@ -161,7 +175,7 @@ function card(k, io, inc, focused) {
     'a-' + id,
     1,
   )
-  return k.card([head, note ? Text({ key: 'n-' + id, dimColor: true, children: [note] }) : null, linkRow(k, inc), actions], { key: 'card-' + id })
+  return k.card([head, note, linkRow(k, inc), actions], { key: 'card-' + id })
 }
 
 // isMine: the incident is the room this folder is in now.

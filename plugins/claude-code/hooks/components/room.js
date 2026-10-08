@@ -21,7 +21,6 @@ import {
   clip,
   consoleState,
   currentRoom,
-  dot,
   newestLine,
   openConsole,
   orderRooms,
@@ -247,28 +246,36 @@ async function nowOf(io) {
   return Number.MAX_SAFE_INTEGER
 }
 
-// statusLine is the daemon's line with the room at a glance after the room's
-// name: "🟡 Acme 82 · mitigated · SEV2 · 4 here · Beacon concluded · 3 new".
-// While a room's connection is not live the dot is hollow: "○ Acme 82 · …".
+// statusLine is the daemon's line with the room at a glance after the room's name, the ask first
+// (round 2 review, issue 18: a surface cuts a long line from the right, so the quietest words go
+// last, and an emoji cannot be a state color): "1 vote waiting on you · Acme 82 · SEV2 ·
+// investigating · 4 here · Beacon investigating · 3 new". While a room's connection is not live
+// the line leads with a hollow dot: "○ Acme 82 · …".
 export function statusLine(snap) {
   const line = glance(snap)
   if (!line || !(snap.rooms || []).some((r) => notLive(r))) return line
-  return line.replace(/^(🔴|🟡|🟢)/u, '○')
+  return '○ ' + line
 }
 
+const LEAD_DOT = /^(🔴|🟡|🟢)\s*/u
+
 function glance(snap) {
-  const line = (snap.line || '').replace(/^🔴 landfall: /, '🔴 ')
+  const line = (snap.line || '').replace(/^(🔴|🟡|🟢) landfall: /u, '$1 ').replace(LEAD_DOT, '')
   const r = snap.rooms.length === 1 ? snap.rooms[0] : null
   if (!line || !r || !r.status) return line
-  const head = '🔴 ' + (r.displayId || r.title || 'landfall')
-  if (!line.startsWith(head)) return line
+  const name = r.displayId || r.title || 'landfall'
+  if (!line.startsWith(name)) return line
   const st = r.status
-  const parts = [st.status, st.severity].filter(Boolean)
+  const parts = [st.severity, st.status].filter(Boolean)
   const here = (st.people ?? []).filter((p) => p.here).length
   if (here > 0) parts.push(here + ' here')
   if (st.beacon) parts.push('Beacon ' + st.beacon)
-  if (parts.length === 0) return line
-  return dot(st.status) + head.slice('🔴'.length) + ' · ' + parts.join(' · ') + line.slice(head.length)
+  const votes = waiting(r).length
+  const ask = votes > 0 ? (votes === 1 ? '1 vote waiting on you' : votes + ' votes waiting on you') + ' · ' : ''
+  // The daemon's own tail says `1 vote awaited`: the ask leads the line now, so it is not said twice.
+  const tail = line.slice(name.length).replace(/ · \d+ votes? awaited/g, '')
+  if (parts.length === 0) return ask + name + tail
+  return ask + name + ' · ' + parts.join(' · ') + tail
 }
 
 // roomText is /room's answer where no pane can be drawn (`claude -p`).

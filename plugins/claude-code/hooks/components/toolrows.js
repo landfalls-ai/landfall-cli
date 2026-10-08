@@ -347,8 +347,8 @@ export function shareOutcome(text, input) {
 
 const STATE_WORDS = {
   staged: ['held for review', 'warning'],
-  corroborated: ['corroborated', 'good'],
-  contested: ['contested', 'critical'],
+  corroborated: ['corroborated', 'info'],
+  contested: ['contested', 'serious'],
   admitted: ['admitted', 'good'],
   withdrawn: ['withdrawn', 'neutral'],
   note: ['shared as a note', 'info'],

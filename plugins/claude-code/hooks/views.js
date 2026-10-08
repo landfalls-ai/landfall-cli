@@ -55,9 +55,12 @@ export function toneColor(tone) {
 
 const SERIES_TONES = ['info', 'violet', 'serious', 'neutral', 'good']
 
-// seriesTone is the color of the i-th series: the widget's own tone first.
-export function seriesTone(i, tone) {
+// seriesTone is the color of the i-th series of `count`: the widget's own tone first. A lone series
+// the widget never toned is neutral (spec §6 Sparklines: color only for state, round 2 issue 9);
+// several untoned series take the categorical palette, since they must be told apart.
+export function seriesTone(i, tone, count = 2) {
   if (i === 0 && tone && TONE[tone] && tone !== 'neutral') return tone
+  if (count <= 1) return 'neutral'
   return SERIES_TONES[i % SERIES_TONES.length]
 }
 
@@ -89,7 +92,7 @@ export function chartSvg(series, markers, threshold, opts = {}) {
   const x = (t) => ((t - t0) / (t1 - t0 || 1)) * w
   const y = (v) => h - padBottom - ((v - lo) / (hi - lo || 1)) * (h - padTop - padBottom)
   let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">' + SVG_THEME
-  for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#8a8a8a" stroke-opacity=".18"/>'
+  for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#898781" stroke-opacity=".35"/>'
   if (typeof threshold === 'number' && isFinite(threshold)) {
     const ty = y(threshold).toFixed(1)
     s += '<line x1="0" x2="' + w + '" y1="' + ty + '" y2="' + ty + '" stroke="' + TONE.critical + '" stroke-dasharray="4 3" stroke-opacity=".8"><title>threshold ' + esc(fmt(threshold)) + '</title></line>'
@@ -97,11 +100,11 @@ export function chartSvg(series, markers, threshold, opts = {}) {
   for (const m of markers || []) {
     if (typeof m.atMs !== 'number' || !ts.length || m.atMs < t0 || m.atMs > t1) continue
     const mx = x(m.atMs).toFixed(1)
-    s += '<line x1="' + mx + '" x2="' + mx + '" y1="0" y2="' + h + '" stroke="#8a8a8a" stroke-dasharray="2 3"><title>' + esc(m.label) + ' at ' + hhmm(m.atMs) + 'Z</title></line>'
+    s += '<line x1="' + mx + '" x2="' + mx + '" y1="0" y2="' + h + '" stroke="#898781" stroke-dasharray="2 3"><title>' + esc(m.label) + ' at ' + hhmm(m.atMs) + 'Z</title></line>'
     s += '<text x="' + (Number(mx) + 3) + '" y="9" font-size="8" class="mu">' + esc(clipText(m.label, 24)) + '</text>'
   }
   all.forEach((ser, i) => {
-    const color = TONE[seriesTone(i, opts.tone)]
+    const color = TONE[seriesTone(i, opts.tone, all.length)]
     const pts = (ser.points || []).filter((p) => Array.isArray(p) && isFinite(p[0]) && isFinite(p[1])).map((p) => [x(p[0]), y(p[1])])
     if (pts.length < 2) return
     const d = pts.map((p, j) => (j ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ')

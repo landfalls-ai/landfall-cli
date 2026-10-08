@@ -30,8 +30,11 @@
 //   k.dim(text, key?)                      a dim line
 //   k.table(rows, { key, widths })         rows of cells (strings or elements) in aligned columns
 
-// The filled segment of a segmented control, off the terminal: ink, and paper on it.
-export const INK = '#141414'
+// The filled segment of a segmented control, off the terminal (round 2 review, decision 1). The
+// engine hands a mod no theme, so the fill has to read on both: a mid grey that is the darkest
+// thing in a light row (6:1 against its white text) and lighter than the page and the inactive
+// chips on a dark one, where the old ink `#141414` was the one hole in the row.
+export const FILL = '#64635e'
 export const PAPER = '#fafafa'
 
 export const TONE = {
@@ -42,6 +45,19 @@ export const TONE = {
   info: '#2a78d6',
   violet: '#8a5cd6',
   neutral: '#898781',
+}
+
+// One claim state, one tone, on every tab and both surfaces (round 2 review, issue 4): red means
+// the room is on fire, and a staged claim is not.
+export const CLAIM_TONE = { staged: 'neutral', contested: 'serious', admitted: 'good', corroborated: 'info', withdrawn: 'neutral' }
+export function claimTone(state) {
+  return CLAIM_TONE[String(state || '').toLowerCase()] || 'neutral'
+}
+
+// cap is a word with its first letter capital: the desktop's form of a terminal label.
+export function cap(text) {
+  const s = String(text ?? '')
+  return s.charAt(0).toUpperCase() + s.slice(1)
 }
 
 // An interactive Svg (hover titles) is drawn by the desktop in a sandboxed frame with its own opaque
@@ -153,7 +169,7 @@ export function kit(els, e) {
 
     // segments is a segmented control (spec §2.2): one row, never wrapped. Each item is
     // { id, label, active, onPress }. The active one is not a Button: inverse bold Text
-    // labeled `▸ <label>` on the terminal, a Box filled ink with light bold Text off it. The
+    // labeled `▸ <label>` on the terminal, a Box filled with FILL and light bold Text off it, `▸` at every width. The
     // others are plain Buttons with no hotkey (the label alone, dim), so no key chip and no
     // digit is drawn; `│` separates them on the terminal.
     segments(items, { key = 'seg' } = {}) {
@@ -163,7 +179,7 @@ export function kit(els, e) {
         if (terminal && i > 0) kids.push(Text({ key: id + '-sep', dimColor: true, children: ['│'] }))
         if (it.active) {
           if (terminal) kids.push(Text({ key: id, inverse: true, bold: true, children: [' ▸ ' + it.label + ' '] }))
-          else kids.push(Box({ key: id, backgroundColor: INK, paddingX: 1, flexShrink: 0, children: [Text({ key: id + '-t', bold: true, color: PAPER, wrap: 'truncate', children: [(it.bare ? '' : '▸ ') + it.label] })] }))
+          else kids.push(Box({ key: id, backgroundColor: FILL, paddingX: 1, flexShrink: 0, children: [Text({ key: id + '-t', bold: true, color: PAPER, wrap: 'truncate', children: ['▸ ' + it.label] })] }))
           return
         }
         const props = { key: id, label: terminal ? ' ' + it.label + ' ' : it.label, dimColor: true, onPress: it.onPress }
@@ -188,7 +204,8 @@ export function kit(els, e) {
     // `dismiss` marks the one that closes its site (a desktop draws its own
     // close control for it).
     button({ key, label, hotkey, onPress, primary, dim, dismiss }) {
-      const props = { key, label, onPress }
+      // The desktop draws `Label`, the terminal `k: label` (spec §7): one capital, whatever the caller said.
+      const props = { key, label: terminal ? label : cap(label), onPress }
       if (hotkey) props.hotkey = hotkey
       if (terminal) {
         props.plain = true
@@ -251,15 +268,19 @@ export function kit(els, e) {
       const cols = Math.max(...grid.map((r) => r.length))
       if (rich) {
         const cell = opts.cell || 10
-        let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + cols * (cell + 2) + ' ' + grid.length * (cell + 2) + '">'
+        const interactive = !!opts.titleFor
+        // An interactive drawing sits in the desktop's own frame, which is white unless the drawing
+        // paints over it (SVG_THEME). A quiet cell is the neutral at a quarter, never a light grey
+        // that reads as a white block on a dark page (round 2 review, issue 3).
+        let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + cols * (cell + 2) + ' ' + grid.length * (cell + 2) + '">' + (interactive ? SVG_THEME : '')
         grid.forEach((r, y) =>
           r.forEach((t, x) => {
-            const paint = t === 'none' ? 'fill="none" stroke="#b4b4b0" stroke-dasharray="2 2"' : 'fill="' + (t ? TONE[t] || TONE.neutral : '#e4e4e2') + '"'
+            const paint = t === 'none' ? 'fill="none" stroke="' + TONE.neutral + '" stroke-opacity=".8" stroke-dasharray="2 2"' : t ? 'fill="' + (TONE[t] || TONE.neutral) + '"' : 'fill="' + TONE.neutral + '" fill-opacity=".25"'
             s += '<rect x="' + x * (cell + 2) + '" y="' + y * (cell + 2) + '" width="' + cell + '" height="' + cell + '" rx="2" ' + paint + '><title>' + (opts.titleFor ? esc(opts.titleFor(y, x)) : '') + '</title></rect>'
           }),
         )
         s += '</svg>'
-        return els.Svg({ key, source: s, alt: opts.label || 'heat map', width: cols * (cell + 2), height: grid.length * (cell + 2), isInteractive: !!opts.titleFor })
+        return els.Svg({ key, source: s, alt: opts.label || 'heat map', width: cols * (cell + 2), height: grid.length * (cell + 2), isInteractive: interactive })
       }
       const words = []
       for (const r of grid) {
@@ -434,10 +455,10 @@ export function lineSvg(vals, w, h, color, opts = {}) {
   const pts = vals.map((v, i) => [(i / (n - 1)) * w, h - ((v - lo) / span) * (h - 6) - 3])
   const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ')
   let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">' + (opts.hover ? SVG_THEME : '')
-  for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#8a8a8a" stroke-opacity=".18"/>'
+  for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#898781" stroke-opacity=".35"/>'
   if (opts.mark != null) {
     const mx = (opts.mark / (n - 1)) * w
-    s += '<line x1="' + mx + '" x2="' + mx + '" y1="0" y2="' + h + '" stroke="#8a8a8a" stroke-dasharray="2 3"/>'
+    s += '<line x1="' + mx + '" x2="' + mx + '" y1="0" y2="' + h + '" stroke="#898781" stroke-dasharray="2 3"/>'
   }
   s += '<path d="' + d + ' L' + w + ' ' + h + ' L0 ' + h + ' Z" fill="' + color + '" fill-opacity=".14"/>'
   s += '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linejoin="round"/>'

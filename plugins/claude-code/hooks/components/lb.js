@@ -103,7 +103,7 @@ export function tab(k, io, nowMs, args) {
   if (lb.name) {
     rows.push(
       k.row(
-        [k.text('Showing ' + lb.name + ' only.', { key: 'lb-only', dimColor: true }), k.els.Button({ key: 'lb-all', label: 'show all load balancers', plain: true, onPress: () => showAll(io) })],
+        [k.text('Showing ' + lb.name + ' only.', { key: 'lb-only', dimColor: true }), k.els.Button({ key: 'lb-all', label: k.terminal ? 'show all load balancers' : 'Show all load balancers', plain: true, onPress: () => showAll(io) })],
         'lb-filter',
         1,
       ),
@@ -265,6 +265,15 @@ function groupHead(tg) {
   return [tg.name || '', [tg.protocol, tg.port].filter(Boolean).join(' '), tg.healthCheck || ''].filter(Boolean).join(' · ')
 }
 
+// groupHeadShort is the heading without the path: "web-edge-tg · HTTP 8080".
+function groupHeadShort(tg) {
+  return [tg.name || '', [tg.protocol, tg.port].filter(Boolean).join(' ')].filter(Boolean).join(' · ')
+}
+
+// The instance column: every target id sits in a slot this many cells wide, so the ids of one
+// zone line up with the ids of the next (round 2 issue 14).
+const TARGET_W = 9
+
 // labelCell is one cell of the board's label column.
 function labelCell(k, text, key, dim) {
   return k.els.Box({ key, width: LABEL_W, flexShrink: 0, children: [k.els.Text({ key: key + '-t', dimColor: dim !== false, children: [clipText(text, LABEL_W - 1)] })] })
@@ -293,16 +302,21 @@ function lbView(k, one, key, a) {
     const pct = lastPct(tg)
     rows.push(
       centerRow(k, 
-        [Text({ key: 'n', bold: true, children: [clipText(groupHead(tg), Math.max(16, k.width - 14))] }), pct == null ? null : k.pill('5xx ' + fmt(pct) + '%', fiveXxTone(pct) || 'good', 'p')],
+        [Text({ key: 'n', bold: true, children: [clipText(k.rich ? groupHeadShort(tg) : groupHead(tg), Math.max(16, k.width - 14))] }), pct == null ? null : k.pill('5xx ' + fmt(pct) + '%', fiveXxTone(pct) || 'good', 'p')],
         gk + '-n',
         1,
       ),
     )
+    // The path is the useful part of the heading and never clipped: its own dim line (desktop).
+    if (k.rich && tg.healthCheck) rows.push(k.text('health check ' + tg.healthCheck, { key: gk + '-hc', dimColor: true }))
     if (tg.healthUnavailable) rows.push(k.text(tg.healthUnavailable, { key: gk + '-hu', dimColor: true }))
     const zones = byZone(tg.targets)
     if (zones.length === 0 && !tg.healthUnavailable) rows.push(k.text('No registered targets.', { key: gk + '-none', dimColor: true }))
     zones.forEach((z, zi) => {
-      const items = z.targets.map((t, ti) => centerRow(k, [Text({ key: 's', color: toneColor(healthTone(t.state)), children: ['■'] }), Text({ key: 'i', children: [targetName(t, tg)] })], gk + '-z' + zi + 't' + ti, 1))
+      const items = z.targets.map((t, ti) => {
+        const one = centerRow(k, [Text({ key: 's', color: toneColor(healthTone(t.state)), children: ['■'] }), Text({ key: 'i', children: [targetName(t, tg)] })], gk + '-z' + zi + 't' + ti, 1)
+        return k.rich ? k.els.Box({ key: gk + '-z' + zi + 'w' + ti, minWidth: TARGET_W, flexShrink: 0, children: [one] }) : one
+      })
       rows.push(centerRow(k, [labelCell(k, z.zone, gk + '-z' + zi + 'l'), ...items], gk + '-z' + zi, 2))
     })
     for (const [ti, t] of (tg.targets || []).entries()) {
@@ -325,7 +339,7 @@ function heatView(k, one, key, a) {
   const groups = (one.targetGroups || []).filter((tg) => (tg.fiveXxPct || []).length > 0)
   if (groups.length === 0) return null
   const minutes = Math.max(...groups.map((tg) => tg.fiveXxPct.length))
-  const { Text, Box } = k.els
+  const { Text } = k.els
   // The terminal keeps the newest minutes that fit beside the label column and the share label.
   const cols = k.rich ? minutes : Math.max(4, Math.min(minutes, k.width - LABEL_W - 12))
   const from = minutes - cols
@@ -349,7 +363,6 @@ function heatView(k, one, key, a) {
   const out = []
   const start = typeof one.minuteStartMs === 'number' ? hhmm(one.minuteStartMs + from * 60000) : ''
   if (k.rich) {
-    out.push(Box({ key: key + '-axis', flexDirection: 'row', paddingLeft: LABEL_W, width: LABEL_W + minutes * (cell + 2), justifyContent: 'space-between', children: [Text({ key: 'a', dimColor: true, children: [start] }), Text({ key: 'b', dimColor: true, children: ['now'] })] }))
     groups.forEach((tg, gi) => {
       const titleFor = (y, x) => {
         const m = from + x
@@ -368,27 +381,30 @@ function heatView(k, one, key, a) {
     const labels = groups.map((tg, i) => labelCell(k, tg.name || 'target group', 'l' + i))
     out.push(centerRow(k, [k.col(labels, 'labels'), k.heat(groups.map(gridOf), { key: 'heat', label: '5xx per target group per minute' }), k.col(groups.map(latest), 'latest')], key + '-heat', 2))
   }
+  // One glyph style across the legend on the desktop (a square, solid or outlined), one wrapping row.
   const swatch = (ch, color, words, i) => centerRow(k, [Text({ key: 'sw' + i, color, children: [ch] }), Text({ key: 'wd' + i, dimColor: true, children: [words] })], key + '-lg' + i, 1)
   out.push(
     centerRow(k, 
       [
-        swatch('▪', TONE.neutral, 'under 1%', 0),
-        swatch('█', toneColor('good'), '1-5%', 1),
-        swatch('█', toneColor('warning'), '5-20%', 2),
-        swatch('█', toneColor('critical'), 'over 20%', 3),
+        swatch(k.rich ? '■' : '▪', TONE.neutral, k.rich ? '<1%' : 'under 1%', 0),
+        swatch(k.rich ? '■' : '█', toneColor('good'), '1-5%', 1),
+        swatch(k.rich ? '■' : '█', toneColor('warning'), '5-20%', 2),
+        swatch(k.rich ? '■' : '█', toneColor('critical'), k.rich ? '>20%' : 'over 20%', 3),
         swatch(k.rich ? '□' : '·', TONE.neutral, 'no requests', 4),
       ],
       key + '-legend',
       2,
     ),
   )
-  out.push(k.text('5xx per target group, last ' + span, { key: key + '-cap', dimColor: true }))
+  // The first minute's time rides on the caption on the desktop (a floating axis label meant nothing).
+  out.push(k.text('5xx per target group, last ' + span + (k.rich && start ? ', since ' + start + 'Z' : ''), { key: key + '-cap', dimColor: true }))
   const hhc = fillGaps(one.healthyHostCount || [])
   if (hhc.length >= 2) {
     const sparkTone = healthyTone(one.healthy, one.total) === 'good' ? 'good' : 'warning'
     const total = k.rich ? minutes * (cell + 2) : cols
     const sp = k.rich ? k.spark(hhc, { key: key + '-hhc', tone: sparkTone, px: total, height: 44, label: 'healthy host count', hover: true }) : k.spark(hhc, { key: key + '-hhc', tone: sparkTone, width: cols, label: 'healthy host count' })
-    out.push(centerRow(k, [labelCell(k, 'healthy hosts', key + '-hhl'), sp, Text({ key: key + '-hhn', dimColor: true, children: [(one.healthy ?? 0) + ' of ' + (one.total ?? 0)] })], key + '-hhc-r', 2))
+    const hhLabel = k.rich ? k.els.Box({ key: key + '-hhl', width: LABEL_W, flexShrink: 0, children: [Text({ key: key + '-hhl-t', bold: true, children: ['Healthy hosts'] })] }) : labelCell(k, 'healthy hosts', key + '-hhl')
+    out.push(centerRow(k, [hhLabel, sp, Text({ key: key + '-hhn', dimColor: true, children: [(one.healthy ?? 0) + ' of ' + (one.total ?? 0)] })], key + '-hhc-r', 2))
   }
   return out
 }

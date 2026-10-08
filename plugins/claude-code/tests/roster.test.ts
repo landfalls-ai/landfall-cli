@@ -111,8 +111,10 @@ for (const surface of SURFACES) {
     expect(pane.find({ type: 'Text', text: '● contested' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: '#205 · 3m' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: 'nothing shared yet' })).toBeDefined()
-    // The pill carries the state's tone: contested is critical.
-    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#d03b3b')
+    // The pill carries the state's tone from the kit's one map: contested is serious, never critical red.
+    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#ec835a')
+    expect(pane.find({ type: 'Text', text: '● staged' })?.props.color).toBe('#898781')
+    expect(pane.find({ type: 'Text', text: '● admitted' })?.props.color).toBe('#0ca30c')
     // Quotes in curly marks, the hint once.
     expect(pane.find({ type: 'Button', text: '“Origin pool exhausted in us-east-1.”' })).toBeDefined()
     expect(pane.all({ type: 'Text', text: 'Enter on a name opens' })).toHaveLength(1)
@@ -142,10 +144,14 @@ for (const surface of SURFACES) {
     expect(opens).toHaveLength(5)
     if (surface === 'desktop') {
       expect(opens.map((b) => b.props.label)).toEqual(["alice's investigation", "bob's investigation", "carol's investigation", 'Your investigation', "dave's investigation"])
-      // One column: each button is the last child of its row, after the name block that takes the rest.
+      // One column: each button is the last child of its row, in a box that never shrinks, after the
+      // name block that takes the rest and may shrink to nothing (round 2 review, issue 5).
       for (const row of pane.all({ type: 'Box' }).filter((b) => String(b.key).startsWith('ph-'))) {
-        expect(row.children.at(-1).type).toBe('Button')
+        expect(row.children.at(-1).props.flexShrink).toBe(0)
+        expect(row.children.at(-1).children[0].type).toBe('Button')
         expect(row.children.at(-2).props.flexGrow).toBe(1)
+        expect(row.children.at(-2).props.minWidth).toBe(0)
+        expect(row.children.at(-2).children.at(-1).props.wrap).toBe('truncate-end')
       }
     }
   })
@@ -234,13 +240,14 @@ for (const surface of SURFACES) {
     await settle()
     expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k1', '--person', 'h-alice'])
     const pane = draw(surface, io)
-    expect(pane.find({ type: 'Text', text: "alice's investigation" })?.props.bold).toBe(true)
+    // The desktop names her once, in the identity row; the terminal's heading names her.
+    expect(pane.find({ type: 'Text', text: surface === 'terminal' ? "alice's investigation" : 'Investigation' })?.props.bold).toBe(true)
     // Her own row, as the list draws it.
     expect(pane.find({ type: 'Text', text: 'Codex' })).toBeDefined()
     // Findings, newest first, with the Timeline's glyphs; a claim carries its state.
     expect(pane.find({ type: 'Text', text: 'Findings · 4' })?.props.bold).toBe(true)
     expect(pane.find({ type: 'Text', text: '16:01' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#d03b3b')
+    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#ec835a')
     const finding = pane.find({ key: 'trail-0' })!
     expect(finding.props.label).toBe(surface === 'terminal' ? 'Origin pool exhausted in us-east-1' : '“Origin pool exhausted in us-east-1”')
     expect(pane.find({ key: 'trail-2' })?.props.label).toContain('queried cloudwatch/metrics · origin-pool')
@@ -295,6 +302,8 @@ test('the keys of a person view: b back first, a asks about the selected widget,
     ['n', 'next widget'],
   ])
   expect(new Drawn(rosterTab.keys(kitFor('desktop'), io as never)).find({ key: 'back' })?.props.label).toBe('Back to people')
+  // The desktop's three keys fit one row: the widget is not named (round 2 review, issue 15).
+  expect(new Drawn(rosterTab.keys(kitFor('desktop'), io as never)).all({ type: 'Button' }).map((b) => b.props.label)).toEqual(['Back to people', 'Ask about this', 'Next widget'])
   await keys.press('pv-ask')
   await keys.press('pv-next')
   await pane.press('pv-edge-widget-201-t')

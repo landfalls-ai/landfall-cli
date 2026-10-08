@@ -1,6 +1,6 @@
 import { expect, test } from 'claude-code/testing'
 import { TABS } from '../hooks/core.js'
-import { segmentLabels, segmentCells } from '../hooks/console.js'
+import { segmentLabels, segmentCells, SWITCHER_SLACK } from '../hooks/console.js'
 import { SVG_THEME, clipToCells, kit, lineSvg, textCells } from '../hooks/kit.js'
 import { chartSvg, graphSvg } from '../hooks/views.js'
 import { sortIncidents } from '../hooks/components/incidents.js'
@@ -28,27 +28,67 @@ test('bug 1: the prop check the test tables run refuses what the engine refuses'
 const COUNTS = { vote: 1, context: 1, people: 4, timeline: 3, incidents: 4 }
 const rowCells = (cells: number, active = 'people', counts: Record<string, number> = COUNTS) => {
   const items = segmentLabels(TABS, active, counts, cells, true)
-  return { items, width: items.reduce((w, s) => w + segmentCells(s.active && !(s as any).bare ? '▸ ' + s.label : s.label, s.active), 0) }
+  return { items, width: items.reduce((w, s) => w + segmentCells(s.active ? '▸ ' + s.label : s.label, s.active), 0) * SWITCHER_SLACK }
 }
 
 test('bug 2: off the terminal the label set is chosen by measured width and always fits when any set can', () => {
-  // The round 1 pane was 50 body cells: nine segments with their counts do not fit; a shorter set does.
-  for (const cells of [50, 58, 64, 72, 84, 98, 120]) {
+  // The real dock is about 50 body cells: nine segments with their counts do not fit; a shorter set does.
+  for (const cells of [49, 58, 64, 72, 84, 98, 120]) {
     const { items, width } = rowCells(cells)
     expect(items).toHaveLength(9)
-    expect(width).toBeLessThanOrEqual(cells - 1)
+    expect(width).toBeLessThanOrEqual(cells)
   }
   // Roomy: full names and every count, the Incidents count included.
-  expect(rowCells(120).items.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context 1', 'Wall', 'People 4', 'Timeline 3', 'Load balancers', 'Incidents 4', 'More'])
-  // Tight: the inactive counts go before any name changes, the active one keeps its own.
-  const tight = rowCells(64).items.map((s) => s.label)
-  expect(tight).toContain('People 4')
-  expect(tight).not.toContain('Vote 1')
-  expect(tight).toContain('LB')
-  // Tighter: words shorten, still nine segments, still the active count.
-  const least = rowCells(50).items.map((s) => s.label)
-  expect(least).toEqual(['Home', 'Vote', 'Ctx', 'Wall', 'Here', 'Time', 'LB', 'Rooms', 'More'])
-  expect(rowCells(50).items.find((s) => s.active)).toMatchObject({ bare: true })
+  expect(rowCells(130).items.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context 1', 'Wall', 'People 4', 'Timeline 3', 'Load balancers', 'Incidents 4', 'More'])
+})
+
+// Round 3, decision 1: the ladder, rung by rung (REVIEW.md round 2). A label is the full word or
+// the word cut to its start, the active segment always has its `▸`, and only Vote keeps a count.
+test('round 3, switcher: the ladder A to E, never an invented word, only Vote counted', () => {
+  const at = (cells: number, active = 'home') => rowCells(cells, active).items.map((s) => s.label)
+  expect(at(64)).toEqual(['Home', 'Vote 1', 'Context', 'Wall', 'People', 'Timeline', 'LB', 'Incidents', 'More']) // A
+  expect(at(61)).toEqual(['Home', 'Vote 1', 'Ctx', 'Wall', 'People', 'Timeline', 'LB', 'Incidents', 'More']) // B
+  expect(at(57)).toEqual(['Home', 'Vote 1', 'Ctx', 'Wall', 'People', 'Time', 'LB', 'Incidents', 'More']) // C
+  expect(at(52)).toEqual(['Home', 'Vote 1', 'Ctx', 'Wall', 'People', 'Time', 'LB', 'Inc', 'More']) // D
+  expect(at(50)).toEqual(['Home', 'Vote 1', 'Ctx', 'Wall', 'Ppl', 'Time', 'LB', 'Inc', 'More']) // E: the real dock
+  // The row never flips as the vote comes and goes: its one digit is reserved in every fit.
+  expect(segmentLabels(TABS, 'home', {}, 50, true).map((s) => s.label)).toEqual(['Home', 'Vote', 'Ctx', 'Wall', 'Ppl', 'Time', 'LB', 'Inc', 'More'])
+  // Whatever the active tab is, nothing but the real words or their starts is ever drawn.
+  const words = new Set(['Home', 'Vote', 'Context', 'Ctx', 'Wall', 'People', 'Ppl', 'Timeline', 'Time', 'LB', 'Load balancers', 'Incidents', 'Inc', 'More'])
+  for (const cells of [30, 40, 50, 60, 70, 90, 130]) {
+    for (const tab of TABS) {
+      for (const s of segmentLabels(TABS, tab, COUNTS, cells, true)) {
+        expect(words.has(s.label.replace(/ \d+$/, ''))).toBe(true)
+        expect((s as any).bare).toBeUndefined()
+      }
+    }
+  }
+  // Too narrow for any rung: the last one still carries its fill and its `▸` (no marker is ever dropped).
+  expect(segmentLabels(TABS, 'wall', COUNTS, 20, true).map((s) => s.label)).toContain('Wall')
+})
+
+test('round 3, switcher: the active segment is filled with the theme-neutral grey and always has the `▸`', () => {
+  const k = kitFor('desktop')
+  const row = new Drawn(k.segments([{ id: 'wall', label: 'Wall', active: true, onPress() {} }, { id: 'more', label: 'More', onPress() {} }], { key: 'seg' }))
+  const seg = row.find({ key: 'seg-wall' })!
+  expect(seg.props.backgroundColor).toBe('#64635e')
+  expect(seg.props.paddingX).toBe(1)
+  const text = row.find({ key: 'seg-wall-t' })!
+  expect(text.props.color).toBe('#fafafa')
+  expect(text.props.bold).toBe(true)
+  expect(String(text.children[0])).toBe('▸ Wall')
+  // The fill is not a Button and not the primary variant, which a tab's action keeps.
+  expect(row.find({ type: 'Button', key: 'seg-wall' })).toBeUndefined()
+})
+
+test('round 3, switcher: a tab change retitles the pane with the full tab name, never taking the keyboard', async ($, on) => {
+  const w = await world($, on, { rooms: [], answers: {} })
+  void w
+  const pane = await $.ui.mount({ ...(consolePane('desktop', 48, 50) as object) } as never)
+  await pane.press({ key: 'seg-people' })
+  expect(w.opened.at(-1)).toMatchObject({ id: 'landfall', title: 'Landfall · People' })
+  expect(w.opened.at(-1)!.focus).toBeUndefined()
+  await pane.unmount()
 })
 
 test('bug 2: the segment widths are estimated from glyphs, not counted (a wide word costs more than a narrow one)', () => {
@@ -137,7 +177,9 @@ test('bug 7: on the desktop a finding is cut only at the row real width, measure
   }
   // The round 1 pane (48 cells): the 34-character finding with its state label no longer loses its tail at 25.
   const narrow = labels('desktop', 48)
-  expect(narrow[0]).toBe('“Origin pool exhausted in us-east-1”')
+  // (round 3: the state label now precedes the text, so the quote is measured to what is left of the row.)
+  expect(narrow[0].startsWith('“Origin pool exhausted in')).toBe(true)
+  expect(narrow[0].length).toBeGreaterThan(25)
   // A finding longer than the row ends in an ellipsis, and that one is measured to fit.
   expect(narrow[1].length).toBeGreaterThan(30)
   expect(narrow[2].endsWith('…”')).toBe(true)

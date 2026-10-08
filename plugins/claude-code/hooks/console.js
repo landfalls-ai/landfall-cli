@@ -27,6 +27,8 @@
 
 import {
   CONSOLE,
+  CONSOLE_COLUMNS,
+  consoleTitle,
   HOST,
   TABS,
   addCommand,
@@ -80,7 +82,6 @@ export const DESCRIPTION = 'Landfall war room console: home, vote, context, wall
 export const UNKNOWN = 'Landfall tabs: home, vote, context, wall, people, timeline, lb, incidents, more (comms, brain). Also: lines <label>, chart, sound.'
 export const NO_ROOM = 'Not in a war room yet. Open Incidents above to join one, or open a share link from the room.'
 export const NOT_PLACED = 'Widen the window to see the Landfall console.'
-export const OPENED = 'Opened the Landfall console.'
 
 // The full label set needs this many body cells; below it the docked set (§2.2).
 export const FULL_CELLS = 98
@@ -124,7 +125,9 @@ export function install(on) {
       return { text: await tabText(io, tab, asked.args) }
     }
     warmShown(io)
-    return { text: OPENED }
+    // A successful open leaves no row in the person's transcript (round 2 review, decision 2): the
+    // pane opening is the answer, and a row that tells them nothing is read again by the model.
+    return {}
   })
 
   // The person's close (Esc, the mark, ctrl+x x) stops every tab's reads and a sign-in in
@@ -493,45 +496,51 @@ export function segmentLabels(tabs, active, counts, cells, rich = false) {
 // `length + 2` cells there (round 1: "Incidents" clipped to "Incide", "More" off the edge at 50
 // cells). The width of a segment is estimated from the glyphs (calibrated on the Claude desktop
 // app's Code tab: 1.3 cells of button chrome plus 1.8 cells per em of text), and the label set is
-// the first rung of a ladder whose row fits the pane's body columns: full names with every count,
-// the docked set (`LB`, no Incidents count), the docked set with only the active count, then
-// shorter words (`Ctx`, `Time`), then the shortest (`Rooms`, `Here`), and at last the active segment without its `▸`. The row never wraps.
+// the first rung of a ladder whose row fits the pane's body columns (round 2 review, decision 1):
+//   - never an invented word: a label is the full word or the word cut to its start;
+//   - the active segment keeps its fill and its `▸` at every rung;
+//   - counts go first: below the full set the row draws Vote's count and no other, and Vote's
+//     count is reserved (one digit) in every fit, so the row never flips as a vote comes and goes;
+//   - the estimate under-reads the real pane by about 4 percent (SWITCHER_SLACK, the capture where
+//     the fully shortened row filled all 613 px), so a rung fits when its estimate times that fits.
+// The full word is named in the pane's title (`Landfall · People`). The row never wraps.
 // segmentCells is one segment's estimated width in cells; the filled active segment is a Box
 // with a cell of padding each side, a little wider than a button's chrome.
 export function segmentCells(label, active) {
   return (active ? 2 : BUTTON_CHROME) + textCells(label) * (active ? 1.06 : 1)
 }
+export const SWITCHER_SLACK = 1.04
 const NAMES_DOCKED = { ...LABELS, lb: 'LB' }
-const NAMES_COMPACT = { ...NAMES_DOCKED, context: 'Ctx', timeline: 'Time' }
-const NAMES_TIGHT = { ...NAMES_COMPACT, incidents: 'Rooms', people: 'Here' }
-const RUNGS = [
-  { names: LABELS, all: true, incidents: true },
-  { names: NAMES_DOCKED, all: true, incidents: false },
-  { names: NAMES_DOCKED, all: false, incidents: false },
-  { names: NAMES_COMPACT, all: false, incidents: false },
-  { names: NAMES_TIGHT, all: false, incidents: false },
-  // The last resort: the filled segment alone says which is open, without the `▸` or a count.
-  { names: NAMES_TIGHT, all: false, incidents: false, bare: true },
+const NAMES_B = { ...NAMES_DOCKED, context: 'Ctx' }
+const NAMES_C = { ...NAMES_B, timeline: 'Time' }
+const NAMES_D = { ...NAMES_C, incidents: 'Inc' }
+const NAMES_E = { ...NAMES_D, people: 'Ppl' }
+// The rung before A is the roomy one: full names and every count.
+export const RUNGS = [
+  { id: 'full', names: LABELS, all: true },
+  { id: 'A', names: NAMES_DOCKED },
+  { id: 'B', names: NAMES_B },
+  { id: 'C', names: NAMES_C },
+  { id: 'D', names: NAMES_D },
+  { id: 'E', names: NAMES_E },
 ]
 function richSegmentLabels(tabs, active, counts, cells) {
-  const build = (r) =>
+  const build = (r, reserve) =>
     tabs.map((t) => {
       const n = counts[t]
-      const has = typeof n === 'number' && n > 0 && (t !== 'incidents' || r.incidents)
-      const shown = has && (r.all || (t === active && !r.bare))
-      const text = r.names[t] + (shown ? ' ' + n : '')
-      return { id: t, label: text, active: t === active, ...(r.bare ? { bare: true } : {}) }
+      let shown = typeof n === 'number' && n > 0 && (r.all || t === 'vote')
+      const count = shown ? ' ' + n : reserve && t === 'vote' ? ' 1' : ''
+      return { id: t, label: r.names[t] + count, active: t === active, shown }
     })
-  const wide = (items) => items.reduce((w, s) => w + segmentCells(s.active && !s.bare ? '▸ ' + s.label : s.label, s.active), 0)
-  let items = build(RUNGS[RUNGS.length - 1])
+  const wide = (items) => items.reduce((w, s) => w + segmentCells(s.active ? '▸ ' + s.label : s.label, s.active), 0) * SWITCHER_SLACK
+  let rung = RUNGS[RUNGS.length - 1]
   for (const r of RUNGS) {
-    const got = build(r)
-    if (wide(got) <= cells - 1) {
-      items = got
+    if (wide(build(r, true)) <= cells) {
+      rung = r
       break
     }
   }
-  return items
+  return build(rung, false).map(({ shown, ...item }) => item)
 }
 
 function switcher(k, io, e) {
@@ -546,12 +555,22 @@ function switcher(k, io, e) {
 // showTab switches the body; the switcher stays where it is.
 export function showTab(io, t) {
   if (!TABS.includes(t)) return
-  if (t !== consoleState.tab) consoleState.offset = 0
+  const changed = t !== consoleState.tab
+  if (changed) consoleState.offset = 0
   consoleState.tab = t
   consoleState.args = null
   consoleState.chosen = true
   consoleState.focus = ''
   warmOnce(io, t)
+  // The switcher may show a cut word, so the pane's title names the tab in full. Opening an open id
+  // only retitles it, and without `focus` it never takes the keyboard.
+  if (changed) {
+    try {
+      void Promise.resolve(io.open(CONSOLE, consoleTitle(t), { columns: CONSOLE_COLUMNS, closeOnEscape: true })).catch(() => {})
+    } catch {
+      // The title is a courtesy: a pane that cannot be retitled still switches.
+    }
+  }
   io.invalidate()
 }
 
@@ -563,10 +582,7 @@ function drawConsole(k, io, nowMs, e) {
   const r = currentRoom()
   const t = TABS.includes(consoleState.tab) ? consoleState.tab : 'home'
   const body = []
-  if (k.terminal) body.push(blank('b-top'))
-  body.push(...header(k, r))
-  if (k.terminal) body.push(blank('b-hdr'))
-  // The pane's rows, for a tab that fits its body to them (the terminal's Wall).
+  // The pane's rows, for a tab that fits its body to them (the terminal's Wall and Home).
   consoleState.bodyRows = Number((e.props && e.props.scroll && e.props.scroll.bodyRows) || 0)
   let got
   if (t === 'home') got = drawHome(k, io, nowMs, e, r)
@@ -577,11 +593,18 @@ function drawConsole(k, io, nowMs, e) {
       got = normalize([k.text(clip('This tab could not be drawn: ' + String(err), 200), { key: 'tab-err' })])
     }
   }
+  // A short terminal pane (Home drops its own blank rows first) keeps the room's row and the keys.
+  if (k.terminal && !got.compact) body.push(blank('b-top'))
+  body.push(...header(k, r))
+  if (k.terminal && !got.compact) body.push(blank('b-hdr'))
   body.push(...got.rows.filter(Boolean))
   const foot = got.footer || (got.live ? footerWords(got.live, nowMs, r) : null)
   if (foot) {
     if (k.terminal) body.push(blank('b-foot'))
     body.push(foot.type ? foot : footerRow(k, foot))
+  } else if (k.terminal && !got.compact && got.rows.some(Boolean)) {
+    // No footer to sit the keys on: one blank row before them, never two (round 2 review, issue 16).
+    body.push(blank('b-keys'))
   }
   body.push(...keysRows(k, io, t, got))
 
@@ -609,7 +632,7 @@ function drawConsole(k, io, nowMs, e) {
 function normalize(got) {
   if (Array.isArray(got)) return { rows: got, keys: [], live: null, footer: null, refresh: null }
   if (!got || typeof got !== 'object') return { rows: [], keys: [], live: null, footer: null, refresh: null }
-  return { rows: got.rows || [], keys: got.keys || [], live: got.live || null, footer: got.footer || null, refresh: got.refresh || null, noRefresh: !!got.noRefresh }
+  return { rows: got.rows || [], keys: got.keys || [], live: got.live || null, footer: got.footer || null, refresh: got.refresh || null, noRefresh: !!got.noRefresh, compact: !!got.compact }
 }
 
 // blank is one empty row between blocks (the terminal's spacing; cards space themselves).
@@ -625,9 +648,12 @@ function header(k, r) {
   if (!r) {
     const joined = consoleState.joined
     const words = joined ? 'reading the room…' : signedOut() ? 'not signed in' : 'not in a war room'
+    // Off the terminal the pane's title already says Landfall and the mark carries the name, so the
+    // row reads only its dim words (round 2 review, issue 20); the terminal draws the pane's own frame.
+    const name = joined ? joined.name : k.terminal ? 'Landfall' : ''
     return [
       k.row(
-        [k.mark('hdr-m', 20), Text({ key: 'hdr-n', bold: true, children: [joined ? joined.name : 'Landfall'] }), Text({ key: 'hdr-d', dimColor: true, children: [words] })],
+        [k.mark('hdr-m', 20), name ? Text({ key: 'hdr-n', bold: true, children: [name] }) : null, Text({ key: 'hdr-d', dimColor: true, children: [words] })].filter(Boolean),
         'hdr',
         k.terminal ? 2 : 1,
       ),
@@ -790,7 +816,7 @@ function drawHome(k, io, nowMs, e, r) {
   if (people.length > 0) {
     const here = people.filter((p) => p.here)
     const shownN = Math.min(6, people.length)
-    blocks.people = { rows: 1 + shownN + (people.length > shownN ? 1 : 0), rowsHere: 1 + Math.min(6, Math.max(1, here.length)) }
+    blocks.people = { rows: 1 + shownN + (people.length > shownN ? 1 : 0), rowsHere: 1 + Math.min(6, Math.max(1, here.length)), total: people.length, hereTotal: here.length }
     draw.people = (hereOnly) => peopleBlock(k, io, r, hereOnly ? here : people, two ? 70 : k.width)
   }
   const tiles = wallTiles(feeds.wall, two || (!k.terminal && k.width >= 118) ? 6 : k.terminal ? 3 : 4)
@@ -817,14 +843,28 @@ function drawHome(k, io, nowMs, e, r) {
   const bodyRows = Number((e.props && e.props.scroll && e.props.scroll.bodyRows) || 0)
   const avail = k.terminal && bodyRows > 0 ? bodyRows - 1 : Infinity
   const plan = planHome(blocks, avail, fixed, two ? 2 : 1)
+  // Still too tall on a short pane: the Vote, Beacon and People blocks are never dropped before
+  // everything cheaper is (round 2 review, issue 8), so shrink in this order: the blank rows
+  // around the room's row, the Beacon line, People down to as many rows as fit, the footer.
+  const squeeze = k.terminal && !two ? squeezeHome(plan, blocks, avail, fixed, !!footerNow(feeds, nowMs, r)) : {}
 
   const rows = []
   if (resolved) rows.push(Text({ key: 'home-resolved', dimColor: true, children: ['This incident is resolved.'] }))
-  const drawn = (id) => (id === 'people' ? draw.people(plan.hereOnly) : draw[id]())
+  const peopleRows = () => {
+    let list = draw.people(plan.hereOnly)
+    if (squeeze.peopleN != null) {
+      const here = plan.hereOnly ? sortPeople(st.people || []).filter((p) => p.here) : sortPeople(st.people || [])
+      list = peopleBlock(k, io, r, here.slice(0, squeeze.peopleN), k.width)
+      const left = here.length - Math.min(here.length, squeeze.peopleN)
+      if (left > 0) list.push(Text({ key: 'hp-more', dimColor: true, children: ['+' + left + ' more'] }))
+    }
+    return squeeze.noHeading ? list.slice(1) : list
+  }
+  const drawn = (id) => (id === 'people' ? peopleRows() : draw[id]())
   const stack = (ids, key) => {
     const out = []
-    ids.forEach((id, i) => {
-      if (i > 0 && k.terminal) out.push(blank(key + '-gap-' + id))
+    ids.filter((id) => !(id === 'beacon' && squeeze.noBeacon)).forEach((id, i) => {
+      if (i > 0 && k.terminal && !squeeze.tight) out.push(blank(key + '-gap-' + id))
       out.push(...drawn(id))
     })
     return out
@@ -845,14 +885,60 @@ function drawHome(k, io, nowMs, e, r) {
     )
   } else rows.push(...stack(plan.shown, 'h'))
   if (plan.moreLine) {
-    if (k.terminal) rows.push(blank('home-more-gap'))
+    if (k.terminal && !squeeze.tight) rows.push(blank('home-more-gap'))
     rows.push(Text({ key: 'home-more', dimColor: true, children: [plan.moreLine] }))
   }
   if (readLine) {
     if (k.terminal) rows.push(blank('home-read-gap'))
     rows.push(Text({ key: 'home-reading', dimColor: true, children: [readLine] }))
   }
-  return { rows, keys: [], live: null, footer: homeFooter(feeds, nowMs, r), refresh: () => refreshHome(io) }
+  return { rows, keys: [], live: null, footer: squeeze.noFooter ? null : homeFooter(feeds, nowMs, r), refresh: () => refreshHome(io), compact: !!squeeze.compact }
+}
+
+// footerNow is whether Home has a footer to draw (it is two rows when it does).
+function footerNow(feeds, nowMs, r) {
+  return homeFooter(feeds, nowMs, r)
+}
+
+// squeezeHome decides what else a short terminal pane gives up once planHome has dropped what it
+// can, by exact rows. `plan` is planHome's answer; `fixed` its count of the header's three rows,
+// the footer's two and the keys' one (plus the room being over, the room reconnecting and the
+// reading line). Answers { compact, noBeacon, peopleN, noHeading, noFooter } for what it took, {}
+// when nothing more was needed. The last two rows are always the more line and the keys.
+export function squeezeHome(plan, blocks, avail, fixed, hasFooter) {
+  if (!isFinite(avail)) return {}
+  const more = plan.moreLine ? 2 : 0
+  const pb = blocks.people
+  const total = pb ? (plan.hereOnly ? pb.hereTotal : pb.total) : 0
+  const peopleRows = (o) => {
+    if (o.peopleN == null) return plan.hereOnly && pb.rowsHere != null ? pb.rowsHere : pb.rows
+    return (o.noHeading ? 0 : 1) + o.peopleN + (total > o.peopleN ? 1 : 0)
+  }
+  const height = (o) => {
+    const list = plan.shown.filter((id) => !(id === 'beacon' && o.noBeacon))
+    const gaps = o.tight ? 0 : Math.max(0, list.length - 1)
+    const stack = list.reduce((n, id) => n + (id === 'people' ? peopleRows(o) : blocks[id].rows), 0) + gaps
+    return fixed - (o.compact ? 2 : 0) - (o.noFooter ? 2 : 0) + stack + more - (o.tight && more ? 1 : 0)
+  }
+  if (height({}) <= avail) return {}
+  let o = { compact: true }
+  if (height(o) <= avail) return o
+  o = { compact: true, noBeacon: true }
+  if (height(o) <= avail || !pb) return o
+  // The footer (two rows) goes before any person does: who is here matters more than how old the read is.
+  if (hasFooter) {
+    o = { compact: true, noBeacon: true, noFooter: true }
+    if (height(o) <= avail) return o
+  }
+  // Then the blank rows between blocks: everyone who is here reads before the rhythm does.
+  o = { ...o, tight: true }
+  if (height(o) <= avail) return o
+  const have = Math.min(total, 6)
+  for (let n = have; n >= 1; n--) {
+    const t = { ...o, peopleN: n }
+    if (height(t) <= avail) return t
+  }
+  return { ...o, peopleN: 1, noHeading: true }
 }
 
 // homeFooter reports the oldest of Home's warm sources, and names one that is stale (§4.9).
@@ -1010,7 +1096,7 @@ export function wallTiles(feed, max) {
 function tileOf(w) {
   const toned = w.tone && w.tone !== 'neutral'
   if (w.type === 'stat') {
-    const value = String(w.value ?? '') + (w.unit && w.unit !== String(w.value ?? '').slice(-w.unit.length) ? (w.unit === '%' ? '' : ' ') + w.unit : '')
+    const value = String(w.value ?? '') + (w.unit && w.unit !== String(w.value ?? '').slice(-w.unit.length) ? (w.unit === '%' || w.unit.startsWith('/') ? '' : ' ') + w.unit : '')
     return { title: w.title || 'stat', tone: toned ? w.tone : '', value, delta: deltaText(w), deltaTone: toned ? deltaTone(w) : '', spark: w.spark || [] }
   }
   if (w.type === 'chart') {
@@ -1043,6 +1129,8 @@ function wallBlock(k, a, tiles) {
     })
     return [head, k.table(rows, { key: 'hw-tiles', widths: [21, 12, 16, 15] })]
   }
+  // Two tiles across need a docked pane of 90 cells or more (spec §6); narrower, one tile a row.
+  const wide = k.width + 2 >= 90
   const cards = tiles.map((w, i) => {
     const t = tileOf(w)
     return Box({
@@ -1051,11 +1139,20 @@ function wallBlock(k, a, tiles) {
       borderStyle: 'round',
       borderColor: TONE.neutral,
       paddingX: 1,
-      width: '48%',
+      width: wide ? '48%' : '100%',
       children: [
-        k.row([Text({ key: 'hw-t', bold: true, children: [t.title] }), t.tone ? k.pill(t.tone, t.tone, 'hw-p') : null], 'hw-h' + i, 1),
+        // The title left and its tone label right, on one row.
+        Box({
+          key: 'hw-h' + i,
+          flexDirection: 'row',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          columnGap: 1,
+          children: [Text({ key: 'hw-t', bold: true, children: [t.title] }), t.tone ? k.pill(t.tone, t.tone, 'hw-p') : null].filter(Boolean),
+        }),
         k.row([Text({ key: 'hw-v', bold: true, children: [t.value] }), t.delta ? (t.deltaTone ? k.pill(t.delta, t.deltaTone, 'hw-d') : k.dim(t.delta, 'hw-d')) : null], 'hw-vr' + i, 1),
-        k.spark(t.spark, { key: 'hw-s' + i, px: 260, height: 44, tone: t.tone || 'neutral', label: t.title, hover: true }),
+        // A plain image: transparent on any theme (an interactive frame is white on a dark page).
+        k.spark(t.spark, { key: 'hw-s' + i, px: 260, height: 44, tone: t.tone || 'neutral', label: t.title }),
       ].filter(Boolean),
     })
   })

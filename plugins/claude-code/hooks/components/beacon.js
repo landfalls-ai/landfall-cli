@@ -118,13 +118,15 @@ function stepTrack(k, roomKey, s) {
   let svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + n * gap + ' 12" width="' + n * gap + '" height="12">'
   for (let i = 1; i <= n; i++) {
     const cx = (i - 1) * gap + 6
-    if (i > 1) svg += '<line x1="' + (cx - gap + 5) + '" x2="' + (cx - 5) + '" y1="6" y2="6" stroke="#8a8a8a" stroke-opacity=".4"/>'
+    if (i > 1) svg += '<line x1="' + (cx - gap + 5) + '" x2="' + (cx - 5) + '" y1="6" y2="6" stroke="#898781" stroke-opacity=".5"/>'
     const color = i === n ? TONE.violet : TONE.good
     const title = texts[i] ? '<title>' + esc('Step ' + i + ': ' + texts[i]) + '</title>' : ''
     svg += '<circle cx="' + cx + '" cy="6" r="' + (i === n ? 5 : 4) + '" fill="' + color + '">' + title + '</circle>'
   }
   svg += '</svg>'
-  return k.svg(svg, { key: 'beacon-track', alt: 'Beacon at step ' + n, width: n * gap, height: 12, hover: true })
+  // A plain image, transparent on any band: an interactive frame is a white page on a dark one (round 2
+  // review, issue 3). The step's words are already on the line beside it.
+  return k.svg(svg, { key: 'beacon-track', alt: 'Beacon at step ' + n, width: n * gap, height: 12 })
 }
 
 function esc(s) {

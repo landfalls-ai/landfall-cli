@@ -109,68 +109,8 @@ async function session($: any, on: any, first: unknown[], answer: (argv: readonl
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: an open wall reads again every 15 s, says how old it is, and stops once closed`, async ($, on) => {
-    const s = await session($, on, [ROOM], () => WALL)
-    await $.command.run({ command: 'wall', args: '' })
-    expect(s.count('wall')).toBe(1)
-    const p = await $.ui.mount(pane('landfall-wall', surface))
-    expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
-
-    // The age moves with the clock, and nothing is read before 15 s.
-    await s.clock.advance(10000)
-    expect(s.count('wall')).toBe(1)
-    expect(await p.find({ type: 'Text', text: 'live · updated 10s ago' })).toBeDefined()
-
-    await s.clock.advance(5000)
-    expect(s.count('wall')).toBe(2)
-    expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
-
-    await s.clock.advance(15000)
-    expect(s.count('wall')).toBe(3)
-
-    // Closed: no more reads, however long it has been.
-    await p.press({ key: 'wall-close' })
-    expect(s.closed).toEqual(['landfall-wall'])
-    await p.unmount()
-    await s.clock.advance(120000)
-    expect(s.count('wall')).toBe(3)
-  })
-
-  test(`${surface}: a widget event reads the open wall at once, and a failed read keeps the wall, marked stale`, async ($, on) => {
-    let answer: unknown = WALL
-    const s = await session($, on, [ROOM], () => answer)
-    await $.command.run({ command: 'wall', args: '' })
-    const p = await $.ui.mount(pane('landfall-wall', surface))
-    await s.clock.advance(3000)
-    expect(s.count('wall')).toBe(1)
-
-    // Another room event that shapes no widget: nothing read.
-    await s.feed([{ ...ROOM, maxSeq: 234 }])
-    expect(s.count('wall')).toBe(1)
-
-    // A widget event: read within the same moment, no tick needed.
-    answer = WALL2
-    await s.feed([{ ...ROOM, maxSeq: 235, widgetSeq: 235 }])
-    expect(s.count('wall')).toBe(2)
-    expect(await p.find({ type: 'Text', text: '3' })).toBeDefined()
-
-    // The next read (15 s after that one, on the tick at 20 s) fails: the
-    // wall stays, the line says it is stale and why.
-    answer = EXPIRED
-    await s.clock.advance(12000)
-    expect(s.count('wall')).toBe(2)
-    await s.clock.advance(5000)
-    expect(s.count('wall')).toBe(3)
-    expect(await p.find({ type: 'Text', text: '3' })).toBeDefined()
-    expect(await p.find({ type: 'Text', text: 'stale · updated 17s ago · Your sign-in expired. Run landfall login.' })).toBeDefined()
-
-    // A good read clears it.
-    answer = WALL
-    await s.clock.advance(15000)
-    expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
-    expect(await p.find({ type: 'Text', text: '4' })).toBeDefined()
-    await p.unmount()
-  })
+  // The wall's own cadence (15 s while the console is open, a widget event at once, stale on a
+  // failed read) is pinned in wall.test.ts, which drives the tab on a clock of its own.
 
   test(`${surface}: while the room reconnects the band, the panes and the status line say so`, async ($, on) => {
     const down = { ...ROOM, connection: 'disconnected' }
@@ -180,9 +120,6 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await band.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeDefined()
     await band.unmount()
 
-    await $.command.run({ command: 'wall', args: '' })
-    const p = await $.ui.mount(pane('landfall-wall', surface))
-    expect(await p.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeDefined()
     const r = await $.ui.mount(pane('landfall-room', surface))
     expect(await r.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeDefined()
     await r.unmount()
@@ -190,12 +127,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // Live again: the line clears, the dot fills, a band with no news is gone.
     await s.feed([ROOM])
     expect(s.statuses.at(-1)).toBe('🔴 Landfall 168 · investigating · SEV2 · 0 new')
-    expect(await p.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeUndefined()
-    expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()
     band = await $.ui.mount({ ...BAND, surface } as never)
     expect(await band.find({ type: 'Text', text: 'Reconnecting to the room…' })).toBeUndefined()
     await band.unmount()
-    await p.unmount()
   })
 
   test(`${surface}: a new widget is told once per 10 s, and the band offers w to open the wall`, async ($, on) => {
@@ -213,18 +147,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await s.clock.advance(5000)
     expect(s.toasts).toEqual(['New on the wall: p99 latency · by dana', 'New on the wall: Replica lag'])
 
-    // The band offers the wall; w opens it and reads it.
+    // The band offers the wall; w opens the console on it (which reads the wall when it draws it).
     const band = await $.ui.mount({ ...BAND, surface } as never)
     const key = await band.find({ type: 'Button', key: 'open-wall' })
     expect(key?.props.hotkey).toBe('w')
     if (surface === 'terminal') expect(key?.props.label).toBe('open the wall')
     await band.press({ key: 'open-wall' })
-    expect(s.opened).toContain('landfall-wall')
-    expect(s.count('wall')).toBe(1)
+    expect(s.opened).toContain('landfall')
     await band.unmount()
-    const wall = await $.ui.mount(pane('landfall-wall', surface))
-    await wall.press({ key: 'wall-close' })
-    await wall.unmount()
 
     // A minute on, no offer.
     await s.feed([{ ...ROOM, widgetSeq: 241, newestWidget: { seq: 241, title: 'Replica lag', type: 'chart' } }])

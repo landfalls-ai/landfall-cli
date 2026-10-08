@@ -1,110 +1,19 @@
 // Lines of investigation (proposal item 13, FR-13): who is on which lead, so
-// two people do not chase the same one. The band shows one dim row while the
-// room has claimed lines; /lines lists them, claims one ("I'm on eu-west-1")
-// and releases your own. Claims and releases run the landfall CLI as the
-// person (`landfall lines claim|release`); the list rides on `landfall watch`
-// (status.lines).
+// two people do not chase the same one. The lines belong to the people who
+// hold them, so People draws them (roster.js: a person's line beside their
+// name, the rest under `Lines`, `c: claim a line…`, `e: release`) and this
+// file is its helpers: the room's lines from `landfall watch` (status.lines),
+// the words a claim or a release answers with, and the two runs of the CLI
+// as the person (`landfall lines claim|release`). The band shows one dim row
+// while the room has claimed lines.
+//
+// For console.js: `/landfall lines <label>` calls claimLine(io, label) and
+// answers its text, then redraws People.
 
-import { HOST, addCommand, ago, clip, currentRoom, parseAnswer, room } from '../core.js'
-import { kit } from '../kit.js'
+import { HOST, ago, clip, currentRoom } from '../core.js'
 
-export const PANE = 'landfall-lines'
-
-// Whether the pane shows its claim field, and a claim or release in flight.
-const ui = { claiming: false, busy: '' }
-
-export function install(on) {
-  addCommand({ name: 'lines', description: 'See who is on which line of investigation, and claim one', argumentHint: '[the line you are on]' })
-
-  on('command.run', { command: 'lines' }, async ($, e) => {
-    const r = currentRoom()
-    if (!r) return { text: 'This folder is not in a war room. Open a share link from the room, or run /incidents to join one.' }
-    const label = (e.args || '').trim()
-    if (label) {
-      // `/lines eu-west-1 5xx` claims at once: the one way to claim where no field draws.
-      const got = await cli($, ['lines', 'claim', '--room', r.roomKey, '--label', label])
-      return { text: claimWords(got, label) }
-    }
-    ui.claiming = false
-    const opened = await $.ui.open({ id: PANE, title: 'Lines of investigation', focus: true, closeOnEscape: true })
-    if (!opened.isPlaced) return { text: linesText(r) }
-    return {}
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const k = kit($.ui.resolve(e), e)
-    const { Box, Text, Input } = k.els
-    const r = currentRoom()
-    const lines = roomLines(r)
-
-    const claim = async (label) => {
-      label = String(label || '').trim()
-      if (!label || !r) return
-      ui.busy = 'claim'
-      $.ui.invalidate('ui.render')
-      const got = await cli($, ['lines', 'claim', '--room', r.roomKey, '--label', label])
-      ui.busy = ''
-      if (got.ok) ui.claiming = false
-      await $.ui.toast(clip(claimWords(got, label), 220), { timeoutMs: got.ok ? 6000 : 8000 })
-      $.ui.invalidate('ui.render')
-    }
-    const release = async (line) => {
-      if (!r || !line.claimId) return
-      ui.busy = line.claimId
-      $.ui.invalidate('ui.render')
-      const got = await cli($, ['lines', 'release', '--room', r.roomKey, '--claim', line.claimId])
-      ui.busy = ''
-      if (got.ok) await $.ui.toast(got.note ? String(got.note) : 'You released the line ' + lineLabel(line) + '.', { timeoutMs: 6000 })
-      else await $.ui.toast('Line not released: ' + clip(got.error || 'no answer', 200), { timeoutMs: 8000 })
-      $.ui.invalidate('ui.render')
-    }
-    const openClaim = async () => {
-      ui.claiming = true
-      $.ui.invalidate('ui.render')
-    }
-
-    const rows = [k.header({ key: 'ln-hdr', title: 'Lines of investigation', pills: [{ text: String(lines.length), tone: 'neutral' }], dim: r ? r.displayId || '' : '' })]
-    if (!r) rows.push(Text({ key: 'ln-none', dimColor: true, children: ['This folder is not in a war room.'] }))
-    else if (lines.length === 0) rows.push(Text({ key: 'ln-empty', dimColor: true, children: ['Nobody has claimed a line yet.'] }))
-
-    lines.forEach((line, i) => {
-      const id = line.claimId || 'l' + i
-      const owner = line.you ? 'you' : line.owner || 'someone'
-      const words = [owner, ago(line.ageMs)].filter(Boolean).join(' · ')
-      const kids = [
-        Text({ key: 'lt-' + id, bold: !!line.you, children: [clip(lineLabel(line), Math.max(10, k.width - words.length - 16))] }),
-        Text({ key: 'lo-' + id, dimColor: true, children: [words] }),
-      ]
-      if (line.you && line.claimId) {
-        kids.push(k.button({ key: 'release-' + id, label: ui.busy === line.claimId ? 'releasing…' : 'release', onPress: () => release(line) }))
-      }
-      rows.push(k.row(kids, 'lr-' + id, 2))
-    })
-
-    const keys = []
-    if (r && hasFields(k)) {
-      if (ui.claiming) {
-        rows.push(
-          Input({
-            key: 'claim-label',
-            label: 'Line',
-            placeholder: 'eu-west-1 5xx',
-            submitLabel: 'claim',
-            autoFocus: true,
-            onSubmit: (value) => claim(value),
-          }),
-        )
-      } else {
-        keys.push(k.button({ key: 'claim', label: ui.busy === 'claim' ? 'claiming…' : 'claim a line…', hotkey: 'n', primary: true, onPress: openClaim }))
-      }
-    } else if (r) {
-      rows.push(Text({ key: 'ln-mobile', dimColor: true, children: ['To claim a line here, type /lines and what you are on.'] }))
-    }
-    keys.push(k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, onPress: () => $.ui.close({ id: PANE }) }))
-    rows.push(k.row(keys, 'ln-keys'))
-    return Box({ flexDirection: 'column', rowGap: k.terminal ? 0 : 1, children: rows })
-  })
-}
+// The tab has no command or pane of its own.
+export function install(on) {}
 
 // band: one dim row while the room has claimed lines.
 export async function band(io, e, k) {
@@ -117,13 +26,32 @@ export function onSnapshot(io, snap, prev) {}
 
 export function start(io) {}
 
-// cli runs `landfall <args> --host claude-code` and reads its one JSON line.
-async function cli($, args) {
-  try {
-    return parseAnswer(await $.process.run([room.bin, ...args, '--host', HOST], { timeoutMs: 20000 }))
-  } catch (err) {
-    return { ok: false, error: clip(String(err), 200) }
-  }
+// tick runs every TICK_MS while the session lives: nothing to do here.
+export function tick(io, nowMs) {}
+
+// cli runs `landfall <args> --host claude-code` and answers its one JSON line.
+async function cli(io, args) {
+  return io.run([...args, '--host', HOST], { timeoutMs: 20000 })
+}
+
+// claimLine claims a line as the person. Answers the CLI's answer and the words
+// that say what became of it (a toast, or a command's text).
+export async function claimLine(io, label) {
+  const r = currentRoom()
+  label = String(label || '').trim()
+  if (!r) return { ok: false, text: 'This folder is not in a war room. Open a share link from the room, or join one from Incidents.' }
+  if (!label) return { ok: false, text: 'Say which line you are on: /landfall lines <label>.' }
+  const got = await cli(io, ['lines', 'claim', '--room', r.roomKey, '--label', label])
+  return { ok: !!got.ok, text: claimWords(got, label), answer: got }
+}
+
+// releaseLine releases a line the person holds.
+export async function releaseLine(io, line) {
+  const r = currentRoom()
+  if (!r || !line || !line.claimId) return { ok: false, text: 'There is no line to release.' }
+  const got = await cli(io, ['lines', 'release', '--room', r.roomKey, '--claim', line.claimId])
+  if (got.ok) return { ok: true, text: got.note ? String(got.note) : 'You released the line ' + lineLabel(line) + '.', answer: got }
+  return { ok: false, text: 'Line not released: ' + clip(got.error || 'no answer', 200), answer: got }
 }
 
 // claimWords is what a claim's answer says to the person. When someone else
@@ -153,20 +81,32 @@ export function linesWords(r) {
     .join(' · ')
 }
 
-// linesText is /lines where no pane can be drawn.
+// holds says a person holds a line: it is theirs by owner name, or yours.
+export function holds(p, l) {
+  return p.you ? !!l.you : !l.you && String(l.owner || '').trim().toLowerCase() === String(p.name || '').trim().toLowerCase()
+}
+
+// linesOf is the lines one person holds.
+export function linesOf(r, p) {
+  return roomLines(r).filter((l) => holds(p, l))
+}
+
+// loneLines are the room's lines nobody listed in `people` holds (an agent's, or a
+// person who left), as `Lines` draws them.
+export function loneLines(r, people) {
+  return roomLines(r).filter((l) => !people.some((p) => holds(p, l)))
+}
+
+// lineWords is one such line: "origin pool · alice · 12m".
+export function lineWords(l) {
+  return [lineLabel(l), l.you ? 'you' : l.owner || 'someone', ago(l.ageMs)].filter(Boolean).join(' · ')
+}
+
+// linesText is the lines as text, where no pane can be drawn.
 export function linesText(r) {
   const lines = roomLines(r)
-  if (lines.length === 0) return 'Nobody has claimed a line yet. Type /lines and what you are on to claim one.'
+  if (lines.length === 0) return 'Nobody has claimed a line yet. Type /landfall lines and what you are on to claim one.'
   const out = ['Lines of investigation']
   for (const l of lines) out.push('  ' + lineLabel(l) + ' · ' + [l.you ? 'you' : l.owner || 'someone', ago(l.ageMs)].filter(Boolean).join(' · '))
   return out.join('\n')
 }
-
-// hasFields: the surface draws an Input (mobile draws no field yet).
-function hasFields(k) {
-  return k.surface !== 'mobile' && typeof k.els.Input === 'function'
-}
-
-// tick runs every TICK_MS while the session lives: a component with an open
-// pane refreshes it here on its own cadence (nothing to do by default).
-export function tick(io, nowMs) {}

@@ -80,7 +80,8 @@ async function loadTopology($) {
 // graphOf is the wall's first graph widget.
 export function graphOf(a) {
   if (!a || !a.ok) return null
-  return (a.widgets || []).find((w) => w.type === 'graph') || null
+  const graphs = (a.widgets || []).filter((w) => w.type === 'graph')
+  return graphs.find((w) => !w.empty && (w.nodes || []).length > 0) || graphs[0] || null
 }
 
 // topologyText is /topology's answer where no pane can be drawn.

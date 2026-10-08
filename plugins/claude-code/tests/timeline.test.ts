@@ -1,16 +1,18 @@
 import { expect, test } from 'claude-code/testing'
 
-// `landfall timeline` as contracts/cli-json.md §4 prints it, oldest first.
+// `landfall timeline` as the Go CLI prints it (internal/cli/timeline.go
+// timelineRow): oldest first, each row with its server `type`, and the page's
+// `oldestSeq` beside `hasMore`.
 const EVENTS = [
-  { seq: 201, at: '2026-10-08T15:52:00Z', kind: 'status', glyph: '▲', tone: 'critical', text: 'Triggered by Datadog: 5xx over 2% for 5 minutes', who: 'Datadog', detail: '' },
-  { seq: 203, at: '2026-10-08T15:53:00Z', kind: 'status', glyph: '●', tone: 'warning', text: 'Status set to investigating', who: 'carol', detail: 'war room' },
-  { seq: 204, at: '2026-10-08T15:53:20Z', kind: 'beacon', glyph: '◆', tone: 'violet', text: 'Beacon run 1 started', who: 'Beacon', detail: 'focus web-edge' },
-  { seq: 206, at: '2026-10-08T15:58:00Z', kind: 'findings', glyph: '◇', tone: 'info', text: 'alice staged #206 origin pool exhausted', who: 'alice', detail: '' },
-  { seq: 209, at: '2026-10-08T16:06:00Z', kind: 'findings', glyph: '✓', tone: 'good', text: '#209 admitted: rollback ready', who: 'carol', detail: 'proposed by carol, accepted by bob and dave' },
-  { seq: 212, at: '2026-10-08T16:09:00Z', kind: 'findings', glyph: '◇', tone: 'info', text: 'bob staged #212 5xx matches v2.3.1', who: 'bob', detail: '' },
-  { seq: 214, at: '2026-10-08T16:10:00Z', kind: 'people', glyph: '·', tone: 'neutral', text: 'dave joined from Claude Code', who: 'dave', detail: '' },
+  { seq: 201, at: '2026-10-08T15:52:00Z', kind: 'status', type: 'incident.triggered', glyph: '▲', tone: 'critical', text: 'Triggered by Datadog: 5xx over 2% for 5 minutes', who: 'Datadog', detail: '' },
+  { seq: 203, at: '2026-10-08T15:53:00Z', kind: 'status', type: 'status.changed', glyph: '●', tone: 'warning', text: 'Status set to investigating', who: 'carol', detail: 'war room' },
+  { seq: 204, at: '2026-10-08T15:53:20Z', kind: 'beacon', type: 'agent.run.started', glyph: '◆', tone: 'violet', text: 'Beacon run 1 started', who: 'Beacon', detail: 'focus web-edge' },
+  { seq: 206, at: '2026-10-08T15:58:00Z', kind: 'findings', type: 'claim.staged', glyph: '◇', tone: 'info', text: 'alice staged #206 origin pool exhausted', who: 'alice', detail: '' },
+  { seq: 209, at: '2026-10-08T16:06:00Z', kind: 'findings', type: 'claim.admitted', glyph: '✓', tone: 'good', text: '#209 admitted: rollback ready', who: 'carol', detail: 'proposed by carol, accepted by bob and dave' },
+  { seq: 212, at: '2026-10-08T16:09:00Z', kind: 'findings', type: 'claim.staged', glyph: '◇', tone: 'info', text: 'bob staged #212 5xx matches v2.3.1', who: 'bob', detail: '' },
+  { seq: 214, at: '2026-10-08T16:10:00Z', kind: 'people', type: 'edge.participant.joined', glyph: '·', tone: 'neutral', text: 'dave joined from Claude Code', who: 'dave', detail: '' },
 ]
-const OLDER = [{ seq: 150, at: '2026-10-08T15:40:00Z', kind: 'findings', glyph: '◇', tone: 'info', text: 'carol noted the CDN alarm', who: 'carol', detail: '' }]
+const OLDER = [{ seq: 150, at: '2026-10-08T15:40:00Z', kind: 'findings', type: 'edge.finding', glyph: '◇', tone: 'info', text: 'carol noted the CDN alarm', who: 'carol', detail: '' }]
 const FINDINGS = EVENTS.filter((e) => e.kind === 'findings')
 
 const PANE = { title: 'Timeline', isFocused: true, bodyColumns: 100, placement: 'dock', scroll: { offset: 0, bodyRows: 60 }, view: {} } as const
@@ -26,9 +28,10 @@ function answer(argv: readonly string[]) {
     const i = argv.indexOf(flag)
     return i >= 0 ? argv[i + 1] : undefined
   }
-  if (at('--before')) return { ok: true, events: OLDER, hasMore: false }
-  if (at('--kind') === 'findings') return { ok: true, events: FINDINGS, hasMore: false }
-  return { ok: true, events: EVENTS, hasMore: true }
+  if (at('--before')) return { ok: true, events: OLDER, hasMore: false, oldestSeq: 150 }
+  if (at('--kind') === 'findings') return { ok: true, events: FINDINGS, hasMore: false, oldestSeq: 206 }
+  if (at('--kind') === 'other') return { ok: true, events: [], hasMore: false }
+  return { ok: true, events: EVENTS, hasMore: true, oldestSeq: 201 }
 }
 
 test('/timeline draws one row per event, oldest first, glyphs in their tone', async ($, on) => {
@@ -45,7 +48,7 @@ test('/timeline draws one row per event, oldest first, glyphs in their tone', as
     const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-timeline', viewport: VIEW, props: PANE })
     expect(await pane.find({ type: 'Text', text: 'Timeline' })).toBeDefined()
     // The chips, "all" chosen.
-    for (const key of ['kind-all', 'kind-findings', 'kind-status', 'kind-beacon', 'kind-people']) expect(await pane.find({ type: 'Button', key })).toBeDefined()
+    for (const key of ['kind-all', 'kind-findings', 'kind-status', 'kind-beacon', 'kind-people', 'kind-other']) expect(await pane.find({ type: 'Button', key })).toBeDefined()
     expect((await pane.find({ type: 'Button', key: 'kind-all' }))?.text).toBe('● all')
     // Rows sorted by seq, each a Button.
     const rows = (await pane.findAll({ type: 'Button' })).filter((b) => /^ev-/.test(String(b.key)))
@@ -157,4 +160,19 @@ test('the timeline draws on vscode and mobile too', async ($, on) => {
     expect(await pane.find({ type: 'Button', key: 'ev-201' })).toBeDefined()
     await pane.unmount()
   }
+})
+
+test('the other chip asks the CLI for the rows no other chip covers', async ($, on) => {
+  const runs: Array<readonly string[]> = []
+  on('process.run', ($, e) => {
+    runs.push(e.argv)
+    return ran(JSON.stringify(answer(e.argv)) + '\n')
+  })
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('command.register', () => ({ value: undefined }))
+  await $.command.run({ command: 'timeline', args: '' })
+  const pane = await $.ui.mount({ plugin: 'landfall', surface: 'terminal', component: 'Pane', requestId: 'landfall-timeline', viewport: VIEW, props: PANE })
+  await pane.press({ key: 'kind-other' })
+  expect(runs.at(-1)).toEqual(['landfall', 'timeline', '--host', 'claude-code', '--limit', '50', '--kind', 'other'])
+  expect(await pane.find({ type: 'Text', text: 'Nothing of this kind yet.' })).toBeDefined()
 })

@@ -159,8 +159,10 @@ export function kit(els, e) {
       return Text({ key, children: [series.map((v) => String.fromCodePoint(BLOCKS[hi === lo ? 0 : Math.round(((v - lo) / (hi - lo)) * 7)])).join('')] })
     },
 
-    // heat draws a grid of tones (rows of tone names or null for quiet):
-    // full blocks on the terminal, rounded squares elsewhere.
+    // heat draws a grid of tones (rows of tone names, null for quiet, or
+    // 'none' for a cell with no data): full blocks on the terminal, rounded
+    // squares elsewhere. A no-data cell is a dim dot on the terminal and an
+    // outlined, unfilled square elsewhere, so it never reads as quiet.
     heat(grid, opts = {}) {
       const key = opts.key || 'heat'
       if (!grid || grid.length === 0) return null
@@ -170,7 +172,8 @@ export function kit(els, e) {
         let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + cols * (cell + 2) + ' ' + grid.length * (cell + 2) + '">'
         grid.forEach((r, y) =>
           r.forEach((t, x) => {
-            s += '<rect x="' + x * (cell + 2) + '" y="' + y * (cell + 2) + '" width="' + cell + '" height="' + cell + '" rx="2" fill="' + (t ? TONE[t] : '#e4e4e2') + '"><title>' + (opts.titleFor ? esc(opts.titleFor(y, x)) : '') + '</title></rect>'
+            const paint = t === 'none' ? 'fill="none" stroke="#b4b4b0" stroke-dasharray="2 2"' : 'fill="' + (t ? TONE[t] || TONE.neutral : '#e4e4e2') + '"'
+            s += '<rect x="' + x * (cell + 2) + '" y="' + y * (cell + 2) + '" width="' + cell + '" height="' + cell + '" rx="2" ' + paint + '><title>' + (opts.titleFor ? esc(opts.titleFor(y, x)) : '') + '</title></rect>'
           }),
         )
         s += '</svg>'
@@ -180,11 +183,12 @@ export function kit(els, e) {
       for (const r of grid) {
         for (let x = 0; x < cols; x++) {
           const t = r[x]
-          words.push(t ? 0x2588 : 0x25aa, t ? hexInt(TONE[t]) : hexInt('#5a5f73'), DEFAULT_BG)
+          if (t === 'none') words.push(0x00b7, hexInt('#5a5f73'), DEFAULT_BG)
+          else words.push(t ? 0x2588 : 0x25aa, t ? hexInt(TONE[t] || TONE.neutral) : hexInt('#5a5f73'), DEFAULT_BG)
         }
       }
       if (els.Raster) return els.Raster({ key, columns: cols, rows: grid.length, cells: cellsB64(words) })
-      return Text({ key, children: [grid.map((r) => r.map((t) => (t ? '█' : '▪')).join('')).join('\n')] })
+      return Text({ key, children: [grid.map((r) => r.map((t) => (t === 'none' ? '·' : t ? '█' : '▪')).join('')).join('\n')] })
     },
 
     // avatar is one person: a round initial in their own hue with a presence

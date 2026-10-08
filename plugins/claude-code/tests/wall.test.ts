@@ -1,7 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-// `landfall wall` as contracts/cli-json.md §5 prints it: every widget type,
-// data already resolved through the person's own session.
+// `landfall wall` as the Go CLI prints it (internal/cli/wall.go
+// flattenWidget, wall_test.go): every widget type, data already resolved
+// through the person's own session; points are [ms, v]; a widget with no data
+// yet is `empty: true`; an unavailable one names its type.
 const T0 = 1791472800000 // 2026-10-08T15:20:00Z
 const MIN = 60000
 const ERR = [0.2, 0.2, 0.3, 0.2, 0.3, 0.2, 0.2, 0.3, 0.9, 1.8, 3.4, 5.9, 6.1, 5.2, 4.4, 3.6, 3.1, 3.1, 3.0, 3.1]
@@ -15,18 +17,19 @@ const WALL = {
       type: 'chart',
       title: '5xx error rate',
       tone: 'critical',
-      series: [{ label: '5xxErrorRate', points: ERR.map((v, i) => [T0 + i * MIN, v]) }],
+      series: [{ label: '5xxErrorRate', points: ERR.map((v, i) => [T0 + i * MIN, v]), unit: '%' }],
       markers: [{ atMs: T0 + 9 * MIN, label: 'web-edge v2.3.1' }],
       threshold: 2,
+      unit: '%',
     },
-    { id: 'w2', type: 'stat', title: 'Healthy origins', tone: 'warning', value: '4', unit: '/6', spark: [6, 6, 6, 5, 4, 4] },
+    { id: 'w2', type: 'stat', title: 'Healthy origins', value: '4', unit: '/6', tone: 'warning', trend: 'down', baselineLabel: '6 an hour ago', delta: -2, spark: [6, 6, 6, 5, 4, 4] },
     {
       id: 'w3',
       type: 'logView',
       title: 'Logs · web-edge',
       lines: [
-        { level: 'error', text: 'upstream timeout pool=origin-b' },
-        { level: 'error', text: 'upstream timeout pool=origin-b' },
+        { level: 'error', text: 'upstream timeout pool=origin-b', at: '2026-10-08T15:30:02Z' },
+        { level: 'error', text: 'upstream timeout pool=origin-b', at: '2026-10-08T15:30:04Z' },
         { level: 'warn', text: 'retry budget 80% used' },
       ],
     },
@@ -35,14 +38,15 @@ const WALL = {
       type: 'graph',
       title: 'Topology',
       nodes: [
-        { id: 'cf', label: 'cloudfront', tone: 'warning' },
-        { id: 'alb', label: 'web-edge-alb', tone: 'warning' },
+        { id: 'cf', label: 'cloudfront', tone: 'warning', kind: 'cdn' },
+        { id: 'alb', label: 'web-edge-alb', tone: 'warning', trust: 'confirmed' },
         { id: 'c', label: 'us-east-1c', tone: 'critical' },
       ],
       edges: [
         { from: 'cf', to: 'alb', trust: 'confirmed' },
-        { from: 'alb', to: 'c', trust: 'established' },
+        { from: 'alb', to: 'c', trust: 'established', direction: 'both' },
       ],
+      focus: 'alb',
     },
     {
       id: 'w5',
@@ -62,8 +66,28 @@ const WALL = {
     },
     { id: 'w7', type: 'timeline', title: 'What happened', items: [{ at: '2026-10-08T15:31:00Z', label: 'Alarm 5xx over 2%', tone: 'critical' }] },
     { id: 'w8', type: 'heatmapOfTheFuture', title: 'Mystery widget' },
+    {
+      id: 'w10',
+      type: 'geo',
+      title: '5xx by region',
+      points: [
+        { place: 'us-east-1', label: 'N. Virginia', value: 34, unit: '%', tone: 'critical' },
+        { place: 'eu-west-1', value: 0.4, unit: '%' },
+      ],
+    },
+    {
+      id: 'w11',
+      type: 'codeFinding',
+      title: 'Pool size',
+      repo: 'acme/web-edge',
+      path: 'src/pool.ts',
+      permalink: 'https://github.com/acme/web-edge/blob/abc123/src/pool.ts#L41-L43',
+      startLine: 41,
+      lines: ['export const POOL = {', '  max: 16,', '}'],
+    },
+    { id: 'w12', type: 'chart', title: 'p99 latency', empty: true },
   ],
-  unavailable: [{ id: 'w9', title: 'RDS replica lag', reason: 'needs a connection you cannot read' }],
+  unavailable: [{ id: 'w9', type: 'chart', title: 'RDS replica lag', reason: 'needs a connection you cannot read' }],
 }
 
 const ROOM = { roomKey: 'k168', incidentId: 'i168', displayId: 'Landfall 168', title: 'cloudfront-5xx-high', slug: 'acme', connection: 'live', count: 0, addressed: 0, votesAwaited: 0, digest: [] }
@@ -96,12 +120,26 @@ test('/wall draws every widget type in the shared arrangement, on each surface',
     const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
     expect(await pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeDefined()
     // Every widget is a title the person can select.
-    for (const title of ['5xx error rate', 'Healthy origins', 'Logs · web-edge', 'Topology', 'Target groups', 'Deploys', 'What happened', 'Mystery widget']) {
+    for (const title of ['5xx error rate', 'Healthy origins', 'Logs · web-edge', 'Topology', 'Target groups', 'Deploys', 'What happened', 'Mystery widget', '5xx by region', 'Pool size', 'p99 latency']) {
       expect(await pane.find({ type: 'Button', text: new RegExp(title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$') })).toBeDefined()
     }
     // stat: the big value and its unit.
     expect(await pane.find({ type: 'Text', text: '4' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: '/6' })).toBeDefined()
+    // ...its change, as the web app words it, in the stat's tone, and its baseline.
+    expect((await pane.find({ type: 'Text', text: '● ↓ 2' }))?.props.color).toBe('#fab219')
+    expect(await pane.find({ type: 'Text', text: '6 an hour ago' })).toBeDefined()
+    // geo: each place in its tone, with its value.
+    expect(await pane.find({ type: 'Text', text: 'us-east-1 · N. Virginia' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '34%' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'eu-west-1' })).toBeDefined()
+    // codeFinding: where, then the snippet with its line numbers, and the link.
+    expect(await pane.find({ type: 'Text', text: 'acme/web-edge · src/pool.ts' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '42' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: '  max: 16,' })).toBeDefined()
+    expect(await pane.find({ type: 'Link' })).toBeDefined()
+    // A widget with no data yet says so.
+    expect(await pane.find({ type: 'Text', text: 'No data in this window yet.' })).toBeDefined()
     // logView: level-colored tags.
     const errs = await pane.findAll({ type: 'Text', text: 'ERR' })
     expect(errs).toHaveLength(2)
@@ -126,7 +164,8 @@ test('/wall draws every widget type in the shared arrangement, on each surface',
       // graph: an indented tree with trust words.
       expect(await pane.find({ type: 'Text', text: 'cloudfront' })).toBeDefined()
       expect(await pane.find({ type: 'Text', text: 'confirmed' })).toBeDefined()
-      expect(await pane.find({ type: 'Text', text: 'established' })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: 'established, both ways' })).toBeDefined()
+      expect(await pane.find({ type: 'Text', text: 'cloudfront (cdn)' })).toBeDefined()
       expect(await pane.findAll({ type: 'Svg' })).toHaveLength(0)
     } else {
       // chart: a vector line with the threshold and the deploy marker.
@@ -140,6 +179,8 @@ test('/wall draws every widget type in the shared arrangement, on each surface',
       const graph = svgs.find((x) => String(x.props.alt).startsWith('Topology:'))
       expect(graph?.props.source).toContain('stroke-dasharray="6 3"')
       expect(graph?.props.source).toContain('#d03b3b')
+      expect(graph?.props.source).toContain('<title>cloudfront (cdn) · warning</title>')
+      expect(graph?.props.source).toContain('<title>web-edge-alb to us-east-1c: established, both ways</title>')
       // Two columns when the pane is wide enough.
       expect(await pane.find({ type: 'Box', key: 'wall-grid' })).toBeDefined()
       expect(await pane.findAll({ type: 'Raster' })).toHaveLength(0)
@@ -264,9 +305,12 @@ test('/wall answers in text where no pane can be placed, and says why when the w
 
   const answer = await $.command.run({ command: 'wall', args: '' })
   expect(answer.text).toContain('Wall · shared by carol · last 6h')
-  expect(answer.text).toContain('Healthy origins\n  4/6')
+  expect(answer.text).toContain('Healthy origins\n  4/6 ↓ 2\n  6 an hour ago')
+  expect(answer.text).toContain('5xx by region\n  us-east-1 · N. Virginia 34% (critical)\n  eu-west-1 0.4%')
+  expect(answer.text).toContain('Pool size\n  acme/web-edge · src/pool.ts\n  41  export const POOL = {\n  42    max: 16,\n  43  }\n  https://github.com/acme/web-edge/blob/abc123/src/pool.ts#L41-L43')
+  expect(answer.text).toContain('p99 latency\n  No data in this window yet.')
   expect(answer.text).toContain('  5xxErrorRate: last 3.1, peak 6.1\n  marker: web-edge v2.3.1 at 15:29Z\n  threshold 2')
-  expect(answer.text).toContain('Topology\n  cloudfront  warning\n  └─ web-edge-alb  confirmed  warning\n     └─ us-east-1c  established  critical')
+  expect(answer.text).toContain('Topology\n  cloudfront (cdn)  warning\n  └─ web-edge-alb  confirmed  warning\n     └─ us-east-1c  established, both ways  critical')
   expect(answer.text).toContain('  ERR upstream timeout pool=origin-b')
   expect(answer.text).toContain('Not shown here:\n  RDS replica lag: needs a connection you cannot read')
 
@@ -301,4 +345,27 @@ test('the wall draws on vscode and mobile too, as vectors', async ($, on) => {
     expect(await pane.find({ type: 'Box', key: 'wall-grid' })).toBeUndefined()
     await pane.unmount()
   }
+})
+
+test('a wall with more widgets than one read says how many there are', async ($, on) => {
+  // The CLI reads at most 40 widgets (wallWidgetsMax) and names the total.
+  const many = {
+    ok: true,
+    widgets: Array.from({ length: 39 }, (_, i) => ({ id: 's' + i, type: 'stat', title: 'Stat ' + i, value: String(i) })),
+    unavailable: [{ id: 'u1', type: 'chart', title: 'Replica lag', reason: 'Sign in to read this widget as yourself: run landfall login.' }],
+    totalWidgets: 46,
+  }
+  let placed = true
+  on('process.run', () => ran(JSON.stringify(many) + '\n'))
+  on('ui.open', () => ({ value: placed ? { isPlaced: true } : { isPlaced: false, reason: 'headless' } }))
+  on('command.register', () => ({ value: undefined }))
+  await $.command.run({ command: 'wall', args: '' })
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ plugin: 'landfall', surface, component: 'Pane', requestId: 'landfall-wall', viewport: VIEW, props: PANE })
+    expect(await pane.find({ type: 'Text', text: 'Showing 40 of 46 widgets. Open the war room in the browser for the rest.' })).toBeDefined()
+    await pane.unmount()
+  }
+  placed = false
+  const answer = await $.command.run({ command: 'wall', args: '' })
+  expect(answer.text).toContain('Not shown here:\n  Replica lag: Sign in to read this widget as yourself: run landfall login.\n\nShowing 40 of 46 widgets.')
 })

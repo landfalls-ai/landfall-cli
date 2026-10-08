@@ -1,17 +1,34 @@
 import { expect, test } from 'claude-code/testing'
 
-// `landfall incidents` as the contract (cli-json.md §3, review #6) has it:
-// here/hereCount/beacon only for the rooms this session is in.
+// `landfall incidents` as the Go CLI prints it (internal/cli/incidents.go):
+// severity and status lowercased, openedAt and slug on every row,
+// here/hereCount/beacon only for the rooms this checkout is in, `practice`
+// on a simulated incident, `truncated` when the list was cut.
+const row = (id: string, title: string, severity: string, status: string, openedAt: string, ageMs: number, extra: Record<string, unknown> = {}) => ({
+  incidentId: id,
+  displayId: id.slice(1),
+  title,
+  slug: 'acme',
+  severity,
+  status,
+  openedAt,
+  joined: false,
+  roomKey: '',
+  webUrl: 'https://app.landfalls.ai/o/acme/incidents/' + id,
+  ageMs,
+  ...extra,
+})
 const LIST = {
   ok: true,
   org: 'acme',
   incidents: [
-    { incidentId: 'i165', displayId: '165', title: 'cdn-cert-renewal', severity: 'sev4', status: 'mitigated', ageMs: 7200000, joined: false, roomKey: '', webUrl: 'https://app.landfalls.ai/o/acme/incidents/i165' },
-    { incidentId: 'i171', displayId: '171', title: 'checkout-latency-p99', severity: 'sev3', status: 'identified', ageMs: 1080000, joined: false, roomKey: '', webUrl: 'https://app.landfalls.ai/o/acme/incidents/i171' },
-    { incidentId: 'i172', displayId: '172', title: 'orders-db-replica-lag', severity: 'sev1', status: 'open', ageMs: 180000, joined: false, roomKey: '', webUrl: 'https://app.landfalls.ai/o/acme/incidents/i172' },
-    { incidentId: 'i168', displayId: '168', title: 'cloudfront-5xx-high', severity: 'sev2', status: 'investigating', ageMs: 2520000, joined: true, roomKey: 'k1', here: ['carol', 'bob', 'alice', 'you'], hereCount: 4, beacon: 'running', webUrl: 'https://app.landfalls.ai/o/acme/incidents/i168' },
+    row('i165', 'cdn-cert-renewal', 'sev4', 'mitigated', '2026-10-08T14:20:00Z', 7200000),
+    row('i171', 'checkout-latency-p99', 'sev3', 'identified', '2026-10-08T16:02:00Z', 1080000),
+    row('i172', 'orders-db-replica-lag', 'sev1', 'open', '2026-10-08T16:17:00Z', 180000),
+    row('i168', 'cloudfront-5xx-high', 'sev2', 'investigating', '2026-10-08T15:38:00Z', 2520000, { joined: true, roomKey: 'k1', here: ['carol', 'bob', 'alice', 'you'], hereCount: 4, beacon: 'running' }),
   ],
 }
+const JOINED = { ok: true, roomKey: 'k2', incidentId: 'i172', displayId: '172', title: 'orders-db-replica-lag', link: 'https://app.landfalls.ai/j/abc123' }
 
 const PANE = {
   plugin: 'landfall',
@@ -64,7 +81,7 @@ function world(on: any, answers: Record<string, unknown>, placed = true) {
 
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`/incidents lists the rooms you are in first, then the unjoined SEV1, and Enter joins through the CLI (${surface})`, async ($, on) => {
-    const w = world(on, { incidents: LIST, join: { ok: true, roomKey: 'k2', displayId: '172', title: 'orders-db-replica-lag' } })
+    const w = world(on, { incidents: LIST, join: JOINED })
     await $.command.run({ command: 'incidents', args: '' })
     expect(w.opened).toEqual(['landfall-incidents'])
     expect(w.runs[0]).toEqual(['landfall', 'incidents', '--host', 'claude-code'])
@@ -142,4 +159,42 @@ test('a failed join says why', async ($, on) => {
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
   await pane.press({ key: 'inc-i172' })
   expect(w.toasts).toEqual(['Not joined: Sign in to join: run landfall login.'])
+})
+
+const PRACTICE_LIST = {
+  ok: true,
+  org: 'acme',
+  truncated: true,
+  incidents: [row('i180', 'cascade-demo', 'sev2', 'open', '2026-10-08T16:18:00Z', 120000, { practice: true })],
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`/incidents marks a practice incident and says when the list was cut (${surface})`, async ($, on) => {
+    world(on, { incidents: PRACTICE_LIST })
+    await $.command.run({ command: 'incidents', args: '' })
+    const pane = await $.ui.mount({ ...PANE, surface } as never)
+    const mark = await pane.find({ type: 'Text', text: surface === 'terminal' ? 'practice' : '● practice' })
+    expect(mark?.props.color).toBe('#8a5cd6')
+    expect(await pane.find({ type: 'Text', text: 'Your organization has more incidents than this list shows. Open the web app to see the rest.' })).toBeDefined()
+  })
+}
+
+test('/incidents in text marks practice and the cut list', async ($, on) => {
+  world(on, { incidents: PRACTICE_LIST }, false)
+  const answer = await $.command.run({ command: 'incidents', args: '' })
+  expect(answer.text).toBe(
+    ['Open incidents · acme', '  180 cascade-demo · SEV2 · open · practice · 2m · not joined', 'Your organization has more incidents than this list shows. Open the web app to see the rest.'].join('\n'),
+  )
+})
+
+test('after a join the row reads as joined and Enter opens the room', async ($, on) => {
+  const w = world(on, { incidents: LIST, join: JOINED })
+  await $.command.run({ command: 'incidents', args: '' })
+  const pane = await $.ui.mount({ ...PANE, surface: 'desktop' } as never)
+  await pane.press({ key: 'inc-i172' })
+  expect(w.toasts).toEqual(['Joined 172 orders-db-replica-lag. Room news reaches this session from now on.'])
+  expect((await pane.find({ key: 'inc-i172' }))?.props.label).toBe('Open the room')
+  await pane.press({ key: 'inc-i172' })
+  expect(w.opened).toEqual(['landfall-incidents', 'landfall-room'])
+  expect(w.runs.filter((r) => r[1] === 'join')).toHaveLength(1)
 })

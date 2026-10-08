@@ -7,6 +7,14 @@
 // desktop, cell graphics on the terminal), reads the wall again on `r`, and
 // again on its own when the room moves on, at most every 20 seconds while the
 // pane is open. `a` drafts a question about the selected widget; it never sends.
+//
+// The shapes are the Go CLI's own (internal/cli/wall.go flattenWidget): a
+// widget with no data yet carries `empty: true`; a stat may carry trend,
+// delta, deltaLabel and baselineLabel (drawn as the web app's StatBody does);
+// a graph's nodes may carry kind and its edges direction; geo carries points
+// by place and codeFinding a repo, path, permalink and snippet lines. When
+// the wall holds more widgets than the CLI reads at once, `totalWidgets` says
+// how many there are and the pane says so.
 
 import { HOST, addCommand, currentRoom, parseAnswer, room, roomName } from '../core.js'
 import { kit } from '../kit.js'
@@ -93,8 +101,10 @@ export function install(on) {
       const gone = a.unavailable || []
       if (gone.length > 0) {
         rows.push(k.text('Not shown here', { key: 'un-h', bold: true }))
-        gone.forEach((u, i) => rows.push(k.text(clipText((u.title || u.id) + ': ' + (u.reason || 'not available'), k.width), { key: 'un-' + i, dimColor: true })))
+        gone.forEach((u, i) => rows.push(k.text((u.title || u.type || u.id) + ': ' + (u.reason || 'not available'), { key: 'un-' + i, dimColor: true })))
       }
+      const more = moreWords(a)
+      if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
     }
     const sel = selectedWidget()
     rows.push(
@@ -223,11 +233,52 @@ function card($, k, w, i, two) {
 // title alone.
 export function widgetBody(k, w, key, px, cells) {
   const { Text } = k.els
+  if (w.empty) return [k.text(EMPTY, { key: key + '-empty', dimColor: true })]
   switch (w.type) {
     case 'stat': {
-      const value = Text({ key: key + '-v', bold: true, color: toneColor(w.tone || 'neutral'), children: [String(w.value ?? '')] })
+      const value = Text({ key: key + '-v', bold: true, color: toneColor(w.tone || 'neutral'), children: [String(w.value ?? 'no value')] })
       const unit = w.unit ? Text({ key: key + '-u', dimColor: true, children: [String(w.unit)] }) : null
-      return [k.row([value, unit], key + '-vr', 0), k.spark(w.spark, { key: key + '-s', tone: w.tone && w.tone !== 'neutral' ? w.tone : 'info', width: Math.min(40, cells), px, height: 34, label: (w.title || 'stat') + ' trend' })]
+      const delta = deltaText(w)
+      const out = [k.row([k.row([value, unit], key + '-vu', 0), delta ? k.pill(delta, deltaTone(w), key + '-d') : null], key + '-vr', 2)]
+      if (w.baselineLabel) out.push(k.text(String(w.baselineLabel), { key: key + '-b', dimColor: true }))
+      out.push(k.spark(w.spark, { key: key + '-s', tone: w.tone && w.tone !== 'neutral' ? w.tone : 'info', width: Math.min(40, cells), px, height: 34, label: (w.title || 'stat') + ' trend' }))
+      return out
+    }
+    case 'geo': {
+      const pts = w.points || []
+      if (pts.length === 0) return [k.text('No places in this window.', { key: key + '-none', dimColor: true })]
+      const out = pts.slice(0, 8).map((p, i) =>
+        k.row(
+          [
+            Text({ key: 'gd', color: toneColor(p.tone || 'neutral'), children: ['●'] }),
+            Text({ key: 'gp', children: [clipText(geoName(p), Math.max(10, cells - 16))] }),
+            typeof p.value === 'number' ? Text({ key: 'gv', bold: true, children: [withUnit(p.value, p.unit)] }) : null,
+          ],
+          key + '-g' + i,
+          1,
+        ),
+      )
+      if (pts.length > 8) out.push(k.text(pts.length - 8 + ' more places', { key: key + '-gmore', dimColor: true }))
+      return out
+    }
+    case 'codeFinding': {
+      const where = [w.repo, w.path].filter(Boolean).join(' · ')
+      const out = [k.text(clipText(where || 'code', cells), { key: key + '-cf', bold: true })]
+      const lines = (w.lines || []).slice(0, 8)
+      const start = typeof w.startLine === 'number' ? w.startLine : 1
+      const numW = String(start + Math.max(0, lines.length - 1)).length
+      lines.forEach((l, i) => {
+        out.push(
+          k.row(
+            [Text({ key: 'ln', dimColor: true, children: [String(start + i).padStart(numW)] }), Text({ key: 'lc', children: [clipText(String(l), Math.max(10, cells - numW - 2))] })],
+            key + '-c' + i,
+            1,
+          ),
+        )
+      })
+      if ((w.lines || []).length > 8) out.push(k.text((w.lines.length - 8) + ' more lines', { key: key + '-cmore', dimColor: true }))
+      if (w.permalink && k.els.Link) out.push(k.els.Link({ key: key + '-link', href: w.permalink, label: 'open on GitHub' }))
+      return out
     }
     case 'chart': {
       const series = (w.series || []).filter((s) => values(s).length > 0)
@@ -306,6 +357,49 @@ export function widgetBody(k, w, key, px, cells) {
   }
 }
 
+export const EMPTY = 'No data in this window yet.'
+
+// deltaText is the stat's change pill, as the web app's StatBody words it:
+// the CLI's deltaLabel verbatim, else an arrow by trend and the size.
+export function deltaText(w) {
+  if (w.deltaLabel) return String(w.deltaLabel)
+  if (typeof w.delta !== 'number') return ''
+  const trend = w.trend || (w.delta > 0 ? 'up' : w.delta < 0 ? 'down' : 'flat')
+  const arrow = trend === 'up' ? '↑ ' : trend === 'down' ? '↓ ' : ''
+  return arrow + fmt(Math.abs(w.delta))
+}
+
+// deltaTone follows StatBody: a toned stat colors its change; a neutral one
+// reads up as bad and down as a warning.
+export function deltaTone(w) {
+  const tone = w.tone || 'neutral'
+  if (tone === 'neutral') {
+    const trend = w.trend || (typeof w.delta === 'number' ? (w.delta > 0 ? 'up' : w.delta < 0 ? 'down' : 'flat') : '')
+    return trend === 'up' ? 'critical' : trend === 'down' ? 'warning' : 'neutral'
+  }
+  if (tone === 'good') return 'good'
+  if (tone === 'warning' || tone === 'serious') return 'warning'
+  return 'critical'
+}
+
+// withUnit is a value and its unit: "34%", "120 ms".
+function withUnit(v, unit) {
+  if (!unit) return fmt(v)
+  return fmt(v) + (unit === '%' ? '' : ' ') + unit
+}
+
+// geoName is a place as a person reads it: "us-east-1 · N. Virginia".
+function geoName(p) {
+  return p.label && p.label !== p.place ? p.place + ' · ' + p.label : String(p.place || p.label || '?')
+}
+
+// moreWords says the wall holds more widgets than were read.
+export function moreWords(a) {
+  const shown = (a.widgets || []).length + (a.unavailable || []).length
+  if (!a.totalWidgets || a.totalWidgets <= shown) return ''
+  return 'Showing ' + shown + ' of ' + a.totalWidgets + ' widgets. Open the war room in the browser for the rest.'
+}
+
 function caption(k, w, key) {
   const parts = (w.markers || []).map((m) => m.label + ' at ' + hhmm(m.atMs) + 'Z')
   if (typeof w.threshold === 'number') parts.push('threshold ' + fmt(w.threshold))
@@ -345,15 +439,30 @@ export function wallText(a, r) {
   if (gone.length > 0) {
     out.push('')
     out.push('Not shown here:')
-    for (const u of gone) out.push('  ' + (u.title || u.id) + ': ' + (u.reason || 'not available'))
+    for (const u of gone) out.push('  ' + (u.title || u.type || u.id) + ': ' + (u.reason || 'not available'))
+  }
+  const more = moreWords(a)
+  if (more) {
+    out.push('')
+    out.push(more)
   }
   return out.join('\n')
 }
 
 function widgetLines(w) {
+  if (w.empty) return [EMPTY]
   switch (w.type) {
-    case 'stat':
-      return [String(w.value ?? '') + (w.unit || '')]
+    case 'stat': {
+      const out = [[String(w.value ?? 'no value') + (w.unit || ''), deltaText(w)].filter(Boolean).join(' ')]
+      if (w.baselineLabel) out.push(String(w.baselineLabel))
+      return out
+    }
+    case 'geo':
+      return (w.points || []).slice(0, 8).map((p) => geoName(p) + (typeof p.value === 'number' ? ' ' + withUnit(p.value, p.unit) : '') + (p.tone && p.tone !== 'neutral' ? ' (' + p.tone + ')' : ''))
+    case 'codeFinding': {
+      const start = typeof w.startLine === 'number' ? w.startLine : 1
+      return [[w.repo, w.path].filter(Boolean).join(' · '), ...(w.lines || []).slice(0, 8).map((l, i) => String(start + i) + '  ' + l), ...(w.permalink ? [w.permalink] : [])]
+    }
     case 'chart': {
       const out = []
       for (const s of w.series || []) {

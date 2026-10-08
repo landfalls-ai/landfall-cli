@@ -76,3 +76,32 @@ test('/lines answers in text where no pane can be drawn', async ($, on) => {
   const answer = await $.command.run({ command: 'lines', args: '' })
   expect(answer.text).toBe('Lines of investigation\n  eu-west-1 5xx · dave · 1m\n  origin pool · you · 4m')
 })
+
+// `landfall lines claim` when the line is someone else's (internal/cli/lines.go):
+// ok:false with the holder, the claim and the line key beside the sentence.
+const HELD = { ok: false, error: 'dave already holds this line. Help them, or claim another.', heldBy: 'dave', claimId: 'c1', lineKey: 'eu-west-1-5xx' }
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a line someone else holds says who has it (${surface})`, async ($, on) => {
+    const w = await startWith($, on, { rooms: [ROOM], answers: { 'lines claim': HELD } })
+    await $.command.run({ command: 'lines', args: '' })
+    const p = await $.ui.mount({ ...PANE, surface } as never)
+    await p.press({ key: 'claim' })
+    await p.input({ key: 'claim-label', text: 'eu-west-1 5xx' })
+    expect(w.toasts).toEqual(['dave already holds this line. Help them, or claim another.'])
+  })
+
+  test(`releasing a line that was already released says so (${surface})`, async ($, on) => {
+    const w = await startWith($, on, { rooms: [ROOM], answers: { 'lines release': { ok: true, note: 'That line was already released.' } } })
+    await $.command.run({ command: 'lines', args: '' })
+    const p = await $.ui.mount({ ...PANE, surface } as never)
+    await p.press({ key: 'release-c2' })
+    expect(w.toasts).toEqual(['That line was already released.'])
+  })
+}
+
+test('/lines with text answers who holds a line someone else has', async ($, on) => {
+  await startWith($, on, { rooms: [ROOM], answers: { 'lines claim': HELD } })
+  const answer = await $.command.run({ command: 'lines', args: 'eu-west-1 5xx' })
+  expect(answer.text).toBe('dave already holds this line. Help them, or claim another.')
+})

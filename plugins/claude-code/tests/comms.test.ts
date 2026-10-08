@@ -3,11 +3,14 @@ import { baseRoom, pane, startWith } from './_room'
 
 const ROOM = baseRoom({})
 const PANE = pane('landfall-comms')
+// `landfall comms` as the Go CLI prints it (internal/cli/comms.go): newest
+// first, {id, state, channel, kind, text, approvedBy?, simulated?}, no time.
 const COMMS = {
   ok: true,
   messages: [
-    { id: 'm1', state: 'sent', channel: 'slack', approvedBy: 'carol', at: '2026-10-08T15:58:00Z', text: 'We are investigating elevated errors on the storefront.' },
-    { id: 'm2', state: 'draft', channel: 'statuspage', at: '2026-10-08T16:20:00Z', text: 'A fix is rolling out; error rates are falling.' },
+    { id: 'm3', state: 'sent', channel: 'slack', kind: 'milestone', text: 'Practice run: mitigation in progress.', approvedBy: 'dana', simulated: true },
+    { id: 'm2', state: 'draft', channel: 'statuspage', kind: 'status-update', text: 'A fix is rolling out; error rates are falling.' },
+    { id: 'm1', state: 'sent', channel: 'slack', kind: 'status-update', text: 'We are investigating elevated errors on the storefront.', approvedBy: 'carol' },
   ],
 }
 
@@ -18,7 +21,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(w.runs[0]).toEqual(['landfall', 'comms', '--room', 'k1', '--host', 'claude-code'])
     const p = await $.ui.mount({ ...PANE, surface } as never)
     expect(await p.find({ type: 'Text', text: '● sent' })).toBeDefined()
-    expect(await p.find({ type: 'Text', text: 'slack · approved by carol · 15:58Z' })).toBeDefined()
+    expect(await p.find({ type: 'Text', text: 'status update · slack · approved by carol' })).toBeDefined()
+    expect(await p.find({ type: 'Text', text: 'status update · statuspage' })).toBeDefined()
+    // A simulated update says so; only one does.
+    expect((await p.findAll({ type: 'Text', text: '● simulated' })).length).toBe(1)
+    expect(await p.find({ type: 'Text', text: /\d\d:\d\dZ/ })).toBeUndefined()
     expect(await p.find({ type: 'Text', text: '● draft' })).toBeDefined()
     expect(await p.find({ type: 'Text', text: 'A fix is rolling out; error rates are falling.' })).toBeDefined()
     expect(await p.find({ type: 'Text', text: 'Approving an update happens in the war room, in the browser.' })).toBeDefined()
@@ -37,14 +44,16 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('/comms answers in text, newest first, where no pane can be drawn', async ($, on) => {
+test('/comms answers in text, in the CLI\'s order (newest first), where no pane can be drawn', async ($, on) => {
   await startWith($, on, { rooms: [ROOM], answers: { comms: COMMS }, placed: false })
   const answer = await $.command.run({ command: 'comms', args: '' })
   expect(answer.text).toBe(
     [
-      'draft · statuspage · 16:20Z',
+      'sent · simulated · milestone · slack · approved by dana',
+      '  Practice run: mitigation in progress.',
+      'draft · status update · statuspage',
       '  A fix is rolling out; error rates are falling.',
-      'sent · slack · approved by carol · 15:58Z',
+      'sent · status update · slack · approved by carol',
       '  We are investigating elevated errors on the storefront.',
       'Approving an update happens in the war room, in the browser.',
     ].join('\n'),

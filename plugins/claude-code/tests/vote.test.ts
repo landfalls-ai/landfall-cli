@@ -170,6 +170,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await band.find({ type: 'Text', text: 'positions 0 · needs 2 more' })).toBeDefined()
   })
 
+  test(`${surface}: a guest's recorded vote carries the CLI's note in its toast`, async ($, on) => {
+    // internal/cli/vote.go: a guest's position counts as a person's, not a member's, and the answer says so.
+    const note = "You joined as a guest, so your vote counts as a person's but not as a member's."
+    const w = await startWith($, on, snapshot([vote()]), { answer: JSON.stringify({ ok: true, claimSeq: 212, position: 'corroborate', admitted: false, note }) })
+    const band = await $.ui.mount({ ...BAND, surface } as never)
+    await band.press({ key: 'vote-corroborate' })
+    expect(w.toasts.at(-1)).toBe('Corroborated #212. ' + note)
+  })
+
   test(`${surface}: a second press while the first vote runs records nothing more`, async ($, on) => {
     const w = await startWith($, on, snapshot([vote()]))
     const band = await $.ui.mount({ ...BAND, surface } as never)

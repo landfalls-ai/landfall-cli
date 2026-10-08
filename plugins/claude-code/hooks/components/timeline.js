@@ -19,19 +19,21 @@ export const KINDS = [
   { kind: 'status', label: 'status', hotkey: 's' },
   { kind: 'beacon', label: 'Beacon', hotkey: 'b' },
   { kind: 'people', label: 'people', hotkey: 'p' },
+  { kind: 'other', label: 'other', hotkey: 'o' },
 ]
 
 const tl = {
   kind: 'all',
   events: [],
   hasMore: false,
+  oldestSeq: null, // the CLI's oldestSeq: where `m` reads back from
   error: '',
   loading: false,
   loaded: false,
 }
 
 export function install(on) {
-  addCommand({ name: 'timeline', description: "Show the war room's timeline", argumentHint: '[findings|status|beacon|people]' })
+  addCommand({ name: 'timeline', description: "Show the war room's timeline", argumentHint: '[findings|status|beacon|people|other]' })
 
   on('command.run', { command: 'timeline' }, async ($, e) => {
     const asked = String(e.args || '').trim().toLowerCase()
@@ -104,7 +106,7 @@ async function loadTimeline($, more) {
   tl.loading = true
   $.ui.invalidate('ui.render')
   const kind = tl.kind
-  const before = more && tl.events.length > 0 ? tl.events[0].seq : undefined
+  const before = more ? (tl.oldestSeq ?? (tl.events.length > 0 ? tl.events[0].seq : undefined)) : undefined
   let answer
   try {
     answer = parseAnswer(await $.process.run([room.bin, ...timelineArgs(currentRoom(), kind, before)], { timeoutMs: 30000 }))
@@ -127,6 +129,8 @@ async function loadTimeline($, more) {
       tl.events = [...page.filter((x) => !have.has(x.seq)), ...tl.events]
     } else tl.events = page
     tl.hasMore = !!answer.hasMore
+    if (typeof answer.oldestSeq === 'number' && (!more || tl.oldestSeq == null || answer.oldestSeq < tl.oldestSeq)) tl.oldestSeq = answer.oldestSeq
+    else if (!more) tl.oldestSeq = page.length > 0 ? page[0].seq : null
   }
   $.ui.invalidate('ui.render')
 }

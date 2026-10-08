@@ -211,6 +211,13 @@ export function fiveXxTone(pct) {
   return 'critical'
 }
 
+// pctCell is one minute of a target group's 5xx share as a heat cell:
+// 'none' when the minute had no requests (the CLI sends null), else its tone.
+export function pctCell(pct) {
+  if (pct == null) return 'none'
+  return fiveXxTone(pct)
+}
+
 // healthTone is a target's health state's tone.
 export function healthTone(state) {
   const s = String(state || '').toLowerCase()
@@ -249,7 +256,8 @@ export function healthyTone(healthy, total) {
   return 'warning'
 }
 
-// lastPct is a target's latest 5xx share.
+// lastPct is a target group's latest 5xx share (CloudWatch reports 5xx per
+// target group, never per target), skipping minutes with no requests.
 export function lastPct(t) {
   const v = (t.fiveXxPct || []).filter((x) => typeof x === 'number' && isFinite(x))
   return v.length ? v[v.length - 1] : null
@@ -335,13 +343,14 @@ export function graphSvg(nodes, edges) {
     if (!a || !b) continue
     const trust = String(e.trust || 'inferred')
     const dash = TRUST_DASH[trust] ?? TRUST_DASH.inferred
-    s += '<line x1="' + (a.x + nodeW) + '" y1="' + (a.y + nodeH / 2) + '" x2="' + b.x + '" y2="' + (b.y + nodeH / 2) + '" stroke="#8a8a8a" stroke-width="1.4"' + (dash ? ' stroke-dasharray="' + dash + '"' : '') + '><title>' + esc((byId[e.from]?.label || e.from) + ' to ' + (byId[e.to]?.label || e.to) + ': ' + trust) + '</title></line>'
+    const said = [trust, e.label || '', e.direction === 'both' ? 'both ways' : ''].filter(Boolean).join(', ')
+    s += '<line x1="' + (a.x + nodeW) + '" y1="' + (a.y + nodeH / 2) + '" x2="' + b.x + '" y2="' + (b.y + nodeH / 2) + '" stroke="#8a8a8a" stroke-width="1.4"' + (dash ? ' stroke-dasharray="' + dash + '"' : '') + '><title>' + esc((byId[e.from]?.label || e.from) + ' to ' + (byId[e.to]?.label || e.to) + ': ' + said) + '</title></line>'
   }
   for (const n of nodes || []) {
     const p = pos[n.id]
     if (!p) continue
     const toned = n.tone && n.tone !== 'neutral' && TONE[n.tone]
-    s += '<g><title>' + esc(n.label || n.id) + (n.tone ? ' · ' + esc(n.tone) : '') + '</title>'
+    s += '<g><title>' + esc(n.label || n.id) + (n.kind ? ' (' + esc(n.kind) + ')' : '') + (n.tone ? ' · ' + esc(n.tone) : '') + '</title>'
     s += '<rect x="' + p.x + '" y="' + p.y + '" width="' + nodeW + '" height="' + nodeH + '" rx="7" fill="' + (toned ? TONE[n.tone] : '#8a8a8a') + '" fill-opacity=".08" stroke="' + (toned ? TONE[n.tone] : '#8a8a8a') + '" stroke-width="' + (toned ? 2 : 1) + '"/>'
     s += '<text x="' + (p.x + nodeW / 2) + '" y="' + (p.y + nodeH / 2 + 4) + '" text-anchor="middle" font-size="11" font-family="ui-monospace,monospace" fill="currentColor">' + esc(clipText(n.label || n.id, 16)) + '</text></g>'
   }
@@ -378,11 +387,11 @@ export function graphTree(nodes, edges) {
     const n = byId[id]
     const again = seen.has(id)
     const branch = depth === 0 ? '' : prefix + (last ? '└─' : '├─')
-    lines.push({ id, depth, label: n.label || id, tone: n.tone || 'neutral', trust: trust || '', branch, again })
+    lines.push({ id, depth, label: (n.label || id) + (n.kind ? ' (' + n.kind + ')' : ''), tone: n.tone || 'neutral', trust: trust || '', branch, again })
     if (again) return
     seen.add(id)
     const kids = out[id]
-    kids.forEach((e, i) => walk(e.to, depth + 1, String(e.trust || 'inferred'), i === kids.length - 1, depth === 0 ? '' : prefix + (last ? '   ' : '│  ')))
+    kids.forEach((e, i) => walk(e.to, depth + 1, String(e.trust || 'inferred') + (e.direction === 'both' ? ', both ways' : ''), i === kids.length - 1, depth === 0 ? '' : prefix + (last ? '   ' : '│  ')))
   }
   for (const n of nodes || []) if (into[n.id] === 0) walk(n.id, 0, '', true, '')
   for (const n of nodes || []) if (!seen.has(n.id)) walk(n.id, 0, '', true, '')

@@ -2,12 +2,16 @@
 // organization's open incidents, the rooms this session is in first and the
 // SEV1s nobody here has joined next. Enter joins one the way a share link does
 // (`landfall join --incident`), `b` drafts a prompt asking for its brief, `o`
-// opens it in the browser. Every read and the join run the landfall CLI.
+// opens it in the browser. A practice incident (a simulated one) says so, and
+// a list the CLI had to cut says that too. Every read and the join run the
+// landfall CLI.
 
 import { HOST, addCommand, ago, clip, parseAnswer, room, severityTone, statusTone } from '../core.js'
 import { kit, TONE } from '../kit.js'
 
 export const PANE = 'landfall-incidents'
+export const PRACTICE = 'practice'
+export const TRUNCATED = 'Your organization has more incidents than this list shows. Open the web app to see the rest.'
 const ROOM_PANE = 'landfall-room'
 
 // What the pane draws: the last `landfall incidents` answer, whether one is
@@ -102,6 +106,7 @@ export function install(on) {
               }),
               sev ? Text({ key: 'sev-' + id, color: TONE[severityTone(inc.severity)], children: [sev] }) : null,
               inc.status ? Text({ key: 'st-' + id, children: [inc.status] }) : null,
+              inc.practice ? Text({ key: 'pr-' + id, color: TONE.violet, children: [PRACTICE] }) : null,
               Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
             ],
             'r-' + id,
@@ -120,6 +125,7 @@ export function install(on) {
           Text({ key: 't-' + id, bold: true, children: [incName(inc)] }),
           sev ? k.pill(sev, tone, 'sp-' + id) : null,
           inc.status ? k.pill(inc.status, statusTone(inc.status), 'stp-' + id) : null,
+          inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null,
           Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
         ],
         'h-' + id,
@@ -154,6 +160,8 @@ export function install(on) {
         }),
       )
     })
+
+    if (answer && answer.ok && answer.truncated) rows.push(Text({ key: 'inc-cut', dimColor: true, children: [TRUNCATED] }))
 
     const keys = []
     if (k.terminal && list.length > 0) {
@@ -250,8 +258,9 @@ export function incidentsText(answer) {
   if (list.length === 0) return 'No open incidents in ' + (answer.org || 'your organization') + '.'
   const out = ['Open incidents · ' + (answer.org || 'your organization')]
   for (const inc of list) {
-    const parts = [incName(inc), sevLabel(inc.severity), inc.status, ago(inc.ageMs)].filter(Boolean)
+    const parts = [incName(inc), sevLabel(inc.severity), inc.status, inc.practice ? PRACTICE : '', ago(inc.ageMs)].filter(Boolean)
     out.push('  ' + parts.join(' · ') + ' · ' + incidentNote(inc, false))
   }
+  if (answer.truncated) out.push(TRUNCATED)
   return out.join('\n')
 }

@@ -23,7 +23,7 @@ export function install(on) {
     if (label) {
       // `/lines eu-west-1 5xx` claims at once: the one way to claim where no field draws.
       const got = await cli($, ['lines', 'claim', '--room', r.roomKey, '--label', label])
-      return { text: got.ok ? 'You claimed the line ' + (got.label || label) + '. The room sees it.' : 'Line not claimed: ' + (got.error || 'no answer') }
+      return { text: claimWords(got, label) }
     }
     ui.claiming = false
     const opened = await $.ui.open({ id: PANE, title: 'Lines of investigation', focus: true, closeOnEscape: true })
@@ -44,12 +44,8 @@ export function install(on) {
       $.ui.invalidate('ui.render')
       const got = await cli($, ['lines', 'claim', '--room', r.roomKey, '--label', label])
       ui.busy = ''
-      if (got.ok) {
-        ui.claiming = false
-        await $.ui.toast('You claimed the line ' + (got.label || label) + '. The room sees it.', { timeoutMs: 6000 })
-      } else {
-        await $.ui.toast('Line not claimed: ' + clip(got.error || 'no answer', 200), { timeoutMs: 8000 })
-      }
+      if (got.ok) ui.claiming = false
+      await $.ui.toast(clip(claimWords(got, label), 220), { timeoutMs: got.ok ? 6000 : 8000 })
       $.ui.invalidate('ui.render')
     }
     const release = async (line) => {
@@ -58,7 +54,7 @@ export function install(on) {
       $.ui.invalidate('ui.render')
       const got = await cli($, ['lines', 'release', '--room', r.roomKey, '--claim', line.claimId])
       ui.busy = ''
-      if (got.ok) await $.ui.toast('You released the line ' + lineLabel(line) + '.', { timeoutMs: 6000 })
+      if (got.ok) await $.ui.toast(got.note ? String(got.note) : 'You released the line ' + lineLabel(line) + '.', { timeoutMs: 6000 })
       else await $.ui.toast('Line not released: ' + clip(got.error || 'no answer', 200), { timeoutMs: 8000 })
       $.ui.invalidate('ui.render')
     }
@@ -128,6 +124,15 @@ async function cli($, args) {
   } catch (err) {
     return { ok: false, error: clip(String(err), 200) }
   }
+}
+
+// claimWords is what a claim's answer says to the person. When someone else
+// already holds the line, the CLI's sentence names them and is said as it is
+// ("dave already holds this line. Help them, or claim another.").
+export function claimWords(got, label) {
+  if (got.ok) return 'You claimed the line ' + (got.label || label) + '. The room sees it.'
+  if (got.heldBy) return String(got.error || got.heldBy + ' already holds this line. Help them, or claim another.')
+  return 'Line not claimed: ' + (got.error || 'no answer')
 }
 
 // roomLines is the room's claimed lines from `landfall watch`.

@@ -1,6 +1,8 @@
 // Stakeholder update preview (proposal item 14, FR-14): /comms shows the
-// room's latest stakeholder updates, whether each was approved and sent, and
-// who approved it, so an engineer knows what customers were told. Read only:
+// room's latest stakeholder updates, newest first as the CLI lists them, what
+// kind each is, whether it was approved and sent, and who approved it, so an
+// engineer knows what customers were told. An update the room only simulated
+// says so. The server keeps no time per update, so none is shown. Read only:
 // approving an update is the one approval in the product and stays in the war
 // room in the browser, so this pane has no approve button.
 
@@ -31,7 +33,7 @@ export function install(on) {
     const { Box, Text } = k.els
     const r = currentRoom()
     const answer = view.answer
-    const messages = answer && answer.ok ? latestFirst(answer.messages || []).slice(0, SHOWN) : []
+    const messages = answer && answer.ok ? (answer.messages || []).slice(0, SHOWN) : []
 
     const rows = [k.header({ key: 'cm-hdr', title: 'Stakeholder updates', pills: [], dim: view.loading ? 'reading…' : r ? r.displayId || '' : '' })]
     if (!answer) rows.push(Text({ key: 'cm-wait', dimColor: true, children: ['Reading stakeholder updates…'] }))
@@ -41,7 +43,15 @@ export function install(on) {
     messages.forEach((m, i) => {
       const id = m.id || 'm' + i
       const meta = metaWords(m)
-      const head = k.row([k.pill(m.state || 'draft', commsTone(m.state), 'cs-' + id), meta ? Text({ key: 'cmeta-' + id, dimColor: true, children: [meta] }) : null], 'ch-' + id, 1)
+      const head = k.row(
+        [
+          k.pill(m.state || 'draft', commsTone(m.state), 'cs-' + id),
+          m.simulated ? k.pill('simulated', 'violet', 'csim-' + id) : null,
+          meta ? Text({ key: 'cmeta-' + id, dimColor: true, children: [meta] }) : null,
+        ],
+        'ch-' + id,
+        1,
+      )
       const body = Text({ key: 'ct-' + id, children: [String(m.text || '')] })
       if (k.terminal) {
         rows.push(head)
@@ -96,18 +106,18 @@ export function commsTone(state) {
   return { draft: 'neutral', approved: 'info', sent: 'good', failed: 'critical' }[state] || 'neutral'
 }
 
-// latestFirst orders updates newest first (RFC 3339 strings sort as times).
-export function latestFirst(messages) {
-  return [...messages].sort((a, b) => String(b.at || '').localeCompare(String(a.at || '')))
+// kindWords is an update's kind as a person says it: "status-update" -> "status update".
+export function kindWords(kind) {
+  return String(kind || '').replace(/[-_]+/g, ' ').trim()
 }
 
-// metaWords is the line beside the pill: "slack · approved by carol · 15:58Z".
+// metaWords is the line beside the pill: "status update · slack · approved by carol".
 export function metaWords(m) {
   const out = []
+  const kind = kindWords(m.kind)
+  if (kind) out.push(kind)
   if (m.channel) out.push(m.channel)
   if (m.approvedBy) out.push('approved by ' + m.approvedBy)
-  const t = /T(\d\d:\d\d)/.exec(String(m.at || ''))
-  if (t) out.push(t[1] + 'Z')
   return out.join(' · ')
 }
 
@@ -115,11 +125,11 @@ export function metaWords(m) {
 export function commsText(answer) {
   if (!answer) return 'The stakeholder updates did not answer.'
   if (!answer.ok) return String(answer.error || 'The stakeholder updates did not answer.')
-  const messages = latestFirst(answer.messages || []).slice(0, SHOWN)
+  const messages = (answer.messages || []).slice(0, SHOWN)
   if (messages.length === 0) return 'No stakeholder update has been drafted yet. ' + APPROVAL_NOTE
   const out = []
   for (const m of messages) {
-    out.push([m.state || 'draft', metaWords(m)].filter(Boolean).join(' · '))
+    out.push([m.state || 'draft', m.simulated ? 'simulated' : '', metaWords(m)].filter(Boolean).join(' · '))
     out.push('  ' + String(m.text || ''))
   }
   out.push(APPROVAL_NOTE)

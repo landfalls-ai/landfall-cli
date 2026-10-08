@@ -38,7 +38,7 @@ import { install as installLb, band as bandLb, onSnapshot as onSnapshotLb, start
 import { install as installTopology, band as bandTopology, onSnapshot as onSnapshotTopology, start as startTopology } from './components/topology.js'
 import { install as installTimeline, band as bandTimeline, onSnapshot as onSnapshotTimeline, start as startTimeline } from './components/timeline.js'
 
-export function register(on) {
+export function register(on, options) {
   // Components first: install() declares their commands, which the
   // session.start hook below registers.
   installRoom(on)
@@ -46,7 +46,7 @@ export function register(on) {
   installDelivery(on)
   installToolRows(on)
   installScope(on)
-  installSound(on)
+  installSound(on, options)
   installVote(on)
   installBeacon(on)
   installIncidents(on)
@@ -358,5 +358,7 @@ function makeIo($, surface) {
     storeGet: (key) => $.store.get(key),
     storeSet: (key, value) => $.store.set(key, value),
     copy: (text) => $.ui.copy({ text, surface: surface || undefined }),
+    now: () => $.clock.now(),
+    invalidateContext: () => $.ui.invalidate('prompt.context'),
   }
 }

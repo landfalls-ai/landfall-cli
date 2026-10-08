@@ -76,7 +76,7 @@ async function run($: any, on: any, surface: 'terminal' | 'desktop', switchOn: b
 }
 
 for (const surface of ['terminal', 'desktop'] as const) {
-  test(`${surface}: with the switch on, a room turning SEV1 and a new vote each chime once`, async ($, on) => {
+  test(`${surface}: with the switch on, a room turning SEV1 and a new vote each chime once`, { options: { sound: true } }, async ($, on) => {
     const plays = await run($, on, surface, true, [
       snapshot('SEV2', []),
       snapshot('SEV1', []), // turned SEV1: chime
@@ -111,7 +111,7 @@ test('/landfall-sound says whether the chime is on and how to change it', async 
   expect(answer.text).not.toMatch(/—/)
 })
 
-test('/landfall-sound reads the switch as on', async ($, on) => {
+test('/landfall-sound reads the switch as on', { options: { sound: true } }, async ($, on) => {
   on('command.register', () => ({ value: undefined }))
   on('config.list', () => ({ value: [{ key: 'landfall.sound', label: 'Sound cues', kind: 'toggle', value: true, provider: { plugin: 'landfall' }, isLocked: false }] }))
   const answer = await $.command.run({ command: 'landfall-sound', args: '' })

@@ -14,7 +14,13 @@ export function install(on) {
     $.ui.close({ id: PANE }).catch(() => {})
     // The room's scope block (scope.js) is refreshed when it changed, so this
     // message's request carries the room as it is now.
-    if (scopeChanged()) await $.ui.invalidate('prompt.context').catch(() => {})
+    if (scopeChanged()) {
+      try {
+        await $.ui.invalidate('prompt.context')
+      } catch {
+        // A stale scope block never holds the message.
+      }
+    }
     let context = ''
     try {
       const payload = JSON.stringify({

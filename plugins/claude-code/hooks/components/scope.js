@@ -48,7 +48,11 @@ export async function band(io, e, k) {
 // onSnapshot refreshes the block at once when register.js offers the way to.
 export function onSnapshot(io, snap, prev) {
   if (scope.last === undefined || typeof io.invalidateContext !== 'function') return
-  if (scopeText(snap) !== scope.last) io.invalidateContext()
+  const text = scopeText(snap)
+  if (text === scope.last) return
+  // Recorded now, so the message hook does not refresh the same change twice.
+  scope.last = text
+  io.invalidateContext()
 }
 
 export function start(io) {}

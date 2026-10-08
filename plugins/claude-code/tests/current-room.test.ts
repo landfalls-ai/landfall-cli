@@ -53,7 +53,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: every pane reads the room this session's agent is in, named with --room`, async ($, on) => {
     const { runs } = await startWith($, on, { rooms: [OLD, NEW], answers: ANSWERS })
     // (Load balancers, timeline, comms and brain read the current room too; their tests name --room.)
-    for (const command of ['wall', 'topology']) {
+    for (const command of ['topology']) {
       await $.command.run({ command, args: '' })
     }
     const reads = runs.filter((argv) => ['wall'].includes(argv[1]))

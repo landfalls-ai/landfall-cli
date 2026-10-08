@@ -256,7 +256,8 @@ for (const surface of SURFACES) {
     expect(pane.find({ type: 'Text', text: '● 98%' })).toBeDefined()
     // Artifacts and the hint, once.
     expect(pane.find({ type: 'Text', text: 'Artifacts · 2' })?.props.bold).toBe(true)
-    expect(pane.find({ type: 'Button', text: 'origin-pool-notes.md' })).toBeDefined()
+    // The row is context.js's: the name is the Button on the terminal, a bold Text beside "Add to my context" on the desktop.
+    expect(pane.find(surface === 'terminal' ? { type: 'Button', text: 'origin-pool-notes.md' } : { type: 'Text', text: 'origin-pool-notes.md' })).toBeDefined()
     expect(pane.all({ type: 'Text', text: 'Enter on a finding quotes it; on an artifact, adds it to your context' })).toHaveLength(1)
     // The tab is still People; the footer is this read's.
     expect(rosterTab.footer(kitFor(surface), NOW)).not.toBeNull()
@@ -272,10 +273,11 @@ test('a finding quotes into the prompt; an artifact is added to the context, nev
   const pane = draw('terminal', io)
   await pane.press('trail-1')
   expect(io.filled).toEqual(['> The pool limit was lowered in the 15:40 deploy\n\n'])
-  // The artifact row is context.js's; until it draws one, a plain row stands in, and pressing it adds.
-  const row = pane.find({ key: 'art-a1' })
+  // The artifact row is context.js's; pressing it adds to the context (an append), never a prompt.
+  const row = pane.find({ type: 'Button', key: 'art-a1' })
   expect(row).toBeDefined()
-  await pane.press('art-a1')
+  await row!.props.onPress()
+  await settle()
   expect(io.filled).toHaveLength(1)
 })
 

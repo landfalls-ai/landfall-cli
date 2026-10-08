@@ -21,7 +21,9 @@ export const TAB = 'incidents'
 // The last `landfall incidents` answer and its liveness (live.js), and which incident is being
 // joined. Which one `b` and `o` act on is the console's focus ring (consoleState.focus).
 const lp = livePane()
-const board = { joining: '' }
+// `linkFor`: the incident whose browser open failed, which shows its link row until the focus
+// moves off it (round 5 review, issue 1).
+const board = { joining: '', linkFor: '', linkFocus: '' }
 
 export function install(on) {}
 
@@ -90,13 +92,14 @@ export function tab(k, io, nowMs, args) {
   if (list.length > 0) {
     const mine = focused && focused.joined && r && focused.roomKey === r.roomKey
     const hint = r ? (mine ? 'Enter: open the room' : 'Enter: join') : 'Enter: join · your agent gets the shared context when you do'
+    if (k.terminal) rows.push(Text({ key: 'inc-hint-gap', children: [' '] }))
     rows.push(Text({ key: 'inc-hint', dimColor: true, children: [hint] }))
   }
 
   const keys = []
   if (k.terminal && list.length > 0) {
     keys.push(k.button({ key: 'brief', label: 'brief only', hotkey: 'b', onPress: () => brief(io, focused) }))
-    keys.push(k.button({ key: 'open', label: 'open in browser', hotkey: 'o', onPress: (press) => openIt(io, focused, press && press.surface) }))
+    keys.push(k.button({ key: 'open', label: 'open in browser', hotkey: 'o', onPress: () => openIt(io, focused) }))
   }
   return { rows, keys, live: lp, footer: null, refresh: () => load(io) }
 }
@@ -121,6 +124,8 @@ function termRow(k, io, inc, first) {
   const note = rowNote(inc, board.joining === id)
   const out = [head]
   if (note) out.push(Text({ key: 'n-' + id, dimColor: true, children: [' '.repeat(NOTE_INDENT) + clip(note, k.width - NOTE_INDENT)] }))
+  const link = linkRow(k, inc)
+  if (link) out.push(link)
   return out
 }
 
@@ -151,12 +156,12 @@ function card(k, io, inc, focused) {
     [
       k.button({ key: 'inc-' + id, label: joining ? 'Joining…' : isMine(inc) ? 'Open the room' : 'Join', primary: !isMine(inc), onPress: () => join(io, inc) }),
       k.button({ key: 'brief-' + id, label: 'Brief only', ...(focused ? { hotkey: 'b' } : {}), onPress: () => brief(io, inc) }),
-      k.button({ key: 'open-' + id, label: 'Open in browser', ...(focused ? { hotkey: 'o' } : {}), onPress: (press) => openIt(io, inc, press && press.surface) }),
+      k.button({ key: 'open-' + id, label: 'Open in browser', ...(focused ? { hotkey: 'o' } : {}), onPress: () => openIt(io, inc) }),
     ],
     'a-' + id,
     1,
   )
-  return k.card([head, note ? Text({ key: 'n-' + id, dimColor: true, children: [note] }) : null, actions], { key: 'card-' + id })
+  return k.card([head, note ? Text({ key: 'n-' + id, dimColor: true, children: [note] }) : null, linkRow(k, inc), actions], { key: 'card-' + id })
 }
 
 // isMine: the incident is the room this folder is in now.
@@ -207,17 +212,42 @@ async function brief(io, inc) {
   await io.fill('Give me the brief for ' + (inc.displayId || inc.title))
 }
 
-// openIt copies the incident's link: the mod opens nothing itself.
-async function openIt(io, inc, surface) {
+// openIt opens the incident in the person's browser through `landfall open` (the CLI opens it,
+// as `landfall login` does; the mod never opens anything itself). When no browser answers, the
+// toast says why and the focused row gains a link the person can use.
+async function openIt(io, inc) {
   if (!inc || !inc.webUrl) return
-  let copied = null
-  try {
-    copied = await io.copy(inc.webUrl, surface)
-  } catch {
-    copied = null
+  const got = (await io.run(['open', inc.webUrl, '--host', HOST])) || {}
+  if (got.ok) {
+    board.linkFor = ''
+    io.toast(openedWords(inc), 6000)
+  } else {
+    board.linkFor = inc.incidentId
+    board.linkFocus = consoleState.focus
+    io.toast(notOpenedWords(got.error), 8000)
   }
-  const name = clip(inc.displayId || inc.title || 'the incident', 24)
-  io.toast(toastText(copied && copied.isCopied ? 'Copied the link to ' + name + '. Paste it in your browser.' : 'The link to ' + name + ' could not be copied. Open it from the web app.'), 8000)
+  io.invalidate()
+}
+
+export function openedWords(inc) {
+  return toastText('Opened ' + clip(inc.displayId || inc.title || 'the incident', 24) + ' in your browser.')
+}
+
+export function notOpenedWords(error) {
+  return toastText('Could not open your browser: ' + (error || 'no answer'))
+}
+
+// linkRow is the focused incident's link after a browser open failed: the engine's Link (OSC 8 on
+// the terminal, else the label in ink and the URL dim; an anchor on the desktop).
+function linkRow(k, inc) {
+  if (board.linkFor !== inc.incidentId || !inc.webUrl) return null
+  if (consoleState.focus !== board.linkFocus) {
+    board.linkFor = ''
+    return null
+  }
+  const { Box, Link, Text } = k.els
+  const link = Link ? Link({ href: inc.webUrl, label: 'the war room in your browser' }) : Text({ children: ['the war room in your browser  ' + inc.webUrl] })
+  return Box({ key: 'lk-' + inc.incidentId, paddingLeft: k.terminal ? NOTE_INDENT : 0, children: [link] })
 }
 
 // load runs `landfall incidents` and redraws, one read at a time. A `Sign in to …` refusal

@@ -257,7 +257,7 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 	// The edge components' read commands (readcommon.go).
 	root.AddCommand(readCommands(ui)...)
 	// The console's sign-in check and shared context (whoami.go, brief.go).
-	root.AddCommand(newWhoamiCommand(ui), newBriefCommand(ui))
+	root.AddCommand(newWhoamiCommand(ui), newBriefCommand(ui), newOpenCommand(ui))
 	return root
 }
 

@@ -514,6 +514,7 @@ export function showTab(io, t) {
 
 function drawConsole(k, io, nowMs, e) {
   const { Box } = k.els
+  blankText = k.els.Text
   const r = currentRoom()
   const t = TABS.includes(consoleState.tab) ? consoleState.tab : 'home'
   const body = []
@@ -564,8 +565,10 @@ function normalize(got) {
   return { rows: got.rows || [], keys: got.keys || [], live: got.live || null, footer: got.footer || null, refresh: got.refresh || null }
 }
 
+// blank is one empty row between blocks (the terminal's spacing; cards space themselves).
+let blankText = null
 function blank(key) {
-  return { type: 'Text', props: { key }, children: [' '] }
+  return blankText ? blankText({ key, children: [' '] }) : ' '
 }
 
 // header is the room's row (§2.2): mark, name, severity, status, the agent word; a second row

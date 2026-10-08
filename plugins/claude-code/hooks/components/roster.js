@@ -487,8 +487,9 @@ function personView(k, io, nowMs, r, p) {
   if (arts.length > 0) {
     rows.push(Text({ key: 'pv-a-h', bold: true, children: ['Artifacts · ' + arts.length] }))
     arts.slice(0, 8).forEach((x, i) => {
-      const opts = { key: 'art-' + (x.artifactId || i), onPress: () => addArtifact(io, x), onAdd: () => addArtifact(io, x) }
-      rows.push(artifactRow(k, x, opts) || fallbackArtifactRow(k, x, opts, nowMs))
+      const nameWidth = Math.max(...arts.slice(0, 8).map((y) => String(y.filename || '').length))
+      const opts = { io, nowMs, key: 'art', nameWidth, onPress: () => addArtifact(io, x) }
+      rows.push(artifactRow(k, x, opts) || fallbackArtifactRow(k, x, { ...opts, key: 'art-' + (x.artifactId || i) }, nowMs))
     })
     if (arts.length > 8) rows.push(Text({ key: 'pv-a-more', dimColor: true, children: ['+' + (arts.length - 8) + ' more in the war room'] }))
   }

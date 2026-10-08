@@ -1,21 +1,21 @@
-// The incident timeline and shared context ledger: /timeline (proposal item 08, FR-08).
+// The incident timeline and shared context ledger: the console's Timeline tab (spec 4.4; proposal
+// item 08, FR-08).
 //
-// `landfall timeline` answers the room's events oldest first, filtered by
-// kind on the CLI's side. The pane draws one row per event (time, a glyph in
-// its tone, what happened, who), chips filter by kind, `m` reads further back,
-// and a press on a row quotes it into the prompt as a draft. Nothing sends.
+// `landfall timeline` answers the room's events oldest first, filtered by kind on the CLI's side.
+// The tab draws a chip row (a f s b p o, identical Buttons, the active one `▸ <kind>`), `m` reads
+// further back, and one row per event (time, a glyph in its tone, what happened, who); a press on
+// a row quotes it into the prompt as a draft. Nothing sends.
 //
-// While open the timeline is live (live.md FR-L2): a new room event (the
-// watch stream's maxSeq moved on) reads the newest page again and merges it
-// over what is shown, so rows read further back with `m` stay. A failed read
-// keeps the rows and says they are stale; the last line says how old they are.
+// It is warm from the moment the console opens (spec 2.5): a new room event (the watch stream's
+// maxSeq moved on) reads the newest page again and merges it over what is shown, so rows read
+// further back with `m` stay. A failed read keeps the rows and says they are stale; the footer
+// says how old they are. The Timeline badge counts what is new since the tab was last drawn.
 
-import { HOST, addCommand, currentRoom, parseAnswer, room, roomName } from '../core.js'
-import { kit } from '../kit.js'
-import { closed, drawn, keep, liveFooter, livePane, notLive, opened as markOpen } from '../live.js'
+import { HOST, consoleState, currentOf, currentRoom, roomName } from '../core.js'
+import { closed, drawn, keep, livePane, opened as markOpen } from '../live.js'
 import { clipText, hhmm, toneColor } from '../views.js'
+import { chipRow, footerOf, keyButton, nowOf, resetLive, roomKeyOf } from './tabparts.js'
 
-export const PANE = 'landfall-timeline'
 export const LIMIT = 50
 
 // The chips, in order, with their keys.
@@ -29,6 +29,7 @@ export const KINDS = [
 ]
 
 const tl = {
+  roomKey: '', // the room these rows are of
   kind: 'all',
   events: [],
   hasMore: false,
@@ -38,84 +39,25 @@ const tl = {
   loaded: false,
   again: false, // a new event came while a read ran: read the newest page after it
   seenSeq: -1, // the room's maxSeq when the newest page was last read
+  shownSeq: -1, // the room's maxSeq when the tab was last drawn: the badge counts past it
+  argsApplied: '', // the chip a `/landfall timeline <chip>` already chose
+  latest: [], // the newest unfiltered rows, for Home's Latest block
 }
 
-// The live state (live.js): open or not, when the last good read was, stale
-// or not. The rows themselves stay in `tl`.
+// The live state (live.js): open or not, when the last good read was, stale or not. The rows
+// themselves stay in `tl`.
 const lp = livePane()
 
-export function install(on) {
-  addCommand({ name: 'timeline', description: "Show the war room's timeline", argumentHint: '[findings|status|beacon|people|other]' })
-
-  on('command.run', { command: 'timeline' }, async ($, e) => {
-    const asked = String(e.args || '').trim().toLowerCase()
-    tl.kind = KINDS.some((x) => x.kind === asked) ? asked : 'all'
-    const r = currentRoom()
-    const opened = await $.ui.open({ id: PANE, title: r && r.displayId ? 'Timeline · ' + r.displayId : 'Timeline', focus: true, closeOnEscape: true })
-    if (opened && opened.isPlaced) markOpen(lp)
-    await loadTimeline(paneIo($), false)
-    if (!opened || !opened.isPlaced) return { text: timelineText() }
-    return {}
-  })
-
-  // The person's close (esc, the close mark) reaches this hook; the mod's own
-  // closes go through closePane, since a plugin's own $.ui.close is not
-  // raised to its own hooks.
-  on('ui.close', { id: PANE }, async ($, e, next) => {
-    closed(lp)
-    return next(e)
-  })
-
-  on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const k = kit($.ui.resolve(e), e)
-    const { Text } = k.els
-    drawn(lp)
-    let nowMs = lp.goodAt
-    try {
-      nowMs = Number(await $.clock.now())
-    } catch {
-      // No clock: the age reads as of the last read.
-    }
-    const r = currentRoom()
-    const rows = [k.header({ key: 'tl-h', title: 'Timeline' + (r && r.displayId ? ' · ' + r.displayId : ''), dim: [r && r.title ? r.title : '', tl.loading ? 'reading…' : ''].filter(Boolean).join(' · ') })]
-    rows.push(
-      k.row(
-        KINDS.map((c) =>
-          k.button({ key: 'kind-' + c.kind, label: (c.kind === tl.kind ? '● ' : '') + c.label, hotkey: c.hotkey, primary: c.kind === tl.kind, dim: c.kind !== tl.kind, onPress: () => setKind($, c.kind) }),
-        ),
-        'tl-kinds',
-        2,
-      ),
-    )
-    if (tl.error) rows.push(k.text(clipText(tl.error, k.width), { key: 'tl-err' }))
-    else if (!tl.loaded) rows.push(k.text(tl.loading ? 'Reading the timeline…' : 'Press a to read the timeline.', { key: 'tl-empty', dimColor: true }))
-    else if (tl.events.length === 0) rows.push(k.text(tl.kind === 'all' ? 'Nothing on the timeline yet.' : 'Nothing of this kind yet.', { key: 'tl-none', dimColor: true }))
-    if (tl.hasMore && !tl.error) rows.push(k.button({ key: 'tl-more', label: tl.loading ? 'reading…' : 'earlier events', hotkey: 'm', dim: true, onPress: () => loadTimeline(paneIo($), true) }))
-    const space = Math.max(20, k.width - 10)
-    for (const ev of tl.events) {
-      const glyph = Text({ key: 'g', color: toneColor(ev.tone || 'neutral'), children: [ev.glyph || '·'] })
-      const label = clipText(eventWords(ev), space)
-      const press = k.els.Button({ key: 'ev-' + ev.seq, label, plain: true, onPress: () => quote($, ev) })
-      const line = k.row([Text({ key: 't', dimColor: true, children: [hhmm(ev.at)] }), glyph, press], 'row-' + ev.seq, 1)
-      if (k.rich && ev.detail) rows.push(k.col([line, k.text(clipText(ev.detail, space), { key: 'd', dimColor: true })], 'evc-' + ev.seq))
-      else rows.push(line)
-    }
-    if (tl.loaded || notLive(r)) {
-      const foot = liveFooter(k, lp, nowMs, r, 'tl-live')
-      if (foot) rows.push(foot)
-    }
-    rows.push(
-      k.row(
-        [
-          k.text('press a row to quote it into your prompt', { key: 'tl-hint', dimColor: true }),
-          k.button({ key: 'tl-close', label: 'close (esc)', dim: true, onPress: () => closePane($) }),
-        ],
-        'tl-keys',
-      ),
-    )
-    return k.col(rows, 'tl')
-  })
+// forRoom drops what was read of another room: a different incident starts the tab over.
+function forRoom(r) {
+  const key = roomKeyOf(r)
+  if (key === tl.roomKey) return
+  Object.assign(tl, { roomKey: key, kind: 'all', events: [], hasMore: false, oldestSeq: null, error: '', loading: false, loaded: false, again: false, seenSeq: -1, shownSeq: -1, argsApplied: '', latest: [] })
+  resetLive(lp)
 }
+
+// No hooks of its own: the console owns the pane and the `/landfall` command.
+export function install(on) {}
 
 export async function band(io, e, k) {
   return null
@@ -123,26 +65,137 @@ export async function band(io, e, k) {
 
 // onSnapshot: a new room event reads the newest page into an open timeline.
 export function onSnapshot(io, snap, prev) {
+  const r = currentOf(snap)
+  forRoom(r)
   if (!lp.open || !tl.loaded) return
-  const r = (snap.rooms || [])[0]
   if (r && typeof r.maxSeq === 'number' && r.maxSeq > tl.seenSeq) void loadTimeline(io, false, true)
 }
 
 export function start(io) {}
 
-// tick moves the age under an open timeline, and reads an event the
-// snapshot could not (a read was running).
+// tick stops the reads once the console is closed, and reads an event the snapshot could not (a
+// read was running).
 export async function tick(io, nowMs) {
-  if (!lp.open) return
-  io.invalidate()
+  if (lp.open && !consoleState.open) closed(lp)
   const r = currentRoom()
+  const moved = roomKeyOf(r) !== tl.roomKey
+  forRoom(r)
+  if (!lp.open) return
+  if (moved) return loadTimeline(io, false)
   if (tl.loaded && !tl.loading && r && typeof r.maxSeq === 'number' && r.maxSeq > tl.seenSeq) void loadTimeline(io, false, true)
 }
 
-async function setKind($, kind) {
-  if (tl.kind === kind && tl.loaded) return
+// warm starts the timeline's reads when the console opens (and reads again when asked).
+export async function warm(io) {
+  forRoom(currentRoom())
+  markOpen(lp)
+  await loadTimeline(io, false)
+}
+
+export async function refresh(io) {
+  await warm(io)
+}
+
+// badge is the Timeline segment's count: news lines newer than the room seq the tab was last
+// drawn at (the watch digest's `#seq` lines; `r.count` when every digest line is newer, since the
+// digest is capped); none at zero. Drawing the tab clears it.
+export function badge() {
+  const r = currentRoom()
+  if (!r) return null
+  forRoom(r)
+  const digest = r.digest || []
+  const newer = digest.filter((line) => {
+    const m = /^#(\d+) /.exec(line)
+    return m && Number(m[1]) > tl.shownSeq
+  }).length
+  const n = digest.length > 0 && newer === digest.length ? Math.max(newer, r.count || 0) : newer
+  return n > 0 ? n : null
+}
+
+// The newest rows of the unfiltered timeline, oldest first, for Home's Latest block.
+export function latestRows(n) {
+  forRoom(currentRoom())
+  return tl.latest.slice(-n)
+}
+
+// The live read's state (live.js), so Home can say how old its Latest block is.
+export function readState() {
+  return lp
+}
+
+// The Timeline tab has no letters beyond its chips, which are part of the body.
+export function keys(k, io, nowMs, args) {
+  return []
+}
+
+// tab is the Timeline tab's body (spec 4.4): the chips, `m: earlier events` while there is more,
+// one row per event, the hint and the footer. `args` is `/landfall timeline <chip>`.
+export function tab(k, io, nowMs, args) {
+  const { Text } = k.els
+  drawn(lp)
+  const r = currentRoom()
+  forRoom(r)
+  applyArgs(io, args)
+  if (r && typeof r.maxSeq === 'number') tl.shownSeq = r.maxSeq
+  const rows = []
+  rows.push(
+    chipRow(
+      k,
+      KINDS.map((c) => ({ key: 'kind-' + c.kind, name: c.label, hotkey: c.hotkey, active: c.kind === tl.kind, onPress: () => setKind(io, c.kind) })),
+      'tl-kinds',
+    ),
+  )
+  if (tl.hasMore && !tl.error) {
+    rows.push(keyButton(k, { key: 'tl-more', label: tl.loading ? 'reading…' : k.terminal ? 'earlier events' : 'Earlier events', hotkey: 'm', dim: true, onPress: () => loadTimeline(io, true) }))
+  }
+  if (tl.error) rows.push(k.text(clipText(tl.error, k.width), { key: 'tl-err' }))
+  else if (!tl.loaded) rows.push(k.text('Reading the timeline…', { key: 'tl-empty', dimColor: true }))
+  else if (tl.events.length === 0) rows.push(k.text(tl.kind === 'all' ? 'Nothing on the timeline yet.' : 'Nothing of this kind yet.', { key: 'tl-none', dimColor: true }))
+  const space = Math.max(20, k.width - 10)
+  for (const ev of tl.events) {
+    const glyph = Text({ key: 'g', color: toneColor(ev.tone || 'neutral'), children: [ev.glyph || '·'] })
+    const label = clipText(eventWords(ev), space)
+    const press = k.els.Button({ key: 'ev-' + ev.seq, label, plain: true, onPress: () => quote(io, ev) })
+    const line = k.row([Text({ key: 't', dimColor: true, children: [hhmm(ev.at)] }), glyph, press], 'row-' + ev.seq, 1)
+    if (k.rich && ev.detail) rows.push(k.col([line, k.text(clipText(ev.detail, space), { key: 'd', dimColor: true })], 'evc-' + ev.seq))
+    else rows.push(line)
+  }
+  if (tl.events.length > 0) rows.push(k.text('Enter on a row quotes it into your prompt', { key: 'tl-hint', dimColor: true }))
+  const foot = footerOf(k, lp, nowMs, r, 'tl-live')
+  if (foot) rows.push(foot)
+  return rows
+}
+
+// applyArgs takes `/landfall timeline <chip>` once: the chip is chosen and read, then not chosen
+// again on every draw (the person's own chip presses win after that).
+function applyArgs(io, args) {
+  if (args == null || args === '') {
+    tl.argsApplied = ''
+    return
+  }
+  const asked = String(typeof args === 'object' ? args.chip || '' : args).trim().toLowerCase()
+  if (consoleState.args === args) consoleState.args = null
+  if (!asked || asked === tl.argsApplied) return
+  tl.argsApplied = asked
+  if (KINDS.some((x) => x.kind === asked) && asked !== tl.kind) {
+    chooseKind(asked)
+    void loadTimeline(io, false)
+  }
+}
+
+function chooseKind(kind) {
   tl.kind = kind
-  await loadTimeline(paneIo($), false)
+  tl.events = []
+  tl.hasMore = false
+  tl.oldestSeq = null
+  tl.loaded = false
+  tl.error = ''
+}
+
+async function setKind(io, kind) {
+  if (tl.kind === kind && tl.loaded) return
+  chooseKind(kind)
+  await loadTimeline(io, false)
 }
 
 // loadTimeline reads the newest page for the chosen kind, or with `more` the
@@ -160,14 +213,22 @@ async function loadTimeline(io, more, live) {
   io.invalidate()
   const kind = tl.kind
   const r = currentRoom()
+  const roomKey = tl.roomKey
   const seenSeq = r && typeof r.maxSeq === 'number' ? r.maxSeq : -1
   const before = more ? (tl.oldestSeq ?? (tl.events.length > 0 ? tl.events[0].seq : undefined)) : undefined
-  const startedAt = await ioNow(io)
+  const startedAt = await nowOf(io, lp.triedAt)
   if (!more) lp.triedAt = startedAt
   const answer = await io.run(timelineArgs(r, kind, before), { timeoutMs: 30000 })
   tl.loading = false
-  if (kind !== tl.kind) {
+  if (roomKey !== tl.roomKey) {
+    // The room changed while this read ran: its rows are another room's.
     io.invalidate()
+    return
+  }
+  if (kind !== tl.kind) {
+    // The person chose another chip while this read ran: read that one now.
+    io.invalidate()
+    await loadTimeline(io, false)
     return
   }
   if (!answer.ok) {
@@ -185,6 +246,7 @@ async function loadTimeline(io, more, live) {
     if (!more) {
       tl.seenSeq = seenSeq
       keep(lp, answer, startedAt)
+      if (kind === 'all') tl.latest = tl.events.slice(-5)
     }
     if (!(live && tl.loaded)) {
       tl.hasMore = !!answer.hasMore
@@ -192,9 +254,17 @@ async function loadTimeline(io, more, live) {
       else if (!more) tl.oldestSeq = page.length > 0 ? page[0].seq : null
     }
     tl.loaded = true
+    if (!more && kind !== 'all') void loadLatest(io, r)
   }
   io.invalidate()
   if (tl.again) await loadTimeline(io, false, true)
+}
+
+// loadLatest keeps Home's Latest block current while a chip filters the tab: the five newest
+// unfiltered rows, read on their own.
+async function loadLatest(io, r) {
+  const answer = await io.run(timelineArgs(r, 'all', undefined, 5), { timeoutMs: 30000 })
+  if (answer.ok) tl.latest = (answer.events || []).slice().sort((x, y) => x.seq - y.seq)
 }
 
 // mergeNewest lays the newest page over the rows shown: the rows the page
@@ -204,49 +274,19 @@ export function mergeNewest(rows, page) {
   return [...rows.filter((x) => x.seq < from), ...page]
 }
 
-// closePane closes the pane and stops its reads.
-async function closePane($) {
-  closed(lp)
-  await $.ui.close({ id: PANE })
-}
-
-// paneIo is what this file's reads take, from the hook's own `$`, shaped as
-// register.js shapes `io`.
-function paneIo($) {
-  return {
-    run: async (args, opts) => {
-      try {
-        return parseAnswer(await $.process.run([room.bin, ...args], { timeoutMs: 30000, ...(opts || {}) }))
-      } catch (err) {
-        return { ok: false, error: String(err).slice(0, 200) }
-      }
-    },
-    invalidate: () => $.ui.invalidate('ui.render'),
-    now: () => $.clock.now(),
-  }
-}
-
-async function ioNow(io) {
-  try {
-    return Number(await io.now())
-  } catch {
-    return lp.triedAt
-  }
-}
-
 // quote drafts the event into the prompt, at the cursor: "> 15:52 <text>".
-async function quote($, ev) {
-  await $.prompt.fill({ text: quoteText(ev), mode: 'insert' })
+async function quote(io, ev) {
+  await io.fill(quoteText(ev), 'insert')
 }
 
 export function quoteText(ev) {
   return '> ' + hhmm(ev.at) + ' ' + String(ev.text || '') + '\n\n'
 }
 
-export function timelineArgs(r, kind, before) {
+export function timelineArgs(r, kind, before, limit) {
   const args = ['timeline', '--host', HOST]
   if (r && r.roomKey) args.push('--room', r.roomKey)
-  args.push('--limit', String(LIMIT))
+  args.push('--limit', String(limit || LIMIT))
   if (kind && kind !== 'all') args.push('--kind', kind)
   if (before != null) args.push('--before', String(before))
   return args
@@ -269,13 +309,12 @@ export function timelineText() {
   return [head, ...lines].join('\n')
 }
 
-// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
-export function tab(k, io, nowMs, args) {
-  return []
+// text is the Timeline tab's answer where no pane can be placed (`claude -p`): it reads the
+// timeline (with the chip asked for) and says it.
+export async function text(io, args) {
+  forRoom(currentRoom())
+  const asked = String(args || '').trim().toLowerCase()
+  if (KINDS.some((x) => x.kind === asked) && asked !== tl.kind) chooseKind(asked)
+  await loadTimeline(io, false)
+  return timelineText()
 }
-
-export function badge() {
-  return null
-}
-
-export function warm(io) {}

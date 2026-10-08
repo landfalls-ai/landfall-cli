@@ -60,14 +60,6 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 8, bodyColumns: 96, scroll: { offset: 0, bodyRows: 8 }, view: {} },
 } as const
 
-const PANE = {
-  plugin: 'landfall',
-  component: 'Pane',
-  requestId: 'landfall-vote',
-  viewport: { columns: 120, rows: 40 },
-  props: { bodyColumns: 110, bodyRows: 30, view: {} },
-} as const
-
 function ran(stdout: string) {
   return { value: { exitCode: 0, stdout, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
 }
@@ -176,7 +168,9 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const w = await startWith($, on, snapshot([vote()]), { answer: JSON.stringify({ ok: true, claimSeq: 212, position: 'corroborate', admitted: false, note }) })
     const band = await $.ui.mount({ ...BAND, surface } as never)
     await band.press({ key: 'vote-corroborate' })
-    expect(w.toasts.at(-1)).toBe('Corroborated #212. ' + note)
+    // A toast is at most 80 characters (the engine's box holds two rows): the outcome survives.
+    expect(w.toasts.at(-1)!.length).toBeLessThanOrEqual(80)
+    expect(w.toasts.at(-1)!.startsWith('Corroborated #212. You joined as a guest')).toBe(true)
   })
 
   test(`${surface}: a second press while the first vote runs records nothing more`, async ($, on) => {
@@ -194,43 +188,16 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await band.find({ type: 'Button', key: 'vote-corroborate' })).toBeDefined()
   })
 
-  test(`${surface}: 6 contests with a reason typed in the pane`, async ($, on) => {
-    const w = await startWith($, on, snapshot([vote()]), { answer: '{"ok":true,"claimSeq":212,"position":"contest","admitted":false}' })
-    const band = await $.ui.mount({ ...BAND, surface } as never)
-    await band.press({ key: 'vote-contest' })
-    expect(w.opened.at(-1)).toEqual({ id: 'landfall-vote', focus: true })
-
-    const pane = await $.ui.mount({ ...PANE, surface } as never)
-    expect(await pane.find({ type: 'Input', key: 'pane-reason' })).toBeDefined()
-    // An empty reason records nothing.
-    await pane.input({ key: 'pane-reason', text: '  ' })
-    expect(w.votes).toEqual([])
-    await pane.input({ key: 'pane-reason', text: 'pool sits at 41%' })
-    expect(w.votes).toEqual([['vote', '--room', 'k1', '--claim', '212', '--position', 'contest', '--reason', 'pool sits at 41%']])
-    expect(w.toasts.at(-1)).toBe('Contested #212')
-    expect(w.closed).toContain('landfall-vote')
-  })
-
-  test(`${surface}: 7 opens the full card: statement, author, positions, evidence, expiry`, async ($, on) => {
+  test(`${surface}: 6 and 7 open the console on Vote, never a pane of their own, and the person asked`, async ($, on) => {
     const w = await startWith($, on, snapshot([vote()]))
     const band = await $.ui.mount({ ...BAND, surface } as never)
+    await band.press({ key: 'vote-contest' })
+    expect(w.opened.at(-1)).toEqual({ id: 'landfall', focus: undefined })
     await band.press({ key: 'vote-evidence' })
-    expect(w.opened.at(-1)).toEqual({ id: 'landfall-vote', focus: true })
-
-    const pane = await $.ui.mount({ ...PANE, surface } as never)
-    expect(await pane.find({ type: 'Text', text: 'Your vote is waiting' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: "bob's agent · staged #212" })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '“The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'Evidence: CloudWatch 5xxErrorRate · deploy record 15:48:59Z' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: 'Expires in 4m 10s.' })).toBeDefined()
-    if (surface === 'desktop') expect((await pane.findAll({ type: 'Svg' })).map((x: any) => x.props.alt)).toContain('1 of 2 positions')
-    else expect(await pane.find({ type: 'Text', text: '●○' })).toBeDefined()
-    // No reason field until the person asks to contest.
-    expect(await pane.find({ type: 'Input' })).toBeUndefined()
-    await pane.press({ key: 'pane-contest' })
-    expect(await pane.find({ type: 'Input', key: 'pane-reason' })).toBeDefined()
-    await pane.press({ key: 'pane-corroborate' })
-    expect(w.votes).toEqual([['vote', '--room', 'k1', '--claim', '212', '--position', 'corroborate']])
+    expect(w.opened.at(-1)).toEqual({ id: 'landfall', focus: undefined })
+    expect(w.opened.map((o) => o.id)).not.toContain('landfall-vote')
+    // Nothing was recorded by looking.
+    expect(w.votes).toEqual([])
   })
 
   test(`${surface}: 8 sets the vote aside until a new one arrives`, async ($, on) => {
@@ -256,43 +223,23 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('a new vote opens the pane unasked only where the surface docks it and is wide', async ($, on) => {
+test('a new vote opens the console on Vote unasked only where the surface docks it and is wide', async ($, on) => {
   const w = await startWith($, on, snapshot([vote()]), { viewport: { columns: 160, rows: 40, isFullscreen: true } })
   expect(w.toasts).toEqual(["bob's agent asked for your vote on #212"])
   // Unasked, so without the keyboard.
-  expect(w.opened).toEqual([{ id: 'landfall-vote', focus: undefined }])
+  expect(w.opened).toEqual([{ id: 'landfall', focus: undefined }])
 })
 
-test('on the main screen a new vote is a band row and a toast, no pane', async ($, on) => {
+test('on the main screen a new vote is a band row and a toast, no console', async ($, on) => {
   const w = await startWith($, on, snapshot([vote()]), { viewport: { columns: 200, rows: 40, isFullscreen: false } })
   expect(w.toasts).toEqual(["bob's agent asked for your vote on #212"])
   expect(w.opened).toEqual([])
 })
 
-test('a narrow docked terminal opens no pane unasked', async ($, on) => {
+test('a narrow docked terminal opens no console unasked', async ($, on) => {
   const w = await startWith($, on, snapshot([vote()]), { viewport: { columns: 100, rows: 40, isFullscreen: true } })
   expect(w.toasts).toEqual(["bob's agent asked for your vote on #212"])
   expect(w.opened).toEqual([])
-})
-
-test('/vote answers in text where no pane can be placed', async ($, on) => {
-  await startWith($, on, snapshot([vote(), MINE]), { placed: false })
-  const answer = await $.command.run({ command: 'vote', args: '' })
-  expect(answer.text).toBe(
-    [
-      'Acme 168 · cloudfront-5xx-high · 1 vote waiting on you',
-      "#212 bob's agent: “The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”",
-      '  positions 1 of 2 · your vote would admit it · 4m 10s left',
-      '  Evidence: CloudWatch 5xxErrorRate · deploy record 15:48:59Z',
-      'Vote as yourself: landfall vote --claim <seq> --position corroborate|contest [--reason "<why>"]',
-    ].join('\n'),
-  )
-})
-
-test('/vote with only the person\'s own claim says nothing is waiting', async ($, on) => {
-  await startWith($, on, snapshot([MINE]))
-  const answer = await $.command.run({ command: 'vote', args: '' })
-  expect(answer.text).toBe('No vote is waiting on you.')
 })
 
 test('mobile: a compact card with Corroborate and Later, and no contest', async ($, on) => {

@@ -1,0 +1,224 @@
+// The mod's shared core: the one `landfall watch` stream, what it last said,
+// the band's sections, and the helpers every component draws with.
+//
+// Components live in ./components/*.js. Each exports `install(on)` and reads
+// the room only through this file, so two components never keep two copies of
+// the room or start two watch children. register.js installs them in order.
+//
+// THE COMPONENT CONTRACT. Every file in ./components exports exactly these,
+// and register.js calls each one BY NAME (the engine's validator follows `$`
+// only into named functions, so no callback registries):
+//
+//   install(on)                 its own hooks: commands it answers, panes, tool rows
+//   band(io, e, k)              rows for the band above the prompt, or null
+//   onSnapshot(io, snap, prev)  after each new `landfall watch` line (toasts, sounds)
+//   start(io)                   once at session start, after commands register
+//
+// `$` NEVER CROSSES A FILE. The engine's validator follows `$` only into
+// functions declared in the same file, so register.js hands components an
+// `io` object instead: closures that each spell `$.noun.event` themselves
+// (register.js makeIo). Inside a component's own hooks, `$` is the hook's
+// parameter and is used directly; pass it only to functions in that file.
+//
+//   io.surface             where the band draws: terminal, desktop, vscode, mobile
+//   io.fill(text)          drafts the prompt (never sends)
+//   io.suggest(text)       a dim suggestion Tab takes
+//   io.toast(text, ms?)    a toast
+//   io.open(id, title, opts?)  opens a pane ($.ui.open)  -> { isPlaced }
+//   io.close(id)           closes a pane
+//   io.invalidate()        redraws every hooked site
+//   io.run(args, opts?)    runs `landfall <args>`, answers the last stdout line as JSON
+//                          ({ ok:false, error } when it cannot)
+//   io.play(asset)         plays one of the mod's sound files
+//   io.storeGet(key) / io.storeSet(key, value)   values kept across sessions
+//   io.copy(text)          to the clipboard
+//
+// A command is declared with addCommand() inside install(); register.js
+// registers them all at session start.
+
+export const HOST = 'claude-code'
+export const RESTART_MS = 3000
+export const CATCH_UP = 'Catch me up on what changed in the war room.'
+export const ADDRESSED = '  ← addressed to a person'
+
+// The mutable room state, one object so every module sees the same values.
+// Module variables start over on a hot reload; the next watch line refills them.
+export const room = {
+  // What `landfall watch` last said: { line, rooms: WatchRoom[] }.
+  snapshot: { line: '', rooms: [] },
+  // The newest seq per room the person set aside with "later".
+  laterAt: {},
+  // The landfall binary, read once at start.
+  bin: 'landfall',
+  // Set while a watch child is running, so a reload never starts two.
+  watching: false,
+}
+
+const commands = []
+
+// addCommand declares a slash command; register.js registers every one at
+// session start (the engine takes one unmatched session.start hook per
+// module). The component answers with its own on('command.run', { command }).
+export function addCommand(spec) {
+  if (!commands.some((x) => x.name === spec.name)) commands.push(spec)
+}
+
+export function declaredCommands() {
+  return commands
+}
+
+// parseAnswer reads a `landfall` run's last stdout line as JSON. Every action a
+// key press or a button takes runs the CLI, never $.mcp.call: Claude Code puts
+// a plugin's MCP call made outside a typed command to the permission dialog,
+// which a mod cannot answer.
+export function parseAnswer(run) {
+  const last = ((run && run.stdout) || '').trim().split('\n').pop() || ''
+  try {
+    const answer = JSON.parse(last)
+    if (answer && typeof answer === 'object') return answer
+  } catch {
+    // fall through
+  }
+  return { ok: false, error: clip(((run && (run.stderr || run.stdout)) || 'no answer').trim(), 200) }
+}
+
+// The only room, or the first one; most sessions sit in one.
+export function currentRoom() {
+  return room.snapshot.rooms[0] || null
+}
+
+// pending is the rooms with untold news the person has not set aside.
+export function pending() {
+  return room.snapshot.rooms.filter((r) => r.count > 0 && r.maxSeq > (room.laterAt[r.roomKey] ?? -1))
+}
+
+export function roomName(r) {
+  if (r.displayId && r.title) return r.displayId + ' · ' + r.title
+  return r.displayId || r.title || r.slug || 'war room'
+}
+
+export function clip(text, width) {
+  text = String(text ?? '')
+  return text.length > width ? text.slice(0, Math.max(1, width - 1)) + '…' : text
+}
+
+// plainLine is a digest line as a person reads it: "bob: @alice can you…"
+// rather than "#12 chat.message [bob@acme.com] — @alice can you…".
+export function plainLine(line) {
+  const text = line.endsWith(ADDRESSED) ? line.slice(0, -ADDRESSED.length) : line
+  const m = /^#\d+ (\S+)(?: \[([^\]]*)\])? — (.*)$/.exec(text)
+  if (!m) {
+    const bare = /^#\d+ ([a-z_.]+)$/.exec(text)
+    return bare ? KINDS[bare[1]] || bare[1].replace(/[._]/g, ' ') : text
+  }
+  const [, type, who, said] = m
+  const kind = KINDS[type]
+  if (!who) return kind ? kind + ': ' + said : said
+  const name = who.split('@')[0] || who
+  return kind ? name + ' (' + kind + '): ' + said : name + ': ' + said
+}
+
+// KINDS names the event types a person would want called out; chat needs no label.
+export const KINDS = {
+  'claim.staged': 'finding, awaiting a second person',
+  'claim.admitted': 'finding admitted',
+  'claim.corroborated': 'corroborated',
+  'claim.contested': 'contested',
+  'edge.finding': 'finding',
+  'finding.published': 'finding',
+  'edge.action.proposed': 'suggested action',
+  'remediation.proposed': 'suggested fix',
+}
+
+// newestLine is the most recent untold line.
+export function newestLine(digest) {
+  let best = ''
+  let bestSeq = -1
+  for (const line of digest) {
+    const m = /^#(\d+) /.exec(line)
+    const seq = m ? Number(m[1]) : -1
+    if (seq >= bestSeq) {
+      best = line
+      bestSeq = seq
+    }
+  }
+  return best
+}
+
+// dot is the status line's lead: red while live, yellow once mitigated, green once over.
+export function dot(status) {
+  const s = (status || '').toLowerCase()
+  if (/resolved|closed|postmortem|done/.test(s)) return '🟢'
+  if (/mitigat|monitor|stable/.test(s)) return '🟡'
+  return '🔴'
+}
+
+// tone maps an incident's status or severity to a kit tone.
+export function statusTone(status) {
+  const s = (status || '').toLowerCase()
+  if (/resolved|closed|done|monitor/.test(s)) return 'good'
+  if (/identified/.test(s)) return 'info'
+  if (/mitigat/.test(s)) return 'warning'
+  return 'critical'
+}
+
+export function severityTone(sev) {
+  const s = (sev || '').toLowerCase()
+  if (/sev1|critical/.test(s)) return 'critical'
+  if (/sev2|high/.test(s)) return 'serious'
+  if (/sev3/.test(s)) return 'warning'
+  return 'neutral'
+}
+
+// statusWords is a room's state in words: status, severity, Beacon's run.
+export function statusWords(st) {
+  const out = []
+  if (st.status) out.push(st.status)
+  if (st.severity) out.push(st.severity)
+  if (st.beacon) out.push('Beacon ' + st.beacon)
+  return out
+}
+
+// personLine is one person in the pane ("● bob · Claude Code: querying ALB").
+export function personLine(p) {
+  const name = p.name + (p.you ? ' (you)' : '')
+  const tools = []
+  if (p.browser) tools.push('war room')
+  for (const a of p.agents ?? []) {
+    tools.push(a.tool + (a.here ? '' : ' (away)') + (a.doing ? ': ' + a.doing : ''))
+  }
+  return (p.here ? '● ' : '○ ') + name + (tools.length > 0 ? ' · ' + tools.join(' · ') : '') + (p.here ? '' : ' · away')
+}
+
+// whereIs is where a person works, in words: "war room, Claude Code".
+export function whereIs(p) {
+  const where = (p.agents ?? []).filter((a) => a.here).map((a) => a.tool)
+  if (p.browser) where.unshift('war room')
+  return [...new Set(where)].join(', ')
+}
+
+// whoIsHere is the line under the prompt: the other people who are here.
+export function whoIsHere() {
+  if (room.snapshot.rooms.length !== 1) return ''
+  const st = room.snapshot.rooms[0].status
+  if (!st) return ''
+  const others = (st.people ?? []).filter((p) => p.here && !p.you)
+  if (others.length === 0) return ''
+  const shown = others.slice(0, 4).map((p) => {
+    const where = whereIs(p)
+    return where ? p.name + ' (' + where + ')' : p.name
+  })
+  const more = others.length > 4 ? ' · ' + (others.length - 4) + ' more' : ''
+  return 'Here: ' + shown.join(' · ') + more
+}
+
+// ago is a short age: "now", "42s", "3m", "2h".
+export function ago(ms) {
+  if (ms == null || !isFinite(ms) || ms < 0) return ''
+  const s = Math.round(ms / 1000)
+  if (s < 5) return 'now'
+  if (s < 60) return s + 's'
+  const m = Math.round(s / 60)
+  if (m < 60) return m + 'm'
+  return Math.round(m / 60) + 'h'
+}

@@ -98,7 +98,7 @@ test('the session announces the mod, and the room stream draws the band', async 
   on('command.register', () => ({ value: undefined }))
   on('process.spawn', async function* () {
     yield { stream: 'stdout', text: SNAPSHOT }
-    return { code: 0, signal: null }
+    return { value: { code: 0, signal: null } }
   })
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', ($, e) => {
@@ -140,7 +140,7 @@ test('/room lists every untold line, a finding labelled as one', async ($, on) =
   on('command.register', () => ({ value: undefined }))
   on('process.spawn', async function* () {
     yield { stream: 'stdout', text: SNAPSHOT }
-    return { code: 0, signal: null }
+    return { value: { code: 0, signal: null } }
   })
   on('ui.status', () => ({ value: undefined }))
   on('ui.toast', () => ({ value: undefined }))

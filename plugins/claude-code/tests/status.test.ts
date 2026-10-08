@@ -64,7 +64,7 @@ async function startWith($: any, on: any, lines: string[]) {
   on('command.register', () => ({ value: undefined }))
   on('process.spawn', async function* () {
     for (const l of lines) yield { stream: 'stdout', text: l }
-    return { code: 0, signal: null }
+    return { value: { code: 0, signal: null } }
   })
   on('ui.status', ($: any, e: any) => {
     statuses.push(e.text)

@@ -26,7 +26,7 @@
 // Home block and the band.
 
 import { ago, clip, consoleState, currentRoom, quoteDraft, reading, roomName, whereIs } from '../core.js'
-import { TONE } from '../kit.js'
+import { BUTTON_CHROME, clipToCells, textCells, TONE } from '../kit.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, opened as markOpen } from '../live.js'
 import { clipText, hhmm } from '../views.js'
 import { claimLine, linesOf, lineLabel, lineWords, loneLines, releaseLine } from './lines.js'
@@ -451,16 +451,28 @@ function personView(k, io, nowMs, r, p) {
     rows.push(Text({ key: 'pv-f-h', bold: true, children: ['Findings · ' + total] }))
     trail.slice(0, TRAIL_MAX).forEach((t, i) => {
       const state = t.state ? k.pill(stateWord(t.state), latestTone(t.state), 'pv-s' + i) : null
-      const room = Math.max(10, k.width - 5 - 2 - 2 - (t.state ? stateWord(t.state).length + 4 : 0) - (k.terminal ? 0 : 4))
       const words = trailWords(t)
       // Every finding is a quote button, on both surfaces: curly quotes where a desktop draws it as one.
-      const label = k.terminal ? clipText(words, room) : '“' + clipText(words, room) + '”'
+      // On the terminal the budget is characters; off it the text is proportional, so the row's
+      // real width is measured (time, glyph, gaps and the state label taken off the pane) and the
+      // finding takes what is left, cut with an ellipsis only there (round 1 cut it at ~25 chars).
+      let label
+      if (k.terminal) {
+        label = clipText(words, Math.max(10, k.width - 5 - 2 - 2 - (t.state ? stateWord(t.state).length + 4 : 0)))
+      } else {
+        // The state label wraps under the finding when both do not fit one row (the row is
+        // `flexWrap: wrap`), so the finding is budgeted without it: it takes the full width.
+        const taken = textCells(hhmm(t.at)) + textCells(GLYPH[t.kind] || '·') + 3
+        const room = Math.max(8, k.width + 2 - 1 - taken - BUTTON_CHROME - textCells('“”'))
+        label = '“' + clipToCells(words, room) + '”'
+      }
       rows.push(
         Box({
           key: 'pv-t' + i,
           flexDirection: 'row',
           columnGap: 1,
           alignItems: 'center',
+          ...(k.terminal ? {} : { flexWrap: 'wrap' }),
           children: [
             Text({ key: 'pv-ti' + i, dimColor: true, children: [hhmm(t.at)] }),
             Text({ key: 'pv-g' + i, children: [GLYPH[t.kind] || '·'] }),

@@ -3,6 +3,7 @@
 // from `answers` (a value, or a function of the argv), a `landfall login` stream from `login`,
 // and the console pane as the engine raises it.
 import { mock } from 'claude-code/testing'
+import { checkProps } from './_props'
 
 export type Surface = 'terminal' | 'desktop' | 'vscode' | 'mobile'
 
@@ -151,6 +152,7 @@ export async function texts(m: any): Promise<string[]> {
 
 function walk(n: any, out: string[]) {
   if (!n || typeof n !== 'object') return
+  if (typeof n.type === 'string') checkProps(n.type, n.props)
   if (n.type === 'Button') out.push(String(n.props?.label ?? ''))
   if (n.type === 'Text') out.push((n.children ?? []).map((c: any) => (typeof c === 'string' ? c : '')).join(''))
   for (const c of n.children ?? []) walk(c, out)

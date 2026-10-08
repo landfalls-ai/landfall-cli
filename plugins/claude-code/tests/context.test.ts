@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { consoleState, room } from '../hooks/core.js'
 import { kit } from '../hooks/kit.js'
+import { checkProps } from './_props'
 import * as cx from '../hooks/components/context.js'
 
 // The Context tab (spec §4.10), driven through its own exports with a fake io: the CLI answers are
@@ -107,12 +108,12 @@ function mkIo(answers: Answers) {
 
 // An element table that keeps what was drawn as plain objects.
 const els: any = {
-  Box: (p: any) => ({ t: 'Box', ...p }),
-  Text: (p: any) => ({ t: 'Text', ...p }),
-  Button: (p: any) => ({ t: 'Button', ...p }),
-  Link: (p: any) => ({ t: 'Link', ...p }),
-  Svg: (p: any) => ({ t: 'Svg', ...p }),
-  Raster: (p: any) => ({ t: 'Raster', ...p }),
+  Box: (p: any) => (checkProps('Box', p), { t: 'Box', ...p }),
+  Text: (p: any) => (checkProps('Text', p), { t: 'Text', ...p }),
+  Button: (p: any) => (checkProps('Button', p), { t: 'Button', ...p }),
+  Link: (p: any) => (checkProps('Link', p), { t: 'Link', ...p }),
+  Svg: (p: any) => (checkProps('Svg', p), { t: 'Svg', ...p }),
+  Raster: (p: any) => (checkProps('Raster', p), { t: 'Raster', ...p }),
 }
 
 function kitFor(surface: 'terminal' | 'desktop', columns = 84) {

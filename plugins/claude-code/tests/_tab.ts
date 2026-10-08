@@ -4,12 +4,14 @@
 // the real thing: core.js and the component are imported here, so what a test sets is what the tab reads.
 import { consoleState, room } from '../hooks/core.js'
 import { kit } from '../hooks/kit.js'
+import { checkProps } from './_props'
 
 export type Node = { type: string; key?: string; props: Record<string, any>; children: any[] }
 
 const make =
   (type: string) =>
   (props: Record<string, any> = {}): Node => {
+    checkProps(type, props)
     const { children = [], ...rest } = props
     return { type, key: rest.key, props: rest, children }
   }

@@ -5,6 +5,7 @@
 // on each surface and act on it by key.
 import { room } from '../hooks/core.js'
 import { kit } from '../hooks/kit.js'
+import { checkProps } from './_props'
 
 export const NOW = 1_800_000_000_000
 
@@ -107,7 +108,7 @@ export function uniq(prefix = 'r') {
 // a test can read a tab's tree without mounting it (in-flight labels, toast copy).
 export type Node = { type: string; props: any; children: unknown[] }
 export function fakeKit(surface: 'terminal' | 'desktop' | 'mobile' = 'terminal') {
-  const mk = (type: string) => (props: any) => ({ type, props: props || {}, children: (props && props.children) || [] })
+  const mk = (type: string) => (props: any) => (checkProps(type, props), { type, props: props || {}, children: (props && props.children) || [] })
   const els: any = { Box: mk('Box'), Text: mk('Text'), Button: mk('Button'), Link: mk('Link') }
   if (surface !== 'terminal') els.Svg = mk('Svg')
   if (surface === 'terminal') els.Raster = mk('Raster')

@@ -65,7 +65,7 @@ export function tab(k, io, nowMs, args) {
   const r = currentRoom()
   if (signedOut()) {
     const s = signinBody(k, io, nowMs, () => load(io))
-    return { rows: s.rows, keys: s.keys, footer: s.footer, live: null, refresh: null }
+    return { rows: s.rows, keys: s.keys, footer: s.footer, live: null, refresh: null, noRefresh: true }
   }
   const { Text } = k.els
   const answer = lp.answer
@@ -290,10 +290,11 @@ function pick(got) {
 }
 
 // sortIncidents: the rooms this session is in, then SEV1s nobody here has
-// joined, then by severity, newest first within one.
+// joined, then by severity; within one the CLI's own order stands (the sort is stable, and round 1
+// found the mod re-sorting equal severities by age against the CLI's and the mockup's order).
 export function sortIncidents(list) {
   const rank = (i) => (i.joined ? 0 : sevRank(i.severity) === 1 ? 1 : 2)
-  return [...list].sort((a, b) => rank(a) - rank(b) || sevRank(a.severity) - sevRank(b.severity) || (a.ageMs ?? 0) - (b.ageMs ?? 0))
+  return [...list].sort((a, b) => rank(a) - rank(b) || sevRank(a.severity) - sevRank(b.severity))
 }
 
 export function sevRank(sev) {

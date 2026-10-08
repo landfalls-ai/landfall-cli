@@ -44,6 +44,55 @@ export const TONE = {
   neutral: '#898781',
 }
 
+// An interactive Svg (hover titles) is drawn by the desktop in a sandboxed frame with its own opaque
+// white page, which no theme reaches: a dark app showed pale labels on a white card (round 1).
+// The engine hands a hook no theme, so the drawing carries its own: a background and text colors
+// that follow the frame's `prefers-color-scheme`, light by default, so labels stay readable on
+// either. Non-interactive images are transparent and need none of this.
+export const SVG_THEME =
+  '<style>.bg{fill:#ffffff}.fg{fill:#1f1e1d}.mu{fill:#6f6e6a}@media (prefers-color-scheme:dark){.bg{fill:#1d1c1b}.fg{fill:#ece9e1}.mu{fill:#a3a29c}}</style>' +
+  // Far past the viewBox on every side: the frame is wider or taller than the drawing's aspect, and
+  // the strips beside it are the frame's own white page unless the background reaches them.
+  '<rect class="bg" x="-5000" y="-5000" width="10000" height="10000"/>'
+
+// ---- measuring text off the terminal ----
+// A native button or label is drawn in a proportional font, so its width is not `length + 2`
+// cells. emWidth estimates a string in ems from its glyphs; CELLS_PER_EM and BUTTON_CHROME are
+// calibrated on the Claude desktop app's Code tab (a button is 1.3 cells of padding and border
+// plus 1.8 cells per em of text). Callers that must fit a row (the switcher, a quote button)
+// measure with these instead of counting characters.
+const EM_NARROW = 'iljtfIr.,:;\'|!1 '
+const EM_WIDE = 'mwMW'
+export function emWidth(text) {
+  let em = 0
+  for (const ch of String(text)) {
+    if (ch === '▸') em += 0.6
+    else if (EM_WIDE.includes(ch)) em += 0.9
+    else if (EM_NARROW.includes(ch)) em += ch === ' ' ? 0.28 : 0.3
+    else if (ch >= 'A' && ch <= 'Z') em += 0.68
+    else if (ch >= '0' && ch <= '9') em += 0.56
+    else em += 0.55
+  }
+  return em
+}
+export const CELLS_PER_EM = 1.8
+export const BUTTON_CHROME = 1.3
+export function textCells(text) {
+  return CELLS_PER_EM * emWidth(text)
+}
+
+// clipToCells is `text` cut, with an ellipsis, to the longest prefix that measures within `cells`.
+export function clipToCells(text, cells) {
+  const t = String(text)
+  if (textCells(t) <= cells) return t
+  let out = ''
+  for (const ch of t) {
+    if (textCells(out + ch + '…') > cells) break
+    out += ch
+  }
+  return out.trimEnd() + '…'
+}
+
 // The Beacon mark, 16x20 cells (apps/web/public/favicon.svg, cropped).
 const MARK_PAL = { a: '#f1c21b', b: '#da1e28', c: '#eef4ff', d: '#04122e', e: '#fa4d56', f: '#0e6027', g: '#24a148' }
 const MARK = [
@@ -114,14 +163,16 @@ export function kit(els, e) {
         if (terminal && i > 0) kids.push(Text({ key: id + '-sep', dimColor: true, children: ['│'] }))
         if (it.active) {
           if (terminal) kids.push(Text({ key: id, inverse: true, bold: true, children: [' ▸ ' + it.label + ' '] }))
-          else kids.push(Box({ key: id, backgroundColor: INK, paddingX: 1, children: [Text({ key: id + '-t', bold: true, color: PAPER, children: ['▸ ' + it.label] })] }))
+          else kids.push(Box({ key: id, backgroundColor: INK, paddingX: 1, flexShrink: 0, children: [Text({ key: id + '-t', bold: true, color: PAPER, wrap: 'truncate', children: [(it.bare ? '' : '▸ ') + it.label] })] }))
           return
         }
         const props = { key: id, label: terminal ? ' ' + it.label + ' ' : it.label, dimColor: true, onPress: it.onPress }
         if (terminal) props.plain = true
-        kids.push(Button(props))
+        // Off the terminal the Button sits in a Box that never shrinks, so a tight row clips at its
+        // edge instead of squeezing a label onto two lines.
+        kids.push(terminal ? Button(props) : Box({ key: id + '-w', flexShrink: 0, children: [Button(props)] }))
       })
-      return Box({ key, flexDirection: 'row', flexWrap: 'nowrap', columnGap: 0, children: kids })
+      return Box({ key, flexDirection: 'row', flexWrap: 'nowrap', columnGap: 0, overflow: 'hidden', children: kids })
     },
 
     // header is the branded title row: mark, title, then pills.
@@ -382,7 +433,7 @@ export function lineSvg(vals, w, h, color, opts = {}) {
   const n = vals.length
   const pts = vals.map((v, i) => [(i / (n - 1)) * w, h - ((v - lo) / span) * (h - 6) - 3])
   const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ')
-  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">'
+  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">' + (opts.hover ? SVG_THEME : '')
   for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#8a8a8a" stroke-opacity=".18"/>'
   if (opts.mark != null) {
     const mx = (opts.mark / (n - 1)) * w

@@ -43,7 +43,7 @@ import {
   statusTone,
   whereIs,
 } from './core.js'
-import { kit, TONE } from './kit.js'
+import { BUTTON_CHROME, kit, textCells, TONE } from './kit.js'
 import { notLive, RECONNECTING, since } from './live.js'
 import { fiveXxTone, fmt, healthyTone, hhmm, lastPct, pctCell, toneColor, values, windowWords } from './views.js'
 import { AGENT_IN, AGENT_OUT, roomText } from './components/room.js'
@@ -466,7 +466,8 @@ export const LABELS = { home: 'Home', vote: 'Vote', context: 'Context', wall: 'W
 // segmentLabels is the switcher's labels for a width (chosen from the width alone, so the row
 // never flips as counts come and go): the full set from 98 cells, else `LB` and no Incidents
 // count; an inactive count drops only when a two-digit one would overflow the row.
-export function segmentLabels(tabs, active, counts, cells) {
+export function segmentLabels(tabs, active, counts, cells, rich = false) {
+  if (rich) return richSegmentLabels(tabs, active, counts, cells)
   const full = cells >= FULL_CELLS
   const name = (t) => (t === 'lb' && !full ? 'LB' : LABELS[t])
   const countOf = (t) => {
@@ -487,12 +488,58 @@ export function segmentLabels(tabs, active, counts, cells) {
   })
 }
 
+// ---- the switcher off the terminal: measured, not counted ----
+// A native button is drawn in a proportional font with its own padding, so a label is not
+// `length + 2` cells there (round 1: "Incidents" clipped to "Incide", "More" off the edge at 50
+// cells). The width of a segment is estimated from the glyphs (calibrated on the Claude desktop
+// app's Code tab: 1.3 cells of button chrome plus 1.8 cells per em of text), and the label set is
+// the first rung of a ladder whose row fits the pane's body columns: full names with every count,
+// the docked set (`LB`, no Incidents count), the docked set with only the active count, then
+// shorter words (`Ctx`, `Time`), then the shortest (`Rooms`, `Here`), and at last the active segment without its `▸`. The row never wraps.
+// segmentCells is one segment's estimated width in cells; the filled active segment is a Box
+// with a cell of padding each side, a little wider than a button's chrome.
+export function segmentCells(label, active) {
+  return (active ? 2 : BUTTON_CHROME) + textCells(label) * (active ? 1.06 : 1)
+}
+const NAMES_DOCKED = { ...LABELS, lb: 'LB' }
+const NAMES_COMPACT = { ...NAMES_DOCKED, context: 'Ctx', timeline: 'Time' }
+const NAMES_TIGHT = { ...NAMES_COMPACT, incidents: 'Rooms', people: 'Here' }
+const RUNGS = [
+  { names: LABELS, all: true, incidents: true },
+  { names: NAMES_DOCKED, all: true, incidents: false },
+  { names: NAMES_DOCKED, all: false, incidents: false },
+  { names: NAMES_COMPACT, all: false, incidents: false },
+  { names: NAMES_TIGHT, all: false, incidents: false },
+  // The last resort: the filled segment alone says which is open, without the `▸` or a count.
+  { names: NAMES_TIGHT, all: false, incidents: false, bare: true },
+]
+function richSegmentLabels(tabs, active, counts, cells) {
+  const build = (r) =>
+    tabs.map((t) => {
+      const n = counts[t]
+      const has = typeof n === 'number' && n > 0 && (t !== 'incidents' || r.incidents)
+      const shown = has && (r.all || (t === active && !r.bare))
+      const text = r.names[t] + (shown ? ' ' + n : '')
+      return { id: t, label: text, active: t === active, ...(r.bare ? { bare: true } : {}) }
+    })
+  const wide = (items) => items.reduce((w, s) => w + segmentCells(s.active && !s.bare ? '▸ ' + s.label : s.label, s.active), 0)
+  let items = build(RUNGS[RUNGS.length - 1])
+  for (const r of RUNGS) {
+    const got = build(r)
+    if (wide(got) <= cells - 1) {
+      items = got
+      break
+    }
+  }
+  return items
+}
+
 function switcher(k, io, e) {
   const tabs = k.mobile ? ['home', 'vote'] : TABS
   const counts = {}
   for (const t of tabs) counts[t] = badgeOf(t)
   const cells = Number((e.props && e.props.bodyColumns) || k.width + 2)
-  const items = segmentLabels(tabs, consoleState.tab, counts, cells).map((s) => ({ ...s, onPress: () => showTab(io, s.id) }))
+  const items = segmentLabels(tabs, consoleState.tab, counts, cells, k.rich).map((s) => ({ ...s, onPress: () => showTab(io, s.id) }))
   return k.segments(items, { key: 'seg' })
 }
 
@@ -519,6 +566,8 @@ function drawConsole(k, io, nowMs, e) {
   if (k.terminal) body.push(blank('b-top'))
   body.push(...header(k, r))
   if (k.terminal) body.push(blank('b-hdr'))
+  // The pane's rows, for a tab that fits its body to them (the terminal's Wall).
+  consoleState.bodyRows = Number((e.props && e.props.scroll && e.props.scroll.bodyRows) || 0)
   let got
   if (t === 'home') got = drawHome(k, io, nowMs, e, r)
   else {
@@ -560,7 +609,7 @@ function drawConsole(k, io, nowMs, e) {
 function normalize(got) {
   if (Array.isArray(got)) return { rows: got, keys: [], live: null, footer: null, refresh: null }
   if (!got || typeof got !== 'object') return { rows: [], keys: [], live: null, footer: null, refresh: null }
-  return { rows: got.rows || [], keys: got.keys || [], live: got.live || null, footer: got.footer || null, refresh: got.refresh || null }
+  return { rows: got.rows || [], keys: got.keys || [], live: got.live || null, footer: got.footer || null, refresh: got.refresh || null, noRefresh: !!got.noRefresh }
 }
 
 // blank is one empty row between blocks (the terminal's spacing; cards space themselves).
@@ -624,10 +673,11 @@ function footerRow(k, foot) {
 function keysRows(k, io, t, got) {
   const own = got.keys.filter(Boolean)
   const refresh = got.refresh || (t === 'home' ? () => refreshHome(io) : () => warmTab(io, t))
+  // A state with nothing to read again (signed out, waiting for the browser) draws no `r: refresh`.
   const tail = [
-    k.button({ key: 'refresh', label: k.terminal ? 'refresh' : 'Refresh', hotkey: 'r', onPress: async () => void (await refresh()) }),
+    got.noRefresh ? null : k.button({ key: 'refresh', label: k.terminal ? 'refresh' : 'Refresh', hotkey: 'r', onPress: async () => void (await refresh()) }),
     k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, dismiss: true, onPress: () => closeConsole(io) }),
-  ]
+  ].filter(Boolean)
   if (own.length === 0) return [k.row(tail, 'keys')]
   const cells = [...own, ...tail].reduce((w, b) => w + keyCells(b) + 2, 0) - 2
   if (cells <= k.width + 2) return [k.row([...own, ...tail], 'keys')]

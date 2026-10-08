@@ -115,6 +115,7 @@ const SURFACES = ['terminal', 'desktop'] as const
 // A fresh tab on a room, the way the console opens it: nothing read, nothing selected.
 function begin(rooms: unknown[] = [ROOM]) {
   wallTab.reset()
+  wallTab.setWallCap()
   rosterTab.reset()
   setRooms(rooms)
   openConsoleOn('wall')
@@ -131,6 +132,7 @@ async function keysOf(surface: 'terminal' | 'desktop', io: ReturnType<typeof fak
 test('the wall draws every widget type in the shared arrangement, on each surface', async () => {
   for (const surface of SURFACES) {
     begin()
+    wallTab.setWallCap(99) // eleven widgets at once; the six-widget cap has its own test below
     const io = fakeIo(() => WALL)
     wallTab.warm(io as never)
     await settle()
@@ -316,6 +318,31 @@ test('the wall draws on vscode and mobile too, as vectors', async () => {
   }
 })
 
+test('the wall tab draws six widgets at most and says how many more there are, keys still in reach', async () => {
+  const eight = { ok: true, sharedBy: 'carol', windowMs: 21600000, widgets: Array.from({ length: 8 }, (_, i) => ({ id: 'e' + i, type: 'stat', title: 'Stat ' + i, value: String(i) })) }
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => eight)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    expect(pane.all({ type: 'Button', text: /^(▸ )?Stat \d$/ })).toHaveLength(6)
+    expect(pane.find({ type: 'Text', text: 'Showing 6 of 8 widgets. Open the war room in the browser for the rest.' })).toBeDefined()
+    // The keys are the console's row under the body; the wall offers them while it has widgets to walk.
+    const keys = wallTab.keys(kitFor(surface), io as never)
+    expect(keys.length).toBeGreaterThan(1)
+    // n walks the six drawn ones, never a seventh.
+    for (let i = 0; i < 6; i++) await new Drawn(keys).press('wall-next')
+    const again = await draw(surface, io)
+    expect(again.find({ type: 'Button', text: '▸ Stat 0' })).toBeDefined()
+  }
+  // The text answer is not a pane: it says all eight.
+  begin()
+  const text = await wallTab.text(fakeIo(() => eight) as never, '')
+  expect(text).toContain('Stat 7')
+  expect(text).not.toContain('Showing')
+})
+
 test('a wall with more widgets than one read says how many there are', async () => {
   // The CLI reads at most 40 widgets (wallWidgetsMax) and names the total.
   const many = {
@@ -326,6 +353,7 @@ test('a wall with more widgets than one read says how many there are', async () 
   }
   for (const surface of SURFACES) {
     begin()
+    wallTab.setWallCap(99)
     const io = fakeIo(() => many)
     wallTab.warm(io as never)
     await settle()

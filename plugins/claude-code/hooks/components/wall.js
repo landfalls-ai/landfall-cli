@@ -37,6 +37,7 @@
 // the wall holds more widgets than the CLI reads at once, `totalWidgets` says
 // how many there are and the tab says so.
 
+import { estRows } from '../console.js'
 import { HOST, ago, clip, consoleState, currentOf, currentRoom, openConsole, reading, room, roomName } from '../core.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, widgetSeqOf, opened as markOpen } from '../live.js'
 import {
@@ -388,7 +389,7 @@ function sharedBody(k, io, nowMs) {
   }
   const tail = [a.windowMs ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean)
   rows.push(heading(k, 'wall-h', a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall', tail.length ? ' · ' + tail.join(' · ') : ''))
-  const widgets = a.widgets || []
+  const widgets = fitRows(k, visibleWidgets(a), { prefix: 'w', gone: (a.unavailable || []).length, kind: 'shared' })
   if (wall.topology) {
     const g = graphOf(a)
     if (!g) rows.push(k.text(NO_GRAPH, { key: 'wall-nograph', dimColor: true }))
@@ -405,7 +406,7 @@ function sharedBody(k, io, nowMs) {
     rows.push(k.text('Not shown here', { key: 'un-h', bold: true }))
     gone.forEach((u, i) => rows.push(k.text((u.title || u.type || u.id) + ': ' + (u.reason || 'not available'), { key: 'un-' + i, dimColor: true })))
   }
-  const more = moreWords(a)
+  const more = moreWords(a, widgets.length)
   if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
   return rows
 }
@@ -429,14 +430,14 @@ function personBody(k, io, nowMs, m) {
     rows.push(k.text(clipText(a.error || 'The wall could not be read.', k.width), { key: 'wall-err' }))
     return rows
   }
-  const widgets = a.widgets || []
+  const widgets = fitRows(k, visibleWidgets(a), { prefix: 'pw', snapshot: true, gone: (a.unavailable || []).length, kind: 'person' })
   if (widgets.length === 0) {
     rows.push(k.text(none, { key: 'wall-pnone', dimColor: true }))
     return rows
   }
   rows.push(heading(k, 'wall-h', name + ' dashboard', dashboardTail(widgets, a.totalWidgets, mine, nowMs, pp.inFlight)))
   rows.push(...widgetCards(k, io, widgets, { prefix: 'pw', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, snapshot: true, two: k.rich && k.width >= 90 }))
-  const more = moreWords(a)
+  const more = moreWords(a, widgets.length)
   if (more) rows.push(k.text(more, { key: 'wall-more', dimColor: true }))
   return rows
 }
@@ -516,7 +517,59 @@ function card(k, w, i, o) {
 // shownWidgets are the widgets of the dashboard shown.
 function shownWidgets() {
   const a = wall.dashboard === 'shared' ? lp.answer : pp.answer
-  return a && a.ok ? a.widgets || [] : []
+  if (!a || !a.ok) return []
+  const n = drawnN[wall.dashboard === 'shared' ? 'shared' : 'person']
+  const list = visibleWidgets(a)
+  return typeof n === 'number' ? list.slice(0, Math.max(1, n)) : list
+}
+
+// How many widgets the last draw of each dashboard showed (the terminal fits them to the pane).
+const drawnN = {}
+
+// fitRows is the widgets that fit the terminal pane with the footer and keys row still in view:
+// cards are measured, and the tab stops before one that would push them off. At least one is
+// always drawn; the rest read "Showing N of M widgets". Off the terminal the pane scrolls as a
+// page does, so the cap alone applies.
+function fitRows(k, widgets, o) {
+  if (!k.terminal || !consoleState.bodyRows || widgets.length < 2) {
+    drawnN[o.kind] = undefined
+    return widgets
+  }
+  // Rows the tab spends on everything but cards: the switcher, header, selector, heading, the
+  // unavailable list, the 'Showing' line, footer and keys.
+  const budget = Math.max(8, consoleState.bodyRows - 16 - (o.gone ? o.gone + 1 : 0))
+  const out = []
+  let used = 0
+  for (let i = 0; i < widgets.length; i++) {
+    const h = estRows(card(k, widgets[i], i, { prefix: o.prefix, selected: -1, onSelect() {}, nowMs: 0, snapshot: !!o.snapshot, two: false }), k.width, true) + 1
+    if (out.length >= 1 && used + h > budget) break
+    out.push(widgets[i])
+    used += h
+  }
+  drawnN[o.kind] = out.length
+  return out
+}
+
+// The tab draws at most this many widgets (spec §4.2, round 6): a wall of eight is two screens of
+// cards and pushed the keys row and footer off the pane. The rest read "Showing 6 of 8 widgets".
+export const WALL_CAP = 6
+let cap = WALL_CAP
+// setWallCap is for tests that draw every widget type at once; no caller in the mod uses it.
+export function setWallCap(n = WALL_CAP) {
+  cap = n
+}
+
+// visibleWidgets are the answer's widgets the tab draws: the first WALL_CAP, with the topology
+// graph kept in view when a `/landfall topology` asked for one that fell past the cap.
+export function visibleWidgets(a) {
+  const all = (a && a.widgets) || []
+  if (all.length <= cap) return all
+  const out = all.slice(0, cap)
+  if (wall.topology) {
+    const g = graphOf(a)
+    if (g && !out.includes(g)) out[cap - 1] = g
+  }
+  return out
 }
 
 function clampSel(list) {
@@ -893,10 +946,12 @@ export function geoName(p) {
 }
 
 // moreWords says the wall holds more widgets than were read.
-export function moreWords(a) {
-  const shown = (a.widgets || []).length + (a.unavailable || []).length
-  if (!a.totalWidgets || a.totalWidgets <= shown) return ''
-  return 'Showing ' + shown + ' of ' + a.totalWidgets + ' widgets. Open the war room in the browser for the rest.'
+export function moreWords(a, cap = Infinity) {
+  const drawn = Math.min((a.widgets || []).length, cap)
+  const shown = drawn + (a.unavailable || []).length
+  const total = Math.max(a.totalWidgets || 0, (a.widgets || []).length + (a.unavailable || []).length)
+  if (!total || total <= shown) return ''
+  return 'Showing ' + shown + ' of ' + total + ' widgets. Open the war room in the browser for the rest.'
 }
 
 function caption(k, w, key) {

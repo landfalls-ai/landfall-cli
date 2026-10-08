@@ -4,7 +4,7 @@
 // lines, and graphView takes the kit (`k`), which carries only the element
 // table.
 
-import { TONE } from './kit.js'
+import { SVG_THEME, TONE } from './kit.js'
 
 export function esc(s) {
   return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
@@ -88,7 +88,7 @@ export function chartSvg(series, markers, threshold, opts = {}) {
   const hi = Math.max(...vs, lo + 1)
   const x = (t) => ((t - t0) / (t1 - t0 || 1)) * w
   const y = (v) => h - padBottom - ((v - lo) / (hi - lo || 1)) * (h - padTop - padBottom)
-  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">'
+  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">' + SVG_THEME
   for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#8a8a8a" stroke-opacity=".18"/>'
   if (typeof threshold === 'number' && isFinite(threshold)) {
     const ty = y(threshold).toFixed(1)
@@ -98,7 +98,7 @@ export function chartSvg(series, markers, threshold, opts = {}) {
     if (typeof m.atMs !== 'number' || !ts.length || m.atMs < t0 || m.atMs > t1) continue
     const mx = x(m.atMs).toFixed(1)
     s += '<line x1="' + mx + '" x2="' + mx + '" y1="0" y2="' + h + '" stroke="#8a8a8a" stroke-dasharray="2 3"><title>' + esc(m.label) + ' at ' + hhmm(m.atMs) + 'Z</title></line>'
-    s += '<text x="' + (Number(mx) + 3) + '" y="9" font-size="8" fill="#8a8a8a">' + esc(clipText(m.label, 24)) + '</text>'
+    s += '<text x="' + (Number(mx) + 3) + '" y="9" font-size="8" class="mu">' + esc(clipText(m.label, 24)) + '</text>'
   }
   all.forEach((ser, i) => {
     const color = TONE[seriesTone(i, opts.tone)]
@@ -336,7 +336,7 @@ export function graphSvg(nodes, edges) {
       pos[id] = { x: 8 + ci * (nodeW + gapX), y: top + ri * (nodeH + gapY) }
     })
   })
-  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">'
+  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">' + SVG_THEME
   for (const e of edges || []) {
     const a = pos[e.from]
     const b = pos[e.to]
@@ -352,9 +352,9 @@ export function graphSvg(nodes, edges) {
     const toned = n.tone && n.tone !== 'neutral' && TONE[n.tone]
     s += '<g><title>' + esc(n.label || n.id) + (n.kind ? ' (' + esc(n.kind) + ')' : '') + (n.tone ? ' · ' + esc(n.tone) : '') + '</title>'
     s += '<rect x="' + p.x + '" y="' + p.y + '" width="' + nodeW + '" height="' + nodeH + '" rx="7" fill="' + (toned ? TONE[n.tone] : '#8a8a8a') + '" fill-opacity=".08" stroke="' + (toned ? TONE[n.tone] : '#8a8a8a') + '" stroke-width="' + (toned ? 2 : 1) + '"/>'
-    s += '<text x="' + (p.x + nodeW / 2) + '" y="' + (p.y + nodeH / 2 + 4) + '" text-anchor="middle" font-size="11" font-family="ui-monospace,monospace" fill="currentColor">' + esc(clipText(n.label || n.id, 16)) + '</text></g>'
+    s += '<text x="' + (p.x + nodeW / 2) + '" y="' + (p.y + nodeH / 2 + 4) + '" text-anchor="middle" font-size="11" font-family="ui-monospace,monospace" class="fg">' + esc(clipText(n.label || n.id, 16)) + '</text></g>'
   }
-  s += '<text x="8" y="' + (h - 4) + '" font-size="10" fill="#8a8a8a">solid confirmed · dashed established · dotted inferred</text>'
+  s += '<text x="8" y="' + (h - 4) + '" font-size="10" class="mu">solid confirmed · dashed established · dotted inferred</text>'
   return { source: s + '</svg>', width: w, height: h }
 }
 

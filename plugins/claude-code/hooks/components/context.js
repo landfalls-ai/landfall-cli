@@ -584,7 +584,8 @@ function itemRow(k, it, key) {
     flexGrow: 1,
     children: [
       Text({ key: key + '-n', dimColor: true, children: ['#' + it.seq] }),
-      Text({ key: key + '-s', flexShrink: 1, children: [String(it.statement || '')] }),
+      // Text takes no flexShrink (the engine refuses the whole tree): the Box around it shrinks.
+      Box({ key: key + '-sb', flexShrink: 1, children: [Text({ key: key + '-s', children: [String(it.statement || '')] })] }),
       it.by ? Text({ key: key + '-b', dimColor: true, children: ['· ' + it.by] }) : null,
     ].filter(Boolean),
   })

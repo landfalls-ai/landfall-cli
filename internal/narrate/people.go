@@ -78,11 +78,15 @@ type Line struct {
 // Person is one human in the room with their agents. Here is true while any
 // of their browser tabs or agents is active; Browser while a tab is.
 type Person struct {
-	Name    string  `json:"name"`
-	You     bool    `json:"you,omitempty"`
-	Here    bool    `json:"here"`
-	Browser bool    `json:"browser,omitempty"`
-	Agents  []Agent `json:"agents,omitempty"`
+	Name string `json:"name"`
+	// HumanActorID is who the person is to the server, so a front end keys a
+	// person by id rather than by a name two people can share. Empty only
+	// when an older server sent no id.
+	HumanActorID string  `json:"humanActorId,omitempty"`
+	You          bool    `json:"you,omitempty"`
+	Here         bool    `json:"here"`
+	Browser      bool    `json:"browser,omitempty"`
+	Agents       []Agent `json:"agents,omitempty"`
 	// Latest is their newest contribution to the shared context, if any.
 	Latest *Latest `json:"latest,omitempty"`
 }
@@ -161,6 +165,9 @@ func peopleOf(parts []client.Participant, me string, latest map[string]*Latest) 
 		person, ok := byID[id]
 		if !ok {
 			person = &Person{You: me != "" && id == me}
+			if p.HumanActorID != "" {
+				person.HumanActorID = oneLine(Printable(p.HumanActorID), 120)
+			}
 			byID[id] = person
 			order = append(order, id)
 		}
@@ -348,6 +355,11 @@ func LatestByPerson(claims *client.ClaimsProjection, events []client.Event, nowM
 	}
 	return out
 }
+
+// ClaimState is where a claim stands, in the words a person reads: the same
+// state a person's latest contribution carries (`landfall brief` folds each
+// open item's state with it).
+func ClaimState(c client.ClaimView) string { return claimState(c) }
 
 // claimState is where a claim stands, in the words a person reads.
 func claimState(c client.ClaimView) string {

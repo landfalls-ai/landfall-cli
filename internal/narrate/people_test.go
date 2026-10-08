@@ -1,6 +1,8 @@
 package narrate
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
@@ -134,5 +136,35 @@ func TestToolName(t *testing.T) {
 		if got := ToolName(label); got != want {
 			t.Fatalf("ToolName(%q) = %q, want %q", label, got, want)
 		}
+	}
+}
+
+// TestPeopleCarryTheirHumanActorID: every person row names the server's id
+// for the person, so a front end selects a person by id, never by a name two
+// people can share. A participant from an older server has no id and the row
+// carries none (never the synthetic grouping key).
+func TestPeopleCarryTheirHumanActorID(t *testing.T) {
+	f := &client.ContextFrame{Participants: []client.Participant{
+		{DisplayName: "bob", Kind: "member", HumanActorID: "u-bob", AgentInstanceID: "i-1", EdgeAgentLabel: "bob-codex", Active: active(true)},
+		{DisplayName: "bob", Kind: "member", HumanActorID: "u-bob-2", AgentInstanceID: "web:u-bob-2:t", Active: active(true)},
+		{DisplayName: "old", Kind: "member", AgentInstanceID: "web:x:t", Active: active(false)},
+	}}
+	st := StatusOf(f, "u-bob", "")
+	ids := map[string]bool{}
+	for _, p := range st.People {
+		ids[p.HumanActorID] = true
+		if p.Name == "old" && p.HumanActorID != "" {
+			t.Fatalf("a participant with no id got one: %+v", p)
+		}
+	}
+	if len(st.People) != 3 || !ids["u-bob"] || !ids["u-bob-2"] {
+		t.Fatalf("people = %+v", st.People)
+	}
+	b, err := json.Marshal(st.People[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"humanActorId":"u-bob"`) {
+		t.Fatalf("row = %s, want humanActorId on the wire", b)
 	}
 }

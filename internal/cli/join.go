@@ -26,7 +26,12 @@ import (
 const heartbeatInterval = 15 * time.Second
 
 func newJoinCommand(ui *UI, link string) *cobra.Command {
-	c := newCommand(ui, "join", func(cmd *cobra.Command, _ []string) error {
+	c := newCommand(ui, "join", func(cmd *cobra.Command, args []string) error {
+		// `join --incident <id>` (joinincident.go): a room picked from the
+		// incident list rather than a link, answered as one JSON line.
+		if incident, host, ok := joinIncidentFlags(args); ok {
+			return runJoinIncident(cmdContext(cmd), ui, incident, host)
+		}
 		return runJoin(cmdContext(cmd), ui, link)
 	})
 	// `--link` has already been spliced out of argv by parseArgs, and a

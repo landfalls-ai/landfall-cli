@@ -254,6 +254,8 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newRemediationCommand(ui),
 	)
 	root.AddCommand(placeholderCommands(ui)...)
+	// The edge components' read commands (readcommon.go).
+	root.AddCommand(readCommands(ui)...)
 	return root
 }
 

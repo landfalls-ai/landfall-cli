@@ -103,6 +103,9 @@ type Request struct {
 	SourceQueryFailed bool           `json:"sourceQueryFailed,omitempty"`
 	Widget            map[string]any `json:"widget,omitempty"`
 	EntryID           string         `json:"entryId,omitempty"`
+
+	// read (read.go): a room route, relative to the incident, with its query.
+	Path string `json:"path,omitempty"`
 }
 
 // ReaderSpec is how a reader introduces itself at attach.
@@ -161,6 +164,10 @@ type Response struct {
 	Allowed bool `json:"allowed,omitempty"`
 	// Signals (query) is the read's result, as query_signals receives it.
 	Signals map[string]any `json:"signals,omitempty"`
+	// Body (read) is the route's answer, verbatim; HTTPStatus is the
+	// server's status when it refused the read.
+	Body       json.RawMessage `json:"body,omitempty"`
+	HTTPStatus int             `json:"httpStatus,omitempty"`
 }
 
 // RoomView is a room as `rooms`, `peek` and `status` describe it.
@@ -441,6 +448,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 	case "match":
 		return d.match(req)
 
+	case "read":
+		return d.read(ctx, req)
+
 	case "allow-cwd":
 		return d.allowCwd(req)
 	}
@@ -622,6 +632,8 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 			// A signal read goes to the room's source through the credential
 			// proxy; the two-second budget is for the status line's reads.
 			_ = conn.SetDeadline(time.Now().Add(QueryTimeout))
+		case "read":
+			_ = conn.SetDeadline(time.Now().Add(ReadTimeout))
 		case "link":
 			_ = conn.SetDeadline(time.Now().Add(LinkWait + 2*time.Second))
 		}

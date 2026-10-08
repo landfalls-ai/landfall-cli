@@ -184,3 +184,103 @@ func TestFlattenWidgetTypes(t *testing.T) {
 		t.Fatalf("no data: %v", empty)
 	}
 }
+
+// geoBuild is a grouped CloudWatch build as Beacon validated it in a live
+// run: every query labelled with the dimension's name, so every series (and
+// every point) came back called "Region".
+func geoBuild(regions ...string) map[string]any {
+	var qs []any
+	for _, r := range regions {
+		qs = append(qs, map[string]any{
+			"Id": "5xx-by-region", "Label": "Region", "ReturnData": true,
+			"MetricStat": map[string]any{"Stat": "Average", "Period": 60, "Metric": map[string]any{
+				"Namespace": "AWS/CloudFront", "MetricName": "5xxErrorRate",
+				"Dimensions": []any{map[string]any{"Name": "DistributionId", "Value": "E123ABC"}, map[string]any{"Name": "Region", "Value": r}},
+			}},
+		})
+	}
+	return map[string]any{"scope": map[string]any{"query": map[string]any{
+		"groupBy": "Region", "window": map[string]any{"lookback": "1h"},
+		"params": map[string]any{"MetricDataQueries": qs},
+	}}}
+}
+
+// TestWallGeoKeepsPlaceNames: the live run's geo widget drew "Region 0.28"
+// five times. The server named each point after its series label, which was
+// the dimension's name; the build's queries still say which region each is.
+func TestWallGeoKeepsPlaceNames(t *testing.T) {
+	f := newFakeLandfall(t)
+	f.serveEvents(eventsPath, []map[string]any{
+		{"seq": 1, "type": "agent.widget.requested", "payload": map[string]any{"widgetId": "g1", "title": "5xx Error Rate by Region", "widgetType": "geo", "groupBy": "Region"}},
+		{"seq": 2, "type": "agent.widget.validated", "payload": map[string]any{"widgetId": "g1", "moduleId": "mod-g", "type": "geo", "build": geoBuild("us-east-1", "eu-west-1", "ap-southeast-1")}},
+		{"seq": 3, "type": "agent.widget.requested", "payload": map[string]any{"widgetId": "g2", "title": "Edge locations", "widgetType": "geo"}},
+		{"seq": 4, "type": "agent.widget.executed", "payload": map[string]any{"widgetId": "g2", "type": "geo", "data": map[string]any{"points": []any{
+			map[string]any{"place": "DUB", "label": "Dublin", "value": 3.0},
+			map[string]any{"place": "FRA", "value": 1.0},
+		}}}},
+	})
+	f.json("POST "+widgetsDataPath, personToken, map[string]any{
+		"window": map[string]any{"from": "2026-10-08T12:27:19Z", "to": "2026-10-08T13:27:19Z"},
+		"widgets": map[string]any{"g1": map[string]any{"widgetId": "g1", "status": "rendered", "data": map[string]any{"points": []any{
+			map[string]any{"place": "Region", "value": 0.28, "tone": "good"},
+			map[string]any{"place": "Region", "value": 13.1, "tone": "critical", "pulse": true, "label": "Region · 13.1%"},
+			map[string]any{"place": "Region", "value": 0.32, "tone": "good"},
+		}}}},
+	})
+	ans := roundTrip(t, RunWall(context.Background(), "rk1", f.deps(true)))
+	widgets := ans["widgets"].([]any)
+	if len(widgets) != 2 {
+		t.Fatalf("widgets: %v", ans)
+	}
+	pts := widgets[0].(map[string]any)["points"].([]any)
+	want := []string{"us-east-1", "eu-west-1", "ap-southeast-1"}
+	for i, p := range pts {
+		if got := p.(map[string]any)["place"]; got != want[i] {
+			t.Fatalf("point %d place = %v, want %s (points %v)", i, got, want[i], pts)
+		}
+	}
+	if label := pts[1].(map[string]any)["label"]; label != "eu-west-1 · 13.1%" {
+		t.Fatalf("the label that repeated the old name is renamed with it: %v", label)
+	}
+	// Places that already tell the points apart are left as the server sent them.
+	named := widgets[1].(map[string]any)["points"].([]any)
+	if named[0].(map[string]any)["place"] != "DUB" || named[0].(map[string]any)["label"] != "Dublin" || named[1].(map[string]any)["place"] != "FRA" {
+		t.Fatalf("named places: %v", named)
+	}
+}
+
+func TestNameGroupedPlacesNeverGuesses(t *testing.T) {
+	same := func() map[string]any {
+		return map[string]any{"points": []map[string]any{{"place": "Region"}, {"place": "Region"}}}
+	}
+	// A count that does not match the queries: left alone.
+	w := same()
+	nameGroupedPlaces(w, []string{"a", "b", "c"})
+	if w["points"].([]map[string]any)[0]["place"] != "Region" {
+		t.Fatalf("mismatched count renamed: %v", w)
+	}
+	// Queries that do not tell the points apart either: left alone.
+	w = same()
+	nameGroupedPlaces(w, []string{"a", "a"})
+	if w["points"].([]map[string]any)[0]["place"] != "Region" {
+		t.Fatalf("ambiguous queries renamed: %v", w)
+	}
+	// A build that is not grouped, or a query without the dimension, gives none.
+	if groupPlaces(map[string]any{"params": map[string]any{"MetricDataQueries": []any{map[string]any{}}}}) != nil {
+		t.Fatal("an ungrouped build must give no places")
+	}
+	if groupPlaces(geoBuild("us-east-1")["scope"].(map[string]any)["query"].(map[string]any))[0] != "us-east-1" {
+		t.Fatal("a grouped build gives each query's dimension value")
+	}
+}
+
+func TestFlattenGeoTakesAHandWrittenPlaceKey(t *testing.T) {
+	w := flattenWidget("g", "geo", "By region", map[string]any{"points": []any{
+		map[string]any{"region": "eu-west-1", "value": 2.0},
+		map[string]any{"name": "Frankfurt"},
+	}})
+	pts := w["points"].([]map[string]any)
+	if pts[0]["place"] != "eu-west-1" || pts[1]["place"] != "Frankfurt" {
+		t.Fatalf("points: %v", pts)
+	}
+}

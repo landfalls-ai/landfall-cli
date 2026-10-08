@@ -57,6 +57,10 @@ func newWallCommand(ui *UI) *cobra.Command {
 type projectedWidget struct {
 	id, typ, title, status, moduleID, errText string
 	data                                      map[string]any
+	// groupPlaces is, per query of a grouped build (validated
+	// build.scope.query), the value of the dimension the widget is grouped by,
+	// in query order: what each series is about when its own label is not.
+	groupPlaces []string
 }
 
 // projectWall is projectWidgets (widget-catalog project.ts), in build order.
@@ -92,6 +96,7 @@ func projectWall(events []timelineEvent) []*projectedWidget {
 			}
 		case "agent.widget.validated":
 			w.moduleID = jStr(p, "moduleId")
+			w.groupPlaces = groupPlaces(jObj(jObj(jObj(p, "build"), "scope"), "query"))
 			if t := jStr(p, "type"); t != "" {
 				w.typ = t
 			}
@@ -242,7 +247,11 @@ func RunWall(ctx context.Context, roomSel string, d ReadDeps) map[string]any {
 			}
 			data = resolved[w.id]
 		}
-		out = append(out, flattenWidget(w.id, w.typ, w.title, data))
+		flat := flattenWidget(w.id, w.typ, w.title, data)
+		if w.typ == "geo" {
+			nameGroupedPlaces(flat, w.groupPlaces)
+		}
+		out = append(out, flat)
 	}
 	ans := map[string]any{"ok": true, "widgets": out, "unavailable": unavailable}
 	if sharedBy != "" {
@@ -255,6 +264,90 @@ func RunWall(ctx context.Context, roomSel string, d ReadDeps) map[string]any {
 		ans["totalWidgets"] = total
 	}
 	return ans
+}
+
+// firstStr is the first non-blank string among keys.
+func firstStr(m map[string]any, keys ...string) string {
+	for _, k := range keys {
+		if s := strings.TrimSpace(jStr(m, k)); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// groupPlaces reads a grouped build's queries: for each CloudWatch metric
+// query, the value of the dimension named by groupBy ("Region" ->
+// "eu-west-1"). Nil when the build is not grouped or a query names no such
+// dimension, so a guess is never made.
+func groupPlaces(query map[string]any) []string {
+	by := strings.TrimSpace(jStr(query, "groupBy"))
+	if by == "" {
+		return nil
+	}
+	var out []string
+	for _, q := range jList(jObj(query, "params"), "MetricDataQueries") {
+		qm, _ := q.(map[string]any)
+		if rd, ok := qm["ReturnData"].(bool); ok && !rd {
+			continue // an input to an expression draws no series
+		}
+		place := ""
+		for _, d := range jList(jObj(jObj(qm, "MetricStat"), "Metric"), "Dimensions") {
+			dm, _ := d.(map[string]any)
+			if strings.EqualFold(jStr(dm, "Name"), by) {
+				place = strings.TrimSpace(jStr(dm, "Value"))
+				break
+			}
+		}
+		if place == "" {
+			return nil
+		}
+		out = append(out, place)
+	}
+	return out
+}
+
+// nameGroupedPlaces gives a geo widget's points their place names back when
+// the server could not. The server names each point after its series' label,
+// and a query labelled with the dimension's NAME ("Label": "Region" on every
+// query, as a local model wrote it in a live run) comes back as five points
+// all called "Region", which a pane draws as "Region 0.28" five times and a
+// map cannot place. When the places do not tell the points apart and the
+// build's queries do, one point per query in query order, each point takes
+// its query's dimension value; a label that repeated the old name is
+// renamed with it.
+func nameGroupedPlaces(w map[string]any, places []string) {
+	pts, _ := w["points"].([]map[string]any)
+	if len(pts) == 0 || len(pts) != len(places) {
+		return
+	}
+	seen := map[string]bool{}
+	distinct := true
+	for _, p := range pts {
+		name, _ := p["place"].(string)
+		if name == "" || seen[name] {
+			distinct = false
+			break
+		}
+		seen[name] = true
+	}
+	if distinct {
+		return
+	}
+	want := map[string]bool{}
+	for _, pl := range places {
+		if want[pl] {
+			return // the queries do not tell the points apart either
+		}
+		want[pl] = true
+	}
+	for i, p := range pts {
+		old, _ := p["place"].(string)
+		p["place"] = places[i]
+		if label, _ := p["label"].(string); old != "" && strings.HasPrefix(label, old) {
+			p["label"] = places[i] + strings.TrimPrefix(label, old)
+		}
+	}
 }
 
 // arrange puts the widgets the shared arrangement names first, in its order.
@@ -467,7 +560,9 @@ func flattenWidget(id, typ, title string, data map[string]any) map[string]any {
 				break
 			}
 			pm, _ := p.(map[string]any)
-			pt := map[string]any{"place": jStr(pm, "place")}
+			// The catalog's key is place; a data-only widget an agent wrote
+			// by hand may have named it otherwise.
+			pt := map[string]any{"place": firstStr(pm, "place", "name", "region", "label", "id")}
 			for _, key := range []string{"label", "unit", "tone"} {
 				if s := jStr(pm, key); s != "" {
 					pt[key] = s

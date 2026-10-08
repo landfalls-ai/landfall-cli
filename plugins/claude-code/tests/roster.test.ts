@@ -3,6 +3,7 @@ import { Drawn, fakeIo, kitFor, openConsoleOn, setRooms, settle } from './_tab'
 import { consoleState } from '../hooks/core.js'
 import * as rosterTab from '../hooks/components/roster.js'
 import * as wallTab from '../hooks/components/wall.js'
+import { labelIn, labelsIn } from './_label'
 
 // One `landfall watch` room with people[].latest (cli-json.md §1, review #7). The people rows carry
 // humanActorId, except bob's: the wall's people[] names him by displayName.
@@ -106,15 +107,15 @@ for (const surface of SURFACES) {
     expect(pane.find({ text: 'carol' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: 'war room' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: 'Claude Code · comparing 5xx by region' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● admitted' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● staged' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● contested' })).toBeDefined()
+    expect(labelIn(pane.rows, 'admitted')).toBeDefined()
+    expect(labelIn(pane.rows, 'staged')).toBeDefined()
+    expect(labelIn(pane.rows, 'contested')).toBeDefined()
     expect(pane.find({ type: 'Text', text: '#205 · 3m' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: 'nothing shared yet' })).toBeDefined()
     // The pill carries the state's tone from the kit's one map: contested is serious, never critical red.
-    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#ec835a')
-    expect(pane.find({ type: 'Text', text: '● staged' })?.props.color).toBe('#898781')
-    expect(pane.find({ type: 'Text', text: '● admitted' })?.props.color).toBe('#0ca30c')
+    expect(labelIn(pane.rows, 'contested')?.tone).toBe('#ec835a')
+    expect(labelIn(pane.rows, 'staged')?.tone).toBe('#898781')
+    expect(labelIn(pane.rows, 'admitted')?.tone).toBe('#0ca30c')
     // Quotes in curly marks, the hint once.
     expect(pane.find({ type: 'Button', text: '“Origin pool exhausted in us-east-1.”' })).toBeDefined()
     expect(pane.all({ type: 'Text', text: 'Enter on a name opens' })).toHaveLength(1)
@@ -241,26 +242,26 @@ for (const surface of SURFACES) {
     expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k1', '--person', 'h-alice'])
     const pane = draw(surface, io)
     // The desktop names her once, in the identity row; the terminal's heading names her.
-    expect(pane.find({ type: 'Text', text: surface === 'terminal' ? "alice's investigation" : 'Investigation' })?.props.bold).toBe(true)
+    expect(pane.find({ type: 'Text', text: 'Investigation' })?.props.bold).toBe(true)
     // Her own row, as the list draws it.
     expect(pane.find({ type: 'Text', text: 'Codex' })).toBeDefined()
     // Findings, newest first, with the Timeline's glyphs; a claim carries its state.
     expect(pane.find({ type: 'Text', text: 'Findings · 4' })?.props.bold).toBe(true)
     expect(pane.find({ type: 'Text', text: '16:01' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#ec835a')
+    expect(labelIn(pane.rows, 'contested')?.tone).toBe('#ec835a')
     const finding = pane.find({ key: 'trail-0' })!
-    expect(finding.props.label).toBe(surface === 'terminal' ? 'Origin pool exhausted in us-east-1' : '“Origin pool exhausted in us-east-1”')
+    expect(finding.props.label).toBe('“Origin pool exhausted in us-east-1”')
     expect(pane.find({ key: 'trail-2' })?.props.label).toContain('queried cloudwatch/metrics · origin-pool')
     expect(pane.find({ key: 'trail-3' })?.props.label).toContain('suggested: raise the pool limit to 64')
     // Only a claim carries a label.
-    expect(pane.all({ type: 'Text', text: /^● (staged|contested|admitted|corroborated|withdrawn)$/ })).toHaveLength(1)
+    expect(labelsIn(pane.rows, /^(staged|contested|admitted|corroborated|withdrawn)$/)).toHaveLength(1)
     expect(pane.all({ type: 'Text' }).filter((t) => ['◇', '?', '✓', '·'].includes(String(t.children[0]))).map((t) => t.children[0])).toEqual(['◇', '?', '✓', '◇'])
     // The dashboard, drawn as the Wall draws a person's: snapshots, the selected title marked.
     expect(pane.find({ type: 'Text', text: 'Dashboard' })?.props.bold).toBe(true)
     expect(pane.find({ type: 'Text', text: ' · 2 widgets · snapshots' })).toBeDefined()
     expect(pane.all({ type: 'Text', text: 'snapshot 9m ago' })).toHaveLength(2)
     expect(pane.find({ type: 'Button', text: '▸ Origin pool saturation' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● 98%' })).toBeDefined()
+    expect(labelIn(pane.rows, '98%')).toBeDefined()
     // Artifacts and the hint, once.
     expect(pane.find({ type: 'Text', text: 'Artifacts · 2' })?.props.bold).toBe(true)
     // The row is context.js's: the name is the Button on the terminal, a bold Text beside "Add to my context" on the desktop.
@@ -298,7 +299,7 @@ test('the keys of a person view: b back first, a asks about the selected widget,
   const keys = keysOf('terminal', io)
   expect(keys.all({ type: 'Button' }).map((b) => [b.props.hotkey, b.props.label])).toEqual([
     ['b', 'back to people'],
-    ['a', 'ask about Origin pool saturation'],
+    ['a', 'ask about this'],
     ['n', 'next widget'],
   ])
   expect(new Drawn(rosterTab.keys(kitFor('desktop'), io as never)).find({ key: 'back' })?.props.label).toBe('Back to people')
@@ -380,7 +381,7 @@ test('/landfall people <name> opens that person; yourself reads `me` and says Yo
   await settle()
   expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k1', '--person', 'me'])
   const pane = draw('terminal', io)
-  expect(pane.find({ type: 'Text', text: 'Your investigation' })?.props.bold).toBe(true)
+  expect(pane.find({ type: 'Text', text: 'Investigation' })?.props.bold).toBe(true)
   expect(pane.find({ type: 'Text', text: 'You have not shared anything yet.' })).toBeDefined()
   // A name nobody has leaves the list.
   begin()

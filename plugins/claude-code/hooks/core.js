@@ -319,10 +319,13 @@ export const TABS = ['home', 'vote', 'context', 'wall', 'people', 'timeline', 'l
 // The pane's title names the tab in full (round 2 review, decision 1.6): the switcher's words may
 // be cut to fit a narrow dock, so the title carries the real one.
 export const TAB_TITLES = { home: 'Home', vote: 'Vote', context: 'Context', wall: 'Wall', people: 'People', timeline: 'Timeline', lb: 'Load balancers', incidents: 'Incidents', more: 'More' }
+// Signed out and in no room, Home and Incidents both draw the sign-in view, so the title says so
+// (round 3 review, issue 4); console.js keeps `consoleState.signInView`.
 export function consoleTitle(tab) {
+  if (consoleState.signInView && (tab === 'home' || tab === 'incidents')) return 'Landfall · Sign in'
   return TAB_TITLES[tab] ? 'Landfall · ' + TAB_TITLES[tab] : 'Landfall'
 }
-export const consoleState = { tab: 'home', open: false, args: null, warm: new Set() }
+export const consoleState = { tab: 'home', open: false, args: null, warm: new Set(), signInView: false }
 
 // Opens (or refocuses) the console on a tab, with that tab's arguments (a person, a chip, a
 // dashboard, a load balancer). Never starts a turn. `opts.focus` gives it the keyboard: only when

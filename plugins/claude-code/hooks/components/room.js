@@ -87,7 +87,7 @@ export function bandHead(io, e, k) {
   } else if (votes.length > 1) voteLabel = k.pill(votes.length + ' votes waiting', 'warning', 'news-vote')
   if (k.terminal) {
     const rows = []
-    if (notLive(r)) rows.push(Text({ key: 'news-conn', color: TONE.warning, children: [RECONNECTING] }))
+    if (notLive(r)) rows.push(k.toned(RECONNECTING, 'warning', { key: 'news-conn' }))
     const words = '◆ ' + roomName(r) + (total > 0 ? ' · ' + (total === 1 ? '1 new' : total + ' new') : '')
     rows.push(k.row([Text({ key: 'news-h', bold: true, children: [clip(words, Math.max(20, k.width - 40))] }), voteLabel, agentBadge(k, r)], 'news-hrow', 2))
     return rows

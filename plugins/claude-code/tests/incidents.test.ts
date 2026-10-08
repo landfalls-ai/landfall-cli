@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { incidentsText, notOpenedWords, openedWords } from '../hooks/components/incidents.js'
 import { TOAST_MAX } from '../hooks/core.js'
 import { consolePane, roomOf, texts, world } from './_console'
+import { labelIn, labelText } from './_label'
 
 // The Incidents tab of the console (spec §4.6): `landfall incidents` as the Go CLI prints it
 // (internal/cli/incidents.go): severity and status lowercased, openedAt and slug on every row,
@@ -47,8 +48,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(words).toContain('acme · 4')
     expect(words.some((t) => t.includes('you are in it · 4 here: carol, bob, alice, you · Beacon running'))).toBe(true)
     // The severity and status are labels; a label is never pressable.
-    expect(words).toContain('● SEV1')
-    expect(words).toContain('● investigating')
+    expect(words).toContain(labelText(surface, 'SEV1'))
+    expect(words).toContain(labelText(surface, 'investigating'))
     // The hint names what Enter does on the focused row: your own room opens.
     expect(words).toContain('Enter: open the room')
 
@@ -133,7 +134,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await world($, on, { rooms: [roomOf()], surface, answers: { incidents: PRACTICE_LIST } })
     await $.command.run({ command: 'landfall', args: 'incidents' })
     const pane = await $.ui.mount(consolePane(surface) as never)
-    expect((await pane.find({ type: 'Text', text: '● practice' }))?.props.color).toBe('#8a5cd6')
+    expect(labelIn(await pane.drawn(), 'practice')?.tone).toBe('#8a5cd6')
     expect(await texts(pane)).toContain('Your organization has more incidents than this list shows. Open the web app to see the rest.')
   })
 }

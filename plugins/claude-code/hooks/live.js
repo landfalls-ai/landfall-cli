@@ -139,7 +139,7 @@ export function liveFooter(k, lp, nowMs, r, key = 'live') {
   const w = liveWords(lp, nowMs, r)
   if (!w) return null
   if (w.tone === 'neutral') return k.text(w.text, { key, dimColor: true })
-  return k.text(w.text, { key, color: TONE[w.tone] })
+  return k.toned(w.text, w.tone, { key })
 }
 
 // widgetSeqOf is the room's newest widget-shaping seq, or null from a CLI

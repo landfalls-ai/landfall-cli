@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { labelIn } from './_label'
 
 // Live panes and the dual connection (live.md FR-L2 to FR-L5), on the
 // session's own clock: register.js ticks every 5 s ($.clock.every), and the
@@ -119,7 +120,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     // The band says it once: a row on the terminal, a label off it (spec §5.1).
     const said = surface === 'terminal' ? 'Reconnecting to the room…' : '● reconnecting'
     let band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: said })).toBeDefined()
+    expect(surface === 'terminal' ? await band.find({ type: 'Text', text: said }) : labelIn(await band.drawn(), 'reconnecting')).toBeDefined()
     await band.unmount()
 
     // The console says it once, in the header's second row.
@@ -171,11 +172,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const withAgent = { ...ROOM, count: 1, maxSeq: 234, digest: ['#234 chat.message [bob@acme.com] — rolling back'], agent: { inRoom: true, label: 'claude-code', sinceMs: 60000 } }
     const s = await session($, on, [withAgent], () => WALL)
     let band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: surface === 'terminal' ? 'agent ✓' : '● agent ✓' })).toBeDefined()
+    expect(surface === 'terminal' ? await band.find({ type: 'Text', text: 'agent ✓' }) : labelIn(await band.drawn(), 'agent ✓')).toBeDefined()
     await band.unmount()
     await $.command.run({ command: 'landfall', args: '' })
     let r = await $.ui.mount(pane('landfall', surface))
-    expect(await r.find({ type: 'Text', text: '● agent ✓' })).toBeDefined()
+    expect(labelIn(await r.drawn(), 'agent ✓')).toBeDefined()
     await r.unmount()
 
     await s.feed([{ ...withAgent, agent: { inRoom: false } }])
@@ -240,7 +241,7 @@ test('mobile and vscode draw the reconnecting line, the agent word and the wall 
   for (const surface of ['mobile', 'vscode'] as const) {
     const band = await $.ui.mount({ ...BAND, surface } as never)
     // Off the terminal the reconnecting word is the label in the agent's place (spec §5.1).
-    expect(await band.find({ type: 'Text', text: '● reconnecting' })).toBeDefined()
+    expect(labelIn(await band.drawn(), 'reconnecting')).toBeDefined()
     expect(await band.find({ type: 'Button', key: 'open-wall' })).toBeDefined()
     expect(await band.find({ type: 'Input' })).toBeUndefined()
     await band.unmount()

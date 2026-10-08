@@ -4,6 +4,7 @@ import * as incMod from '../hooks/components/incidents.js'
 import { signin, signinBody } from '../hooks/components/signin.js'
 import { BUTTON_CHROME, textCells } from '../hooks/kit.js'
 import { Drawn, fakeIo, kitFor, openConsoleOn, setRooms, settle } from './_tab'
+import { labelIn } from './_label'
 
 // Round 3: the round 2 design review's items for Timeline (13), Incidents (17) and the sign-in
 // states (16, 20), one test per fix the test kit can see.
@@ -61,7 +62,7 @@ const LIST = {
   ],
 }
 
-test('issue 17: an incident card is SEV, title, status, age on one row; a long title clips with an ellipsis and practice sits on the meta line', async () => {
+test('issue 17 and round 3 issue 10: an incident card head is SEV, title, status on one row; the age rides on the meta line; practice sits there too', async () => {
   setRooms([ROOM])
   openConsoleOn('incidents')
   const io = fakeIo(() => LIST)
@@ -70,9 +71,9 @@ test('issue 17: an incident card is SEV, title, status, age on one row; a long t
   const pane = new Drawn(got.rows)
   const head = pane.find({ type: 'Box', key: 'h-i168' })!
   expect(head.props.flexWrap).toBe('nowrap')
-  // Order: severity, title, status, age.
-  expect(head.children.map((c: any) => c.props.key)).toEqual(['sp-w-i168', 't-w-i168', 'stp-w-i168', 'age-i168'])
-  expect(head.children[0].children[0].children[0].children.join('')).toBe('● SEV2')
+  // Order: severity, title, status. The age is on the meta line (round 3 review, issue 10).
+  expect(head.children.map((c: any) => c.props.key)).toEqual(['sp-w-i168', 't-w-i168', 'stp-w-i168'])
+  expect(labelIn(head.children[0], 'SEV2')?.tone).toBe('#ec835a')
   const title = pane.find({ type: 'Text', key: 't-i168' })!
   expect(String(title.children[0]).endsWith('…')).toBe(true)
   expect(title.props.wrap).toBe('truncate-end')
@@ -87,7 +88,9 @@ test('issue 17: an incident card is SEV, title, status, age on one row; a long t
   expect(meta).toBeDefined()
   expect(pane.all({ key: 'prp-i168' })).toHaveLength(1)
   expect(head.children.some((c: any) => c.props.key === 'prp-i168')).toBe(false)
-  expect(new Drawn(meta).words().join(' ')).toContain('nobody here yet')
+  expect(new Drawn(meta).words().join(' ')).toContain('nobody here yet · 42m')
+  // Its age follows the people on a card with no practice label too.
+  expect(new Drawn(pane.find({ type: 'Box', key: 'meta-i171' })).words().join(' ')).toContain('42m')
 })
 
 test('issue 16: the sign-in states leave the one blank row before the keys to the console, so the rows never end in a blank', () => {

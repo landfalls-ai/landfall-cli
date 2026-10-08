@@ -798,7 +798,8 @@ export function widgetBody(k, w, key, px, cells) {
   if (w.empty) return [k.text(EMPTY, { key: key + '-empty', dimColor: true })]
   switch (w.type) {
     case 'stat': {
-      const value = Text({ key: key + '-v', bold: true, color: toneColor(w.tone || 'neutral'), children: [String(w.value ?? 'no value')] })
+      const valueText = String(w.value ?? 'no value')
+      const value = w.tone && w.tone !== 'neutral' ? k.toned(valueText, w.tone, { key: key + '-v', bold: true }) : Text({ key: key + '-v', bold: true, children: [valueText] })
       const unit = w.unit ? Text({ key: key + '-u', dimColor: true, children: [String(w.unit)] }) : null
       const delta = deltaText(w)
       // A change is a label only when the widget carries a tone, in that tone; a rise nobody toned is
@@ -886,7 +887,7 @@ export function widgetBody(k, w, key, px, cells) {
         }
         return k.row(
           [
-            Text({ key: 'lv', bold: true, color: toneColor(levelTone(l.level)), children: [levelTag(l.level)] }),
+            k.toned(levelTag(l.level), levelTone(l.level), { key: 'lv', bold: true }),
             Text({ key: 'lt', children: [clipText(l.text, Math.max(10, cells - 4))] }),
           ],
           key + '-ln' + i,
@@ -904,9 +905,7 @@ export function widgetBody(k, w, key, px, cells) {
       if (evs.length === 0) return [k.text('No events in this window.', { key: key + '-none', dimColor: true })]
       return evs.map((ev, i) => {
         const tone = outcomeTone(ev.outcome)
-        const props = { key: key + '-e' + i, children: [clipText(eventLine(ev), cells)] }
-        if (tone !== 'neutral') props.color = toneColor(tone)
-        return Text(props)
+        return tone !== 'neutral' ? k.toned(clipText(eventLine(ev), cells), tone, { key: key + '-e' + i }) : Text({ key: key + '-e' + i, children: [clipText(eventLine(ev), cells)] })
       })
     }
     case 'timeline': {
@@ -957,8 +956,8 @@ export function deltaTone(w) {
 }
 
 // baselineWords is the stat's comparison line, as the CLI sends it (`6 an hour ago`: the value the
-// stat had, then when), said without joining a count to a humanized phrase: `6 · 1h ago`, `6 · 6m
-// ago`, `as of 2h ago` (round 2 issue 7). A line that does not have that shape is said as it came.
+// stat had, then when), said without joining a count to a humanized phrase: `was 6 · 1h ago`, `was 6 · 6m
+// ago`, `as of 2h ago` (round 2 issue 7; `was` from round 3 nit 9, so the bare 6 reads as the old value). A line that does not have that shape is said as it came.
 export function baselineWords(label) {
   const text = String(label ?? '').trim()
   const m = /^(?:(.*?)\s+)?(?:(an?|\d+)\s+(second|minute|hour|day)s?\s+ago)$/i.exec(text)
@@ -966,7 +965,7 @@ export function baselineWords(label) {
   const n = /^an?$/i.test(m[2]) ? 1 : Number(m[2])
   const unit = { second: 's', minute: 'm', hour: 'h', day: 'd' }[m[3].toLowerCase()]
   const age = n + unit + ' ago'
-  return m[1] ? m[1] + ' · ' + age : 'as of ' + age
+  return m[1] ? 'was ' + m[1] + ' · ' + age : 'as of ' + age
 }
 
 // withUnit is a value and its unit: "34%", "120 ms".

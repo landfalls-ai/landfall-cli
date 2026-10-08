@@ -13,6 +13,7 @@
 
 import { HOST, consoleState, currentOf, currentRoom, reading, roomName } from '../core.js'
 import { closed, drawn, keep, livePane, opened as markOpen } from '../live.js'
+import { textCells } from '../kit.js'
 import { clipText, hhmm, toneColor } from '../views.js'
 import { chipRow, footerOf, keyButton, nowOf, resetLive, roomKeyOf } from './tabparts.js'
 
@@ -118,6 +119,9 @@ export function latestRows(n) {
   return tl.latest.slice(-n)
 }
 
+// The desktop's time slot: `00:00` and a cell, in cells (the time is proportional text off the terminal).
+export const TIME_SLOT = Math.ceil(textCells('00:00')) + 1
+
 // The live read's state (live.js), so Home can say how old its Latest block is.
 export function readState() {
   return lp
@@ -161,7 +165,13 @@ export function tab(k, io, nowMs, args) {
     const glyph = k.terminal ? mark : Box({ key: 'gs', width: 2, flexShrink: 0, justifyContent: 'center', children: [mark] })
     const label = clipText(eventWords(ev), space)
     const press = k.els.Button({ key: 'ev-' + ev.seq, label, plain: true, onPress: () => quote(io, ev) })
-    const line = k.row([Text({ key: 't', dimColor: true, children: [hhmm(ev.at)] }), glyph, press], 'row-' + ev.seq, 1)
+    // The time is proportional text, so its width moves with its digits and so did the text after it
+    // (1447 to 1456 px, round 3 review, issue 2): off the terminal it sits in a box of one fixed width
+    // (`00:00` and a cell), then the glyph slot, then the text in the box that takes the rest.
+    const time = Text({ key: 't', dimColor: true, children: [hhmm(ev.at)] })
+    const when = k.terminal ? time : Box({ key: 'tw', width: TIME_SLOT, flexShrink: 0, children: [time] })
+    const words = k.terminal ? press : Box({ key: 'xw', flexGrow: 1, flexShrink: 1, minWidth: 0, children: [press] })
+    const line = k.row([when, glyph, words], 'row-' + ev.seq, 1)
     if (k.rich && ev.detail) rows.push(k.col([line, k.text(clipText(ev.detail, space), { key: 'd', dimColor: true })], 'evc-' + ev.seq))
     else rows.push(line)
   }

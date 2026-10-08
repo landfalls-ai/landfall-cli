@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { labelIn } from './_label'
 
 // The room at a glance, as `landfall watch` sends it (narrate.RoomStatus).
 function room(status: string, beacon: string) {
@@ -132,8 +133,8 @@ test('/landfall opens on Home: the room at a glance, who is here and what they l
   await $.command.run({ command: 'landfall', args: '' })
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
   expect(await pane.find({ type: 'Text', text: '◆ Acme 82 · cloudfront-5xx-high' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '● investigating' })).toBeDefined()
+  expect(labelIn(await pane.drawn(), 'SEV2')).toBeDefined()
+  expect(labelIn(await pane.drawn(), 'investigating')).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'Here · 3' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: 'alice' })).toBeDefined()
   expect(await pane.find({ type: 'Text', text: ' (you)' })).toBeDefined()

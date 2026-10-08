@@ -17,7 +17,8 @@
 // THE PIECES (k = kit($.ui.resolve(e), e)):
 //   k.surface, k.terminal, k.rich (draws Svg), k.mobile (compact: no fields), k.width
 //   k.mark(key?, px?)                      the Beacon mark, or ◆ on the terminal
-//   k.pill(text, tone?, key?)              "● SEV2" in its tone; a tinted, unbordered label off the terminal
+//   k.pill(text, tone?, key?)              "● SEV2" in its tone; off the terminal a tinted, unbordered label: tone dot, word in ink
+//   k.toned(text, tone, props?)            a state word; off the terminal a low-contrast tone is a dot plus ink
 //   k.segments(items, { key })             a segmented control: [{ id, label, active, onPress }]
 //   k.header({ key, title, pills, dim })   mark, title, pills
 //   k.button({ key, label, hotkey, onPress, primary, dim, dismiss })
@@ -46,6 +47,9 @@ export const TONE = {
   violet: '#8a5cd6',
   neutral: '#898781',
 }
+
+// The tones whose color, drawn as text on a light page, is below 3:1 (round 3 review, issue 1).
+export const LOW_CONTRAST = ['warning', 'serious', 'good']
 
 // One claim state, one tone, on every tab and both surfaces (round 2 review, issue 4): red means
 // the room is on fire, and a staged claim is not.
@@ -163,8 +167,29 @@ export function kit(els, e) {
     pill(text, tone = 'neutral', key) {
       const color = TONE[tone] || TONE.neutral
       if (terminal) return Text({ key, color, children: ['● ' + text] })
-      const label = Text({ ...(key ? { key: key + '-t' } : {}), color, children: ['● ' + text] })
-      return Box({ key, backgroundColor: color + '1f', paddingX: 1, children: [label] })
+      // The state is carried by the dot and the tint; the word is drawn in the theme's own ink (no
+      // `color`), because a tone color on its own 12% tint falls to 1.7:1 (warning) on a light page
+      // (round 3 review, issue 1). The dot's trailing space keeps the label's text `● word`.
+      const dot = Text({ ...(key ? { key: key + '-d' } : {}), color, children: ['● '] })
+      const word = Text({ ...(key ? { key: key + '-t' } : {}), children: [String(text)] })
+      return Box({ key, flexDirection: 'row', backgroundColor: color + '1f', paddingX: 1, children: [dot, word] })
+    },
+
+    // toned is a word that carries a state, in its tone. On the terminal, and for a tone that reads
+    // on a light page (info, critical), it is the word in the tone color. For a tone that does not
+    // (warning, serious and good fall to 1.7, 2.4 and 2.9 to 1 on white) the desktop draws the
+    // state as a colored dot and the word in ink (round 3 review, issue 1). `props` are Text props
+    // (key, bold, dimColor, ...).
+    toned(text, tone, props = {}) {
+      const color = TONE[tone] || TONE.neutral
+      if (terminal || !LOW_CONTRAST.includes(tone)) return Text({ ...props, color, children: [String(text)] })
+      const { key, ...rest } = props
+      return Box({
+        ...(key ? { key } : {}),
+        flexDirection: 'row',
+        flexShrink: 1,
+        children: [Text({ ...(key ? { key: key + '-d' } : {}), color, children: ['● '] }), Text({ ...rest, ...(key ? { key: key + '-t' } : {}), children: [String(text)] })],
+      })
     },
 
     // segments is a segmented control (spec §2.2): one row, never wrapped. Each item is
@@ -239,6 +264,13 @@ export function kit(els, e) {
       const tone = opts.tone || 'neutral'
       const vals = (values || []).filter((v) => typeof v === 'number' && isFinite(v))
       if (vals.length < 2) return null
+      if (rich && opts.fill) {
+        // Fill the slot: no width or height on the element, and a markup of its own width larger than
+        // any slot, so the box takes the slot's width and the markup's aspect sets the height (SvgProps
+        // width: "absent, the box takes the markup's own width up to the slot"). Strokes do not scale
+        // with it (round 3 review, issue 3).
+        return els.Svg({ key, source: lineSvg(vals, FILL_W, FILL_H, TONE[tone], { ...opts, intrinsic: true }), alt: opts.label || 'sparkline' })
+      }
       if (rich) {
         const w = opts.px || 280
         const h = opts.height || 44
@@ -447,23 +479,30 @@ function esc(s) {
 
 // lineSvg is a line chart with a faint grid, an area fill, an emphasized end
 // point and an optional dashed marker (a deploy) at opts.mark.
+// The drawing a sparkline that fills its slot is made on (kit.spark `fill`).
+export const FILL_W = 900
+export const FILL_H = 80
+
 export function lineSvg(vals, w, h, color, opts = {}) {
   const lo = opts.min ?? Math.min(...vals)
   const hi = opts.max ?? Math.max(...vals)
   const span = hi - lo || 1
   const n = vals.length
-  const pts = vals.map((v, i) => [(i / (n - 1)) * w, h - ((v - lo) / span) * (h - 6) - 3])
+  const pad = opts.intrinsic ? 7 : 3
+  const pts = vals.map((v, i) => [(i / (n - 1)) * w, h - ((v - lo) / span) * (h - 2 * pad) - pad])
   const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ')
-  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '">' + (opts.hover ? SVG_THEME : '')
-  for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#898781" stroke-opacity=".35"/>'
+  const fixed = opts.intrinsic ? ' vector-effect="non-scaling-stroke"' : ''
+  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ' + w + ' ' + h + '"' + (opts.intrinsic ? ' width="' + w + '" height="' + h + '"' : '') + '>' + (opts.hover ? SVG_THEME : '')
+  for (let g = 1; g < 4; g++) s += '<line x1="0" x2="' + w + '" y1="' + (h * g) / 4 + '" y2="' + (h * g) / 4 + '" stroke="#898781" stroke-opacity=".35"' + fixed + '/>'
   if (opts.mark != null) {
     const mx = (opts.mark / (n - 1)) * w
     s += '<line x1="' + mx + '" x2="' + mx + '" y1="0" y2="' + h + '" stroke="#898781" stroke-dasharray="2 3"/>'
   }
   s += '<path d="' + d + ' L' + w + ' ' + h + ' L0 ' + h + ' Z" fill="' + color + '" fill-opacity=".14"/>'
-  s += '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linejoin="round"/>'
+  s += '<path d="' + d + '" fill="none" stroke="' + color + '" stroke-width="1.8" stroke-linejoin="round"' + fixed + '/>'
   const last = pts[n - 1]
-  s += '<circle cx="' + last[0] + '" cy="' + last[1] + '" r="2.6" fill="' + color + '"/>'
+  // The end point keeps its size when the drawing is scaled down to its slot (its markup is wider than any slot).
+  s += '<circle cx="' + (opts.intrinsic ? w - 6 : last[0]) + '" cy="' + last[1] + '" r="' + (opts.intrinsic ? 5.5 : 2.6) + '" fill="' + color + '"/>'
   if (opts.label) s += '<title>' + esc(opts.label) + '</title>'
   return s + '</svg>'
 }

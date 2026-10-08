@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { labelIn } from './_label'
 
 // The vote card (FR-01, FR-16): `landfall watch` rooms[].votes (the human
 // view, contracts/cli-json.md §1 as amended by review.md #2), and
@@ -145,7 +146,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     const band = await $.ui.mount({ ...BAND, surface } as never)
     // The head says how many wait (spec §5.1); the statement is the most urgent one's.
-    expect(await band.find({ type: 'Text', text: '● 2 votes waiting' })).toBeDefined()
+    expect(labelIn(await band.drawn(), '2 votes waiting')).toBeDefined()
     expect(await band.find({ type: 'Text', text: "bob's agent: “The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”" })).toBeDefined()
     // The positions row is not in the band: the head label says the vote waits (round 7).
     expect(await band.find({ type: 'Text', text: 'positions 1 of 2 · your vote would admit it' })).toBeUndefined()
@@ -248,7 +249,7 @@ test('mobile: a compact card with Corroborate and Later, and no contest', async 
   const w = await startWith($, on, snapshot([vote()]))
   const band = await $.ui.mount({ ...BAND, surface: 'mobile' } as never)
   expect(await band.find({ type: 'Text', text: 'Acme 168 · cloudfront-5xx-high' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
+  expect(labelIn(await band.drawn(), 'SEV2')).toBeDefined()
   expect(await band.find({ type: 'Text', text: "bob's agent: “The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”" })).toBeDefined()
   expect(await band.find({ type: 'Text', text: 'your vote · 1 of 2 · 4m 10s left' })).toBeDefined()
   expect(await band.find({ type: 'Button', key: 'vote-contest' })).toBeUndefined()

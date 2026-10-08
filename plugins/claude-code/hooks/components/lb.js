@@ -377,7 +377,8 @@ function heatView(k, one, key, a) {
       out.push(centerRow(k, [labelCell(k, tg.name || 'target group', key + '-hl' + gi), k.heat([gridOf(tg)], { key: key + '-heat' + gi, cell, label: '5xx per minute, ' + (tg.name || 'target group') + ', ' + span, titleFor }), latest(tg, gi)], key + '-hr' + gi, 2))
     })
   } else {
-    out.push(k.text(' '.repeat(LABEL_W) + clipText(start + ' '.repeat(Math.max(1, cols - start.length - 3)) + 'now', cols), { key: key + '-axis', dimColor: true }))
+    // No axis row above the strip: the first minute's time rides on the caption, as on the desktop (round 3
+    // review, issue 6). The strip is one Raster for every target group, so text cannot share its rows.
     const labels = groups.map((tg, i) => labelCell(k, tg.name || 'target group', 'l' + i))
     out.push(centerRow(k, [k.col(labels, 'labels'), k.heat(groups.map(gridOf), { key: 'heat', label: '5xx per target group per minute' }), k.col(groups.map(latest), 'latest')], key + '-heat', 2))
   }
@@ -386,24 +387,24 @@ function heatView(k, one, key, a) {
   out.push(
     centerRow(k, 
       [
-        swatch(k.rich ? '■' : '▪', TONE.neutral, k.rich ? '<1%' : 'under 1%', 0),
+        swatch(k.rich ? '■' : '▪', TONE.neutral, '<1%', 0),
         swatch(k.rich ? '■' : '█', toneColor('good'), '1-5%', 1),
         swatch(k.rich ? '■' : '█', toneColor('warning'), '5-20%', 2),
-        swatch(k.rich ? '■' : '█', toneColor('critical'), k.rich ? '>20%' : 'over 20%', 3),
+        swatch(k.rich ? '■' : '█', toneColor('critical'), '>20%', 3),
         swatch(k.rich ? '□' : '·', TONE.neutral, 'no requests', 4),
       ],
       key + '-legend',
       2,
     ),
   )
-  // The first minute's time rides on the caption on the desktop (a floating axis label meant nothing).
-  out.push(k.text('5xx per target group, last ' + span + (k.rich && start ? ', since ' + start + 'Z' : ''), { key: key + '-cap', dimColor: true }))
+  // The first minute's time rides on the caption on both surfaces (a floating axis label meant nothing).
+  out.push(k.text('5xx per target group, last ' + span + (start ? ', since ' + start + 'Z' : ''), { key: key + '-cap', dimColor: true }))
   const hhc = fillGaps(one.healthyHostCount || [])
   if (hhc.length >= 2) {
     const sparkTone = healthyTone(one.healthy, one.total) === 'good' ? 'good' : 'warning'
     const total = k.rich ? minutes * (cell + 2) : cols
     const sp = k.rich ? k.spark(hhc, { key: key + '-hhc', tone: sparkTone, px: total, height: 44, label: 'healthy host count', hover: true }) : k.spark(hhc, { key: key + '-hhc', tone: sparkTone, width: cols, label: 'healthy host count' })
-    const hhLabel = k.rich ? k.els.Box({ key: key + '-hhl', width: LABEL_W, flexShrink: 0, children: [Text({ key: key + '-hhl-t', bold: true, children: ['Healthy hosts'] })] }) : labelCell(k, 'healthy hosts', key + '-hhl')
+    const hhLabel = k.els.Box({ key: key + '-hhl', width: LABEL_W, flexShrink: 0, children: [Text({ key: key + '-hhl-t', bold: true, children: ['Healthy hosts'] })] })
     out.push(centerRow(k, [hhLabel, sp, Text({ key: key + '-hhn', dimColor: true, children: [(one.healthy ?? 0) + ' of ' + (one.total ?? 0)] })], key + '-hhc-r', 2))
   }
   return out

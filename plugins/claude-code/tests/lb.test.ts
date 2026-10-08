@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { NOW, chromed, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import { consoleState } from '../hooks/core.js'
 import * as lbMod from '../hooks/components/lb.js'
+import { labelIn } from './_label'
 
 // `landfall lb` as the Go CLI really prints it (internal/cli/lb.go, its
 // lb_test.go fixture): 5xx is per TARGET GROUP (`fiveXxBy: "targetGroup"`),
@@ -168,7 +169,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     hookTab(on, 'd-lb', (k, io, now, args) => chromed(lbMod, k, io, now, args))
     const pane = await $.ui.mount({ ...paneProps('d-lb', { viewport: { columns: 140, rows: 50 } }), surface } as never)
     expect(await pane.find({ type: 'Text', text: 'web-edge-alb' })).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: '● healthy 5 of 7' }))?.props.color).toBe('#fab219')
+    expect(labelIn(await pane.drawn(), 'healthy 5 of 7')?.tone).toBe('#fab219')
     expect(await pane.find({ type: 'Text', text: 'us-east-1 · internet-facing' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Zones: us-east-1a, us-east-1b, us-east-1c' })).toBeDefined()
     // The short heading, and the group's latest 5xx share as a label right after it.
@@ -179,8 +180,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect((await pane.find({ type: 'Text', text: 'health check /healthz' }))?.props.dimColor).toBe(true)
     }
     expect(await pane.find({ type: 'Text', text: 'web-edge-canary-tg · HTTP 8081' })).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: '● 5xx 34%' }))?.props.color).toBe('#d03b3b')
-    expect((await pane.find({ type: 'Text', text: '● 5xx 0%' }))?.props.color).toBe('#0ca30c')
+    expect(labelIn(await pane.drawn(), '5xx 34%')?.tone).toBe('#d03b3b')
+    expect(labelIn(await pane.drawn(), '5xx 0%')?.tone).toBe('#0ca30c')
     // Targets by zone: the square in its health tone, the id plain.
     for (const zone of ['us-east-1a', 'us-east-1b', 'us-east-1c']) expect((await pane.findAll({ type: 'Text', text: zone })).length).toBeGreaterThan(0)
     const squares = (await pane.findAll({ type: 'Text', text: '■' })).map((x: any) => x.props.color)
@@ -192,12 +193,12 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await pane.find({ type: 'Text', text: '10.0.4.17:9000' })).toBeDefined()
     // The legend: swatches carry the tone, the words are dim, quiet is neutral.
     expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? '▪' : '■', props: { color: '#898781' } as any }))).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? 'under 1%' : '<1%' }))?.props.dimColor).toBe(true)
+    expect((await pane.find({ type: 'Text', text: '<1%' }))?.props.dimColor).toBe(true)
     expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? '█' : '■', props: { color: '#d03b3b' } as any }))).toBeDefined()
-    expect((await pane.find({ type: 'Text', text: surface === 'terminal' ? 'over 20%' : '>20%' }))?.props.dimColor).toBe(true)
+    expect((await pane.find({ type: 'Text', text: '>20%' }))?.props.dimColor).toBe(true)
     expect(await pane.find({ type: 'Text', text: 'no requests' })).toBeDefined()
     expect((await pane.find({ type: 'Text', text: '5xx per target group, last 36 minutes' }))?.props.dimColor).toBe(true)
-    expect(await pane.find({ type: 'Text', text: surface === 'terminal' ? 'healthy hosts' : 'Healthy hosts' })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: 'Healthy hosts' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: '5 of 7' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: /^live · updated 0s ago/ })).toBeDefined()
 
@@ -212,8 +213,10 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(cell(heat, 1, 0)).toBe(0x00b7) // the canary served nothing yet
       expect(cell(heat, 1, 35)).toBe(0x25aa)
       expect(await pane.find({ type: 'Text', text: 'web-edge-tg' })).toBeDefined()
-      expect((await pane.find({ type: 'Text', text: '● 34%' }))?.props.color).toBe('#d03b3b')
-      expect(await pane.find({ type: 'Text', text: /^ +16:50 +now$/ })).toBeDefined()
+      expect(labelIn(await pane.drawn(), '34%')?.tone).toBe('#d03b3b')
+      // Round 3 issue 6: no floating axis row; the first minute rides on the caption, as on the desktop.
+      expect(await pane.find({ type: 'Text', text: /^ +16:50 +now$/ })).toBeUndefined()
+      expect(await pane.find({ type: 'Text', text: /^5xx per target group, last 36 minutes, since 16:50Z$/ })).toBeDefined()
       expect(await pane.find({ type: 'Text', text: '  i-07aa: Request timed out' })).toBeDefined()
       // The healthy-hosts sparkline is exactly as wide as a heat row.
       expect((await pane.find({ type: 'Raster', key: 'lb0-hhc' }))?.props.columns).toBe(36)
@@ -227,7 +230,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
       expect(heats[0].props.source).toContain('<title>web-edge-tg · 17:10Z · 5xx 34% (170 of 500 requests)</title>')
       expect(heats[0].props.source).toContain('<title>web-edge-tg · 16:53Z · no requests</title>')
       expect(heats[0].props.source).toContain('stroke-dasharray="2 2"')
-      expect((await pane.find({ type: 'Text', text: '● 34%' }))?.props).toBeDefined()
+      expect(labelIn(await pane.drawn(), '34%')).toBeDefined()
       const spark = svgs.find((x: any) => x.props.alt === 'healthy host count')
       expect(spark).toBeDefined()
       // Exactly as wide as a heat row, 44 tall.
@@ -427,7 +430,8 @@ test('the mobile tab draws the board and a share key', async () => {
   NEW_ROOM()
   await readBoard(LB)
   const tree = chromed(lbMod, fakeKit('mobile'), fakeIo().io, NOW, null)
-  expect(textsOf(tree)).toContain('● healthy 5 of 7')
+  expect(textsOf(tree)).toContain('healthy 5 of 7')
+  expect(labelIn(tree, 'healthy 5 of 7')?.tone).toBe('#fab219')
   expect(nodes(tree, 'Button').map((b) => b.props.key)).toEqual(['lb-share', 'lb-ask'])
 })
 

@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { NOW, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, ran, setRoom, textsOf, watchRoom } from './_tabd'
 import * as voteMod from '../hooks/components/vote.js'
+import { labelIn } from './_label'
 
 // The Vote tab (spec 4.1): the component's own tab(k, io, nowMs, args), as console.js draws it.
 
@@ -35,7 +36,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     hookTab(on, 'd-vote', (k, io, now) => drawTab(k, io, now))
     const pane = await $.ui.mount({ ...paneProps('d-vote'), surface } as never)
     expect(await pane.find({ type: 'Text', text: 'Your vote is waiting' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '● 4m 10s left' })).toBeDefined()
+    expect(labelIn(await pane.drawn(), '4m 10s left')).toBeDefined()
     expect(await pane.find({ type: 'Text', text: "bob's agent · staged #212" })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'positions 1 of 2 · your vote would admit it' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: '“The 5xx rise starts at 15:45Z, the same bucket as the v2.3.1 deploy”' })).toBeDefined()

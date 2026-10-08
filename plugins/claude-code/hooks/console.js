@@ -76,7 +76,7 @@ import { brainText } from './components/brain.js'
 import { claimLine, lineLabel, roomLines } from './components/lines.js'
 import { chart, pinChart } from './components/chart.js'
 import { sound, switchText } from './components/sound.js'
-import { cancelSignin, noteWhoami, signedOut, signin } from './components/signin.js'
+import { cancelSignin, noteWhoami, signedOut, signin, signinBody } from './components/signin.js'
 
 export const DESCRIPTION = 'Landfall war room console: home, vote, context, wall, people, timeline, load balancers, incidents, comms, brain'
 export const UNKNOWN = 'Landfall tabs: home, vote, context, wall, people, timeline, lb, incidents, more (comms, brain). Also: lines <label>, chart, sound.'
@@ -117,6 +117,7 @@ export function install(on) {
       return { text: switchText(sound.on) }
     }
     const tab = asked.tab || (await landing(io))
+    syncSignIn()
     if (asked.scrollTo) consoleState.scrollTo = scrollKey(asked.scrollTo)
     const got = await openConsole(io, tab, asked.args, { focus: true })
     if (got && got.isPlaced === false) {
@@ -194,7 +195,10 @@ export function start(io) {}
 // tick: an open console redraws every 5 s, so ages and the sign-in clock move. The tabs read
 // on their own cadence in their own tick.
 export function tick(io, nowMs) {
-  if (consoleState.open) io.invalidate()
+  if (consoleState.open) {
+    syncSignIn(io)
+    io.invalidate()
+  }
 }
 
 // ---------- arguments (§1.2) ----------
@@ -265,7 +269,31 @@ async function landing(io) {
     return 'home'
   }
   if (signin.phase !== 'waiting') noteWhoami(await io.run(['whoami', '--json', '--host', HOST], { timeoutMs: 10000 }))
-  return 'incidents'
+  // Signed out, there is nothing to read in any tab: Home is active and draws the sign-in view
+  // (round 3 review, issue 4). Signed in, the picker is Incidents.
+  return signedOut() ? 'home' : 'incidents'
+}
+
+// signInView: no sign-in and no room, so Home and Incidents draw the sign-in view and the pane's
+// title says `Sign in`. syncSignIn keeps core's flag current and retitles an open pane when it moved.
+function signInView() {
+  return signedOut() && !currentRoom()
+}
+
+function syncSignIn(io) {
+  const now = signInView()
+  const moved = now !== consoleState.signInView
+  consoleState.signInView = now
+  if (moved && io && consoleState.open) retitle(io, consoleState.tab)
+}
+
+// retitle sets the pane's title (an open id only retitles, and without `focus` never takes the keyboard).
+function retitle(io, t) {
+  try {
+    void Promise.resolve(io.open(CONSOLE, consoleTitle(t), { columns: CONSOLE_COLUMNS, closeOnEscape: true })).catch(() => {})
+  } catch {
+    // The title is a courtesy: a pane that cannot be retitled still switches.
+  }
 }
 
 async function readSoundSwitch($) {
@@ -564,13 +592,8 @@ export function showTab(io, t) {
   warmOnce(io, t)
   // The switcher may show a cut word, so the pane's title names the tab in full. Opening an open id
   // only retitles it, and without `focus` it never takes the keyboard.
-  if (changed) {
-    try {
-      void Promise.resolve(io.open(CONSOLE, consoleTitle(t), { columns: CONSOLE_COLUMNS, closeOnEscape: true })).catch(() => {})
-    } catch {
-      // The title is a courtesy: a pane that cannot be retitled still switches.
-    }
-  }
+  consoleState.signInView = signInView()
+  if (changed) retitle(io, t)
   io.invalidate()
 }
 
@@ -674,7 +697,7 @@ function header(k, r) {
     out.push(Box({ key: 'hdr', flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', columnGap: 2, children: [title, people.length ? k.avatars(people, { key: 'hdr-avs', max: 5 }) : null].filter(Boolean) }))
     if (labels.length) out.push(k.row(labels, 'hdr-l', 1))
   }
-  if (notLive(r)) out.push(Text({ key: 'hdr-conn', color: TONE.warning, children: [RECONNECTING] }))
+  if (notLive(r)) out.push(k.toned(RECONNECTING, 'warning', { key: 'hdr-conn' }))
   return out
 }
 
@@ -690,7 +713,7 @@ export function footerWords(lp, nowMs, r, name) {
 }
 
 function footerRow(k, foot) {
-  if (foot.tone === 'warning') return k.text(foot.text, { key: 'foot', color: TONE.warning })
+  if (foot.tone === 'warning') return k.toned(foot.text, 'warning', { key: 'foot' })
   return k.text(foot.text, { key: 'foot', dimColor: true })
 }
 
@@ -705,6 +728,11 @@ function keysRows(k, io, t, got) {
     k.button({ key: 'close', label: k.terminal ? 'close (esc)' : 'Close', dim: true, dismiss: true, onPress: () => closeConsole(io) }),
   ].filter(Boolean)
   if (own.length === 0) return [k.row(tail, 'keys')]
+  // Off the terminal a button's width is proportional text plus chrome and a key chip, so it cannot be
+  // counted: whether `Refresh` and `Close` fit beside the tab's own keys differed from tab to tab (round 3
+  // review, nit 8). One rule: they are always their own last row. The terminal counts cells exactly and
+  // keeps them beside the tab's keys while they fit.
+  if (!k.terminal) return [k.row(own, 'keys-own'), k.row(tail, 'keys')]
   const cells = [...own, ...tail].reduce((w, b) => w + keyCells(b) + 2, 0) - 2
   if (cells <= k.width + 2) return [k.row([...own, ...tail], 'keys')]
   return [k.row(own, 'keys-own'), k.row(tail, 'keys')]
@@ -792,6 +820,11 @@ async function refreshHome(io) {
 function drawHome(k, io, nowMs, e, r) {
   const { Text } = k.els
   if (!r) {
+    // Signed out, Home draws the sign-in view; once signed in it goes to the picker.
+    if (signedOut()) {
+      const s = signinBody(k, io, nowMs, async () => showTab(io, 'incidents'))
+      return { rows: s.rows, keys: s.keys, live: null, footer: s.footer, refresh: null, noRefresh: true }
+    }
     return { rows: [Text({ key: 'home-none', children: [NO_ROOM] })], keys: [], live: null, footer: null, refresh: null }
   }
   const feeds = { wall: wallFeed(), lb: lbFeed(), timeline: timelineFeed() }
@@ -1152,7 +1185,7 @@ function wallBlock(k, a, tiles) {
         }),
         k.row([Text({ key: 'hw-v', bold: true, children: [t.value] }), t.delta ? (t.deltaTone ? k.pill(t.delta, t.deltaTone, 'hw-d') : k.dim(t.delta, 'hw-d')) : null], 'hw-vr' + i, 1),
         // A plain image: transparent on any theme (an interactive frame is white on a dark page).
-        k.spark(t.spark, { key: 'hw-s' + i, px: 260, height: 44, tone: t.tone || 'neutral', label: t.title }),
+        k.spark(t.spark, { key: 'hw-s' + i, fill: true, tone: t.tone || 'neutral', label: t.title }),
       ].filter(Boolean),
     })
   })

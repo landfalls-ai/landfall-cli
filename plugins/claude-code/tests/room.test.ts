@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { labelIn } from './_label'
 
 // The band (spec §5.1) drawn for each surface: the terminal as text and keys, the desktop Code
 // tab as one card with the mark, labels, avatars and real buttons; and the room at a glance in
@@ -128,7 +129,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
   test(`${surface}: a waiting vote is a label on the head, the statement and its keys under it`, async ($, on) => {
     await startWith($, on, surface, WITH_VOTE)
     const band = await $.ui.mount({ ...BAND, surface } as never)
-    expect(await band.find({ type: 'Text', text: '● vote waiting 4m 10s' })).toBeDefined()
+    expect(labelIn(await band.drawn(), 'vote waiting 4m 10s')).toBeDefined()
     expect(await band.find({ type: 'Text', text: /^bob's agent: “The 5xx rise starts at 15:45Z/ })).toBeDefined()
     // The vote's own head row is not drawn twice.
     expect(await band.find({ type: 'Text', text: /vote waiting · / })).toBeUndefined()
@@ -144,7 +145,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await $.command.run({ command: 'landfall', args: '' })
     const pane = await $.ui.mount({ ...PANE, surface } as never)
     expect(await pane.find({ type: 'Text', text: surface === 'terminal' ? '◆ Landfall 168 · cloudfront-5xx-high' : 'Landfall 168 · cloudfront-5xx-high' })).toBeDefined()
-    expect(await pane.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
+    expect(labelIn(await pane.drawn(), 'SEV2')).toBeDefined()
     expect(await pane.find({ type: 'Text', text: 'Here · 3' })).toBeDefined()
     expect(await pane.find({ type: 'Text', text: /bob/ })).toBeDefined()
   })
@@ -202,8 +203,8 @@ test('desktop: the band is one card with the Beacon mark, labels, avatars and a 
   const band = await $.ui.mount({ ...BAND, surface: 'desktop' } as never)
   const pictures = await band.findAll({ type: 'Svg' })
   expect(pictures[0]?.props.alt).toBe('Landfall')
-  expect(await band.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
-  expect(await band.find({ type: 'Text', text: '● 3 new' })).toBeDefined()
+  expect(labelIn(await band.drawn(), 'SEV2')).toBeDefined()
+  expect(labelIn(await band.drawn(), '3 new')).toBeDefined()
   expect(pictures.map((a) => a.props.alt).filter((a) => a !== 'Landfall')).toEqual(['alice (you), here', 'bob, here', 'carol, here'])
   expect((await band.find({ type: 'Button', key: 'catch-up' }))?.props).toMatchObject({ label: 'Catch up', variant: 'primary', hotkey: '1' })
   // A label is never pressable-looking: no border.

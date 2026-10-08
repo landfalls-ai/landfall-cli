@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 import { NOW, chromed, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import { consoleState } from '../hooks/core.js'
 import * as commsMod from '../hooks/components/comms.js'
+import { labelIn, labelsIn } from './_label'
 
 // `landfall comms` as the Go CLI prints it (internal/cli/comms.go): newest first, {id, state,
 // channel, kind, text, approvedBy?, simulated?}, no time.
@@ -29,15 +30,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
     hookTab(on, 'd-comms', (k, i, now, args) => chromed(commsMod, k, i, now, args))
     const p = await $.ui.mount({ ...paneProps('d-comms'), surface } as never)
     expect((await p.find({ type: 'Text', text: 'Stakeholder updates' }))?.props.bold).toBe(true)
-    expect(await p.find({ type: 'Text', text: '● sent' })).toBeDefined()
-    expect((await p.find({ type: 'Text', text: '● approved' }))?.props.color).toBe('#2a78d6')
+    expect(labelIn(await p.drawn(), 'sent')).toBeDefined()
+    expect(labelIn(await p.drawn(), 'approved')?.tone).toBe('#2a78d6')
     expect(await p.find({ type: 'Text', text: 'status update · slack · approved by carol' })).toBeDefined()
     expect(await p.find({ type: 'Text', text: 'status update · statuspage' })).toBeDefined()
     // A simulated update says so; only one does.
-    expect((await p.findAll({ type: 'Text', text: '● simulated' })).length).toBe(1)
-    expect((await p.find({ type: 'Text', text: '● simulated' }))?.props.color).toBe('#8a5cd6')
+    expect(labelsIn(await p.drawn(), /^simulated$/)).toHaveLength(1)
+    expect(labelIn(await p.drawn(), 'simulated')?.tone).toBe('#8a5cd6')
     expect(await p.find({ type: 'Text', text: /\d\d:\d\dZ/ })).toBeUndefined()
-    expect(await p.find({ type: 'Text', text: '● draft' })).toBeDefined()
+    expect(labelIn(await p.drawn(), 'draft')).toBeDefined()
     expect(await p.find({ type: 'Text', text: 'A fix is rolling out; error rates are falling.' })).toBeDefined()
     expect((await p.find({ type: 'Text', text: 'Approving an update happens in the war room, in the browser.' }))?.props.dimColor).toBe(true)
     expect(await p.find({ type: 'Text', text: 'live · updated 0s ago' })).toBeDefined()

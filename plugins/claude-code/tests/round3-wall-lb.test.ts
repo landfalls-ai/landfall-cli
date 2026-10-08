@@ -4,6 +4,7 @@ import { chartSvg, seriesTone } from '../hooks/views.js'
 import * as wallTab from '../hooks/components/wall.js'
 import * as lbTab from '../hooks/components/lb.js'
 import { consoleState } from '../hooks/core.js'
+import { labelIn } from './_label'
 
 // Round 3: what the real-app captures of round 2 found on the Wall and the Load balancers tabs
 // (rounds/2/REVIEW.md items 3, 6, 7, 9, 14, 16 and 19), one test per fix the test kit can see.
@@ -42,19 +43,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(dim.props.dimColor).toBe(true)
     expect(dim.props.color).toBeUndefined()
     expect(String(dim.children[0])).toBe('↑ 2.6%')
-    const label = pane.find({ type: 'Text', key: 'w-s2-d-t' }) ?? pane.find({ type: 'Text', key: 'w-s2-d' })!
-    expect(String(label.children[0])).toMatch(/^● ↓ 2/)
-    expect(label.props.color).toBe('#fab219')
+    const label = labelIn(pane.rows, '↓ 2')!
+    expect(label.tone).toBe('#fab219')
+    // The word is in ink on the desktop; the terminal keeps the tone on its text.
+    expect(label.wordColor).toBe(surface === 'terminal' ? '#fab219' : undefined)
   })
 }
 
 // ---------- item 7: a count and a humanized phrase are never joined ----------
 
 test('item 7: the baseline line says when in a short unit, and never `6 an hour ago`', () => {
-  expect(wallTab.baselineWords('6 an hour ago')).toBe('6 · 1h ago')
-  expect(wallTab.baselineWords('6 a minute ago')).toBe('6 · 1m ago')
-  expect(wallTab.baselineWords('120 3 hours ago')).toBe('120 · 3h ago')
-  expect(wallTab.baselineWords('48 45 minutes ago')).toBe('48 · 45m ago')
+  expect(wallTab.baselineWords('6 an hour ago')).toBe('was 6 · 1h ago')
+  expect(wallTab.baselineWords('6 a minute ago')).toBe('was 6 · 1m ago')
+  expect(wallTab.baselineWords('120 3 hours ago')).toBe('was 120 · 3h ago')
+  expect(wallTab.baselineWords('48 45 minutes ago')).toBe('was 48 · 45m ago')
   expect(wallTab.baselineWords('an hour ago')).toBe('as of 1h ago')
   expect(wallTab.baselineWords('2 hours ago')).toBe('as of 2h ago')
   expect(wallTab.baselineWords('vs last week')).toBe('vs last week')
@@ -63,7 +65,7 @@ test('item 7: the baseline line says when in a short unit, and never `6 an hour 
 
 test('item 7: the tab draws the baseline through the formatter', async () => {
   const pane = await drawWall('desktop')
-  expect(pane.find({ type: 'Text', text: '6 · 1h ago' })).toBeDefined()
+  expect(pane.find({ type: 'Text', text: 'was 6 · 1h ago' })).toBeDefined()
   expect(pane.find({ type: 'Text', text: /an hour ago/ })).toBeUndefined()
 })
 
@@ -178,11 +180,16 @@ test('item 14, desktop: the path has its own dim line, no floating time, one wra
   expect(pane.find({ type: 'Text', text: 'healthy hosts' })).toBeUndefined()
 })
 
-test('item 14, terminal: unchanged, the heading keeps its path and the axis keeps its labels', async () => {
+test('item 14 and round 3 issue 6, terminal: the heading keeps its path; the legend, caption and hosts label read as the desktop does', async () => {
   const pane = await drawLb('terminal')
   expect(pane.find({ type: 'Text', text: 'web-edge-api-tg · HTTP 8081 · /healthz/deep/readiness' })).toBeDefined()
-  expect(pane.find({ type: 'Text', text: /^ +16:50 +now$/ })).toBeDefined()
-  expect(pane.find({ type: 'Text', text: 'healthy hosts' })).toBeDefined()
+  expect(pane.find({ type: 'Text', text: /^ +16:50 +now$/ })).toBeUndefined()
+  expect(pane.find({ type: 'Text', text: /^5xx per target group, last 36 minutes, since 16:50Z$/ })).toBeDefined()
+  expect(pane.find({ type: 'Text', text: 'Healthy hosts' })?.props.bold).toBe(true)
+  expect(pane.find({ type: 'Text', text: 'healthy hosts' })).toBeUndefined()
+  expect(pane.find({ type: 'Text', text: '<1%' })).toBeDefined()
+  expect(pane.find({ type: 'Text', text: '>20%' })).toBeDefined()
+  expect(pane.find({ type: 'Text', text: 'under 1%' })).toBeUndefined()
 })
 
 test('item 3, desktop: the heat strips paint their own dark-safe ground and no light colour', async () => {

@@ -5,6 +5,7 @@ import { clipToCells, textCells, BUTTON_CHROME } from '../hooks/kit.js'
 import * as rosterTab from '../hooks/components/roster.js'
 import * as wallTab from '../hooks/components/wall.js'
 import * as cx from '../hooks/components/context.js'
+import { labelIn } from './_label'
 
 // Round 3: the People and Context items of rounds/2/REVIEW.md (4, 5, 11, 12, 15, 16), one test per
 // fix the test kit can see. The captures are rounds/3.
@@ -61,9 +62,9 @@ test('item 4: People and Context draw a claim state in the same tone, on both su
   for (const surface of ['terminal', 'desktop'] as const) {
     begin()
     const pane = draw(surface, fakeIo(answer))
-    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color).toBe('#ec835a')
-    expect(pane.find({ type: 'Text', text: '● staged' })?.props.color).toBe('#898781')
-    expect(pane.find({ type: 'Text', text: '● admitted' })?.props.color).toBe('#0ca30c')
+    expect(labelIn(pane.rows, 'contested')?.tone).toBe('#ec835a')
+    expect(labelIn(pane.rows, 'staged')?.tone).toBe('#898781')
+    expect(labelIn(pane.rows, 'admitted')?.tone).toBe('#0ca30c')
   }
   expect(rosterTab.latestTone('contested')).toBe('serious')
   expect(rosterTab.latestTone('staged')).toBe('neutral')
@@ -114,13 +115,20 @@ test('item 5: the quote under a card is measured to the card, cut with an ellips
 
 // ---------- item 15: the person view ----------
 
-test('item 15: the desktop person view names the person once; the terminal keeps its heading', async () => {
+test('item 15 and round 3 issue 5: the person view names the person once on both surfaces; the terminal finding is time, glyph, label, quote', async () => {
   const d = await personView('desktop')
   expect(d.pane.find({ type: 'Text', text: "alice's investigation" })).toBeUndefined()
   expect(d.pane.find({ key: 'pv-h' })?.children).toEqual(['Investigation'])
   expect(d.pane.find({ key: 'pv-nm' })?.children).toEqual(['alice'])
   const t = await personView('terminal')
-  expect(t.pane.find({ key: 'pv-h' })?.children).toEqual(["alice's investigation"])
+  expect(t.pane.find({ key: 'pv-h' })?.children).toEqual(['Investigation'])
+  expect(t.pane.find({ type: 'Text', text: "alice's investigation" })).toBeUndefined()
+  expect(t.pane.find({ key: 'pv-nm' })?.children).toEqual(['alice'])
+  // The label comes right after the glyph, before the text, and nothing is pushed flush right.
+  const row = t.pane.find({ key: 'pv-t0' })!
+  expect(row.children.map((c: any) => c.key)).toEqual(['pv-ti0', 'pv-g0', 'pv-s0', 'trail-0'])
+  expect(labelIn(row, 'contested')?.surface).toBe('terminal')
+  expect(row.children[3].props.label).toBe('“Origin pool exhausted in us-east-1”')
 })
 
 test('item 15: a desktop finding is one row: time, glyph slot, state label, then the clipped quote', async () => {
@@ -230,8 +238,8 @@ test('item 12: an open item is its statement, then a dim "who · #seq" line with
     expect(textOf(pane.find({ key: 'cx-e0-b' })!)).toBe('carol · #205')
     expect(est.children).toHaveLength(3)
     // Context's tones are the People tab's.
-    expect(pane.find({ type: 'Text', text: '● contested' })?.props.color ?? pane.find({ key: 'cx-o1-st-t' })?.props.color).toBe('#ec835a')
-    expect(pane.find({ key: 'cx-o0-st-t' })?.props.color ?? pane.find({ key: 'cx-o0-st' })?.props.color).toBe('#898781')
+    expect(labelIn(pane.rows, 'contested')?.tone).toBe('#ec835a')
+    expect(labelIn(pane.rows, 'staged')?.tone).toBe('#898781')
   }
 })
 

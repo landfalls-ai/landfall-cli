@@ -3,6 +3,7 @@ import { Drawn, fakeIo, kitFor, openConsoleOn, setRooms, settle } from './_tab'
 import { consoleState } from '../hooks/core.js'
 import * as wallTab from '../hooks/components/wall.js'
 import * as rosterTab from '../hooks/components/roster.js'
+import { labelIn, tonedIn } from './_label'
 
 // `landfall wall` as the Go CLI prints it (internal/cli/wall.go
 // flattenWidget, wall_test.go): every widget type, data already resolved
@@ -147,11 +148,11 @@ test('the wall draws every widget type in the shared arrangement, on each surfac
     // stat: the big value and its unit, its change in the stat's tone, and its baseline.
     expect(pane.find({ type: 'Text', text: '4' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: '/6' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● ↓ 2' })?.props.color).toBe('#fab219')
-    expect(pane.find({ type: 'Text', text: '6 · 1h ago' })).toBeDefined()
+    expect(labelIn(pane.rows, '↓ 2')?.tone).toBe('#fab219')
+    expect(pane.find({ type: 'Text', text: 'was 6 · 1h ago' })).toBeDefined()
     // geo: the place plain, its share as a label in its tone.
     expect(pane.find({ type: 'Text', text: 'us-east-1 · N. Virginia' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● 34%' })?.props.color).toBe('#d03b3b')
+    expect(labelIn(pane.rows, '34%')?.tone).toBe('#d03b3b')
     expect(pane.find({ type: 'Text', text: 'eu-west-1' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: '0.4%' })).toBeDefined()
     // codeFinding: where, then the snippet with its line numbers, and the link.
@@ -165,7 +166,11 @@ test('the wall draws every widget type in the shared arrangement, on each surfac
     const errs = pane.all({ type: 'Text', text: 'ERR' })
     expect(errs).toHaveLength(2)
     expect(errs[0].props.color).toBe('#d03b3b')
-    expect(pane.find({ type: 'Text', text: 'WRN' })?.props.color).toBe('#fab219')
+    // A warning tag is a yellow dot and the word in ink off the terminal (1.7:1 on a light page).
+    const wrn = tonedIn(pane.rows, 'WRN')
+    expect(wrn?.tone).toBe('#fab219')
+    expect(wrn?.dotted).toBe(surface !== 'terminal')
+    if (surface !== 'terminal') expect(wrn?.wordColor).toBeUndefined()
     // table: aligned columns, header first.
     expect(pane.find({ type: 'Text', text: /^target\s+zone\s+state$/ })).toBeDefined()
     expect(pane.find({ type: 'Text', text: /^i-07aa\s+us-east-1c\s+unhealthy$/ })).toBeDefined()
@@ -236,7 +241,7 @@ test('the wall answers in text where no pane can be placed, and says why when it
   const io = fakeIo(() => answer)
   const text = await wallTab.text(io as never, '')
   expect(text).toContain('Wall · shared by carol · Landfall 168 · cloudfront-5xx-high · last 6h')
-  expect(text).toContain('Healthy origins\n  4/6 ↓ 2\n  6 · 1h ago')
+  expect(text).toContain('Healthy origins\n  4/6 ↓ 2\n  was 6 · 1h ago')
   expect(text).toContain('5xx by region\n  us-east-1 · N. Virginia 34% (critical)\n  eu-west-1 0.4%')
   expect(text).toContain('Pool size\n  acme/web-edge · src/pool.ts\n  41  export const POOL = {\n  42    max: 16,\n  43  }\n  https://github.com/acme/web-edge/blob/abc123/src/pool.ts#L41-L43')
   expect(text).toContain('p99 latency\n  No data in this window yet.')
@@ -436,7 +441,7 @@ test('a geo place whose label already names it is said once', async () => {
     expect(pane.find({ type: 'Text', text: 'eu-west-1 · 13.1%' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: /eu-west-1 · eu-west-1/ })).toBeUndefined()
     expect(pane.find({ type: 'Text', text: 'us-east-1' })).toBeDefined()
-    expect(pane.find({ type: 'Text', text: '● 0.28%' })?.props.color).toBe('#0ca30c')
+    expect(labelIn(pane.rows, '0.28%')?.tone).toBe('#0ca30c')
   }
 })
 
@@ -531,7 +536,7 @@ test('pressing a person reads their dashboard, draws it as snapshots, and the sh
     expect(pane.find({ type: 'Text', text: 'snapshot 7m ago' })).toBeDefined()
     expect(pane.find({ type: 'Button', text: '▸ Origin pool saturation' })).toBeDefined()
     expect(pane.find({ type: 'Text', text: 'Wall · shared by carol' })).toBeUndefined()
-    expect(pane.find({ type: 'Text', text: '● 98%' })?.props.color).toBe('#d03b3b')
+    expect(labelIn(pane.rows, '98%')?.tone).toBe('#d03b3b')
     // The keys ask about a widget on their dashboard, and d goes on to the next dashboard.
     const keys = await keysOf(surface as 'terminal' | 'desktop', io)
     await keys.press('wall-ask')

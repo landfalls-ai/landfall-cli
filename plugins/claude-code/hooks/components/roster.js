@@ -164,8 +164,9 @@ export function keys(k, io) {
     const sel = list[Math.min(ui.selected, list.length - 1)]
     return [
       k.button({ key: 'back', label: k.terminal ? 'back to people' : 'Back to people', hotkey: 'b', onPress: () => back(io) }),
-      // The desktop's row holds three keys on one line, so the widget is not named there (round 2 review, issue 15).
-      sel ? k.button({ key: 'pv-ask', label: k.terminal ? 'ask about ' + clipText(sel.title || sel.type || 'widget', 28) : 'Ask about this', hotkey: 'a', onPress: () => askAbout(io, sel) }) : null,
+      // The widget is not named on either surface: the desktop's row holds three keys on one line (round 2
+      // review, issue 15) and the terminal says the same words (round 3 review, issue 5).
+      sel ? k.button({ key: 'pv-ask', label: k.terminal ? 'ask about this' : 'Ask about this', hotkey: 'a', onPress: () => askAbout(io, sel) }) : null,
       list.length > 1 ? k.button({ key: 'pv-next', label: 'next widget', hotkey: 'n', onPress: () => nextWidget(io) }) : null,
     ].filter(Boolean)
   }
@@ -432,7 +433,8 @@ function personView(k, io, nowMs, r, p) {
   const rows = []
   // Off the terminal the identity row names the person, so the heading does not say it again
   // (round 2 review, issue 15).
-  rows.push(Text({ key: 'pv-h', bold: true, children: [k.terminal ? (mine ? 'Your investigation' : name + "'s investigation") : 'Investigation'] }))
+  // The person row names them (round 3 review, issue 5: the terminal said it twice too).
+  rows.push(Text({ key: 'pv-h', bold: true, children: ['Investigation'] }))
   rows.push(personRow(k, r, p))
   const empty = mine ? 'You have not shared anything yet.' : name + ' has not shared anything yet.'
   const target = readTarget(p)
@@ -468,9 +470,10 @@ function personView(k, io, nowMs, r, p) {
     trail.slice(0, TRAIL_MAX).forEach((t, i) => {
       const state = t.state ? k.pill(stateWord(t.state), latestTone(t.state), 'pv-s' + i) : null
       const words = trailWords(t)
-      // Every finding is a quote button, on both surfaces: curly quotes where a desktop draws it as one.
+      // Every finding is a quote button, on both surfaces, in curly quotes, and its label comes
+      // first so it sits next to its time and glyph, never flush right (round 3 review, issue 5).
       if (k.terminal) {
-        const label = clipText(words, Math.max(10, k.width - 5 - 2 - 2 - (t.state ? stateWord(t.state).length + 4 : 0)))
+        const label = '“' + clipText(words, Math.max(10, k.width - 5 - 2 - 2 - 2 - (t.state ? stateWord(t.state).length + 3 : 0))) + '”'
         rows.push(
           Box({
             key: 'pv-t' + i,
@@ -480,9 +483,8 @@ function personView(k, io, nowMs, r, p) {
             children: [
               Text({ key: 'pv-ti' + i, dimColor: true, children: [hhmm(t.at)] }),
               Text({ key: 'pv-g' + i, children: [GLYPH[t.kind] || '·'] }),
-              Button({ key: 'trail-' + i, label, plain: true, onPress: () => io.fill(quoteDraft(words)) }),
-              state ? Box({ key: 'pv-sp' + i, flexGrow: 1 }) : null,
               state,
+              Button({ key: 'trail-' + i, label, plain: true, onPress: () => io.fill(quoteDraft(words)) }),
             ].filter(Boolean),
           }),
         )

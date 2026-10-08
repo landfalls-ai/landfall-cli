@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { labelIn } from './_label'
 
 // Landfall tool calls drawn as Landfall rows. Drawing only: the stored result
 // the model read is never touched.
@@ -69,8 +70,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await call.find({ type: 'Text', text: 'brief' })).toBeDefined()
     const row = await $.ui.mount({ ...result('mcp__landfall__get_brief', 'b1', BRIEF), surface } as never)
     expect(await row.find({ type: 'Text', text: 'Landfall 168 cloudfront-5xx-high' })).toBeDefined()
-    expect(await row.find({ type: 'Text', text: '● SEV2' })).toBeDefined()
-    expect(await row.find({ type: 'Text', text: '● investigating' })).toBeDefined()
+    expect(labelIn(await row.drawn(), 'SEV2')).toBeDefined()
+    expect(labelIn(await row.drawn(), 'investigating')).toBeDefined()
     expect(await row.find({ type: 'Text', text: 'established 2 · open 3 · 4 people · focus: web-edge' })).toBeDefined()
     expect(await row.find({ type: 'Text', text: 'engine row' })).toBeUndefined()
   })

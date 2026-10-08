@@ -58,7 +58,7 @@ export async function band(io, e, k) {
     : k.row(
         [
           Text({ key: 'vote-h-t', bold: true, children: ['Landfall · ' + clip(roomName(r), Math.max(16, k.width - 40))] }),
-          Text({ key: 'vote-h-w', color: TONE.warning, children: ['vote waiting' + (left ? ' · ' + left : '')] }),
+          k.toned('vote waiting' + (left ? ' · ' + left : ''), 'warning', { key: 'vote-h-w' }),
           more ? Text({ key: 'vote-h-m', dimColor: true, children: [more.slice(3)] }) : null,
         ],
         'vote-h',
@@ -329,7 +329,7 @@ function mobileCard(io, k, r, v) {
     [
       k.header({ key: 'vote-m-h', title: roomName(r), pills }),
       Text({ key: 'vote-m-q', children: [clip(author(v) + ': “' + v.statement + '”', 240)] }),
-      Text({ key: 'vote-m-p', color: TONE.warning, children: [parts.join(' · ')] }),
+      k.toned(parts.join(' · '), 'warning', { key: 'vote-m-p' }),
       k.row(
         [
           k.button({ key: 'vote-corroborate', label: 'Corroborate', hotkey: '5', primary: true, onPress: () => castVote(io, r.roomKey, v, 'corroborate') }),

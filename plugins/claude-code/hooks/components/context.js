@@ -556,20 +556,12 @@ function roomOf() {
   return currentRoom()
 }
 
-// label is a status word in its tone: "● staged" on the terminal, and off it a tinted box with no
-// border (a chip with a border reads as pressable).
+// label is a status word in its tone: the kit's label (a dot in the tone and the word in ink on a tint
+// off the terminal; one colored text on it), so Context's labels are the same size and contrast as every other
+// tab's (round 3 review, issue 1).
 function label(k, text, tone, key) {
-  const color = TONE[tone] || TONE.neutral
-  if (k.terminal) return k.els.Text({ key, color, children: ['● ' + text] })
-  return k.els.Box({
-    key,
-    paddingX: 1,
-    backgroundColor: color + '22',
-    flexShrink: 0,
-    children: [k.els.Text({ key: key + '-t', color, bold: true, children: ['● ' + text] })],
-  })
+  return k.pill(text, tone, key)
 }
-
 
 // itemRow is one brief item (round 2 review, issue 12): the statement as one wrapping Text, then a
 // dim second line, "bob's agent · #212", with a claim's state label right after the number, never
@@ -884,7 +876,7 @@ export function footer(k, io, nowMs) {
   if (!w) return null
   const busy = ctx.brief.inFlight || ctx.arts.inFlight
   if (w.tone === 'neutral') return k.text(w.text + (busy ? ' · reading…' : ''), { key: 'cx-live', dimColor: true })
-  return k.text(w.text, { key: 'cx-live', color: TONE[w.tone] })
+  return k.toned(w.text, w.tone, { key: 'cx-live' })
 }
 
 // ---------------------------------------------------------------- the text fallback

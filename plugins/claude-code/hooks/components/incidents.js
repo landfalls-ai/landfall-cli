@@ -116,7 +116,6 @@ function termRow(k, io, inc, first) {
       sev ? k.pill(sev, severityTone(inc.severity), 'sev-' + id) : null,
       Button({ key: 'inc-' + id, label: clip(incName(inc), Math.max(16, k.width - 34)), plain: true, onPress: () => join(io, inc), ...(first ? { autoFocus: true } : {}) }),
       inc.status ? k.pill(inc.status, statusTone(inc.status), 'st-' + id) : null,
-      inc.practice ? k.pill(PRACTICE, 'violet', 'pr-' + id) : null,
       Text({ key: 'age-' + id, dimColor: true, children: [ago(inc.ageMs)] }),
     ],
     'r-' + id,
@@ -124,7 +123,17 @@ function termRow(k, io, inc, first) {
   )
   const note = rowNote(inc, board.joining === id)
   const out = [head]
-  if (note) out.push(Text({ key: 'n-' + id, dimColor: true, children: [' '.repeat(NOTE_INDENT) + clip(note, k.width - NOTE_INDENT)] }))
+  // `practice` is on the meta line, under the name, as on the desktop (round 3 review, issue 6).
+  if (inc.practice) {
+    const room = Math.max(0, k.width - NOTE_INDENT - PRACTICE.length - 3)
+    out.push(
+      k.row(
+        [Text({ key: 'ind-' + id, children: [' '.repeat(NOTE_INDENT - 1)] }), k.pill(PRACTICE, 'violet', 'prp-' + id), note ? Text({ key: 'n-' + id, dimColor: true, children: [clip(note, room)] }) : null],
+        'meta-' + id,
+        1,
+      ),
+    )
+  } else if (note) out.push(Text({ key: 'n-' + id, dimColor: true, children: [' '.repeat(NOTE_INDENT) + clip(note, k.width - NOTE_INDENT)] }))
   const link = linkRow(k, inc)
   if (link) out.push(link)
   return out
@@ -146,7 +155,8 @@ function card(k, io, inc, focused) {
   // never wraps onto a second row.
   const age = ago(inc.ageMs)
   const labelCells = (text) => BUTTON_CHROME + textCells('● ' + text) * 0.8
-  const taken = (sev ? labelCells(sev) + 1 : 0) + (inc.status ? labelCells(inc.status) + 1 : 0) + (age ? textCells(age) + 1 : 0) + 4
+  // The age rides on the meta line (round 3 review, issue 10), which frees the title's room.
+  const taken = (sev ? labelCells(sev) + 1 : 0) + (inc.status ? labelCells(inc.status) + 1 : 0) + 4
   const name = clipToCells(incName(inc), Math.max(8, k.width - taken))
   const head = Box({
     key: 'h-' + id,
@@ -158,13 +168,14 @@ function card(k, io, inc, focused) {
       sev ? Box({ key: 'sp-w-' + id, flexShrink: 0, children: [k.pill(sev, severityTone(inc.severity), 'sp-' + id)] }) : null,
       Box({ key: 't-w-' + id, flexShrink: 1, minWidth: 0, children: [Text({ key: 't-' + id, bold: true, wrap: 'truncate-end', children: [name] })] }),
       inc.status ? Box({ key: 'stp-w-' + id, flexShrink: 0, children: [k.pill(inc.status, statusTone(inc.status), 'stp-' + id)] }) : null,
-      age ? Text({ key: 'age-' + id, dimColor: true, children: [age] }) : null,
     ].filter(Boolean),
   })
   const noteText = rowNote(inc, false)
+  // The meta line: practice, who is here, then the age after them.
+  const metaWords = [noteText, age].filter(Boolean).join(' · ')
   const note =
-    inc.practice || noteText
-      ? k.row([inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null, noteText ? Text({ key: 'n-' + id, dimColor: true, children: [noteText] }) : null], 'meta-' + id, 1)
+    inc.practice || metaWords
+      ? k.row([inc.practice ? k.pill(PRACTICE, 'violet', 'prp-' + id) : null, metaWords ? Text({ key: 'n-' + id, dimColor: true, children: [metaWords] }) : null], 'meta-' + id, 1)
       : null
   const actions = k.row(
     [

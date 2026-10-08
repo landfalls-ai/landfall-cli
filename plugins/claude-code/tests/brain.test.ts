@@ -1,6 +1,7 @@
 import { expect, test } from 'claude-code/testing'
 import { NOW, chromed, buttonOf, fakeIo, fakeKit, hookTab, nodes, paneProps, setRoom, textsOf, watchRoom } from './_tabd'
 import * as brainMod from '../hooks/components/brain.js'
+import { labelIn, labelText } from './_label'
 
 // `landfall brain` as the Go CLI prints it (internal/cli/brain.go brainMatch, brain_test.go's
 // entries): title, summary, confidence, the incidents an entry came from (`incident` is the first),
@@ -47,14 +48,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await p.find({ type: 'Text', text: 'Company second brain' }))?.props.bold).toBe(true)
     expect(await p.find({ type: 'Text', text: 'like Acme 168' })).toBeDefined()
     expect((await p.find({ type: 'Text', text: 'Origin pool exhaustion after edge deploys' }))?.props.bold).toBe(true)
-    expect((await p.find({ type: 'Text', text: '● high confidence' }))?.props.color).toBe('#0ca30c')
-    expect((await p.find({ type: 'Text', text: '● confirmed' }))?.props.color).toBe('#2a78d6')
-    expect((await p.find({ type: 'Text', text: '● medium confidence' }))?.props.color).toBe('#fab219')
-    expect((await p.find({ type: 'Text', text: '● proposed' }))?.props.color).toBe('#898781')
+    expect(labelIn(await p.drawn(), 'high confidence')?.tone).toBe('#0ca30c')
+    expect(labelIn(await p.drawn(), 'confirmed')?.tone).toBe('#2a78d6')
+    expect(labelIn(await p.drawn(), 'medium confidence')?.tone).toBe('#fab219')
+    expect(labelIn(await p.drawn(), 'proposed')?.tone).toBe('#898781')
     expect(await p.find({ type: 'Text', text: 'Twice this year a deploy shrank the pool.' })).toBeDefined()
     // The kind is not a label: it is in the dim source line.
     expect((await p.find({ type: 'Text', text: 'pattern · from Acme 91, Acme 95' }))?.props.dimColor).toBe(true)
-    expect(await p.find({ type: 'Text', text: '● pattern' })).toBeUndefined()
+    expect(labelIn(await p.drawn(), 'pattern')).toBeUndefined()
     expect(await p.find({ type: 'Text', text: 'Enter on a match quotes it into your prompt.' })).toBeDefined()
     // The field, one submit word per surface, and a quote button per match.
     const field = await p.find({ type: 'Input', key: 'brain-q' })
@@ -73,8 +74,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const texts = textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))
     expect(texts).toContain('lesson · settled · from Acme 91, Acme 95')
     expect(texts).toContain('from 1 past incident')
-    expect(texts).toContain('● established confidence')
-    expect(texts).toContain('● conflicted')
+    expect(texts).toContain(labelText(surface, 'established confidence'))
+    expect(texts).toContain(labelText(surface, 'conflicted'))
     expect(texts.some((t) => /^Fix:|^Why:/.test(t))).toBe(false)
   })
 

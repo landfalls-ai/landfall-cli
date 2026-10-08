@@ -4,6 +4,7 @@ import { TABS, TOAST_MAX, clipMiddle, toastText } from '../hooks/core.js'
 import { elapsed, reasonWords, webHost } from '../hooks/components/signin.js'
 import { notJoinedWords } from '../hooks/components/incidents.js'
 import { BAND, consolePane, roomOf, texts, world } from './_console'
+import { labelText } from './_label'
 
 // The console shell (spec §1, §2, §3, §8): the one /landfall command, the pinned switcher, Home's
 // drop rule and the entry flow, driven through the plugin where the engine shows them and through
@@ -214,7 +215,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     const pane = await $.ui.mount(consolePane(surface) as never)
     const words = await texts(pane)
     expect(words).toContain('Your vote is waiting')
-    expect(words).toContain('● 4m 10s left')
+    expect(words).toContain(labelText(surface, '4m 10s left'))
     expect(words.some((t) => t.includes('Beacon step 6 · comparing 5xx per target group in us-east-1'))).toBe(true)
     expect(words).toContain('Here · 3')
     expect(words).toContain('Wall · shared by carol')
@@ -264,7 +265,7 @@ const LIST = {
 }
 const BRIEF = { ok: true, text: 'Landfall 171 · cache-stampede\nAs of seq 40', asOfSeq: 40, counts: { established: 2, open: 3, participants: 4 }, established: [], open: [], participants: [] }
 
-test('signed out: /landfall lands on Incidents as the sign-in state, which runs the CLI handoff and never opens a browser', async ($, on) => {
+test('signed out: /landfall lands on Home as the sign-in state (titled Sign in), which runs the CLI handoff and never opens a browser', async ($, on) => {
   const w = await world($, on, {
     answers: { whoami: { ok: true, signedIn: false, instance: { web: 'https://app.landfalls.ai' } }, incidents: LIST },
     login: { pieces: [{ stream: 'stdout', text: '{"event":"url","url":"https://app.landfalls.ai/cli-auth?nonce=k3Jx"}\n{"ok":true,"org":"acme","web":"https://app.landfalls.ai"}\n' }] },
@@ -273,7 +274,10 @@ test('signed out: /landfall lands on Incidents as the sign-in state, which runs 
   expect(w.runs[0]).toEqual(['landfall', 'whoami', '--json', '--host', 'claude-code'])
   const pane = await $.ui.mount(consolePane('terminal') as never)
   let words = await texts(pane)
-  expect(words).toContain(' ▸ Incidents ')
+  // Round 3 review, issue 4: nothing can be read signed out, so Home is the active tab and the title says Sign in.
+  expect(words).toContain(' ▸ Home ')
+  expect(words).not.toContain(' ▸ Incidents ')
+  expect(w.opened.at(-1)?.title).toBe('Landfall · Sign in')
   expect(words).toContain('not signed in')
   expect(words).toContain('Sign in to Landfall')
   expect(words).toContain('Your browser opens the Landfall sign-in page at app.landfalls.ai. Finish there; this console continues on its own.')
@@ -288,6 +292,9 @@ test('signed out: /landfall lands on Incidents as the sign-in state, which runs 
   // Same session: the picker reads at once.
   expect(w.count('incidents')).toBe(1)
   words = await texts(pane)
+  // Signed in, the console goes to the picker and the title goes with it.
+  expect(words).toContain(' ▸ Incidents ')
+  expect(w.opened.at(-1)?.title).toBe('Landfall · Incidents')
   expect(words).toContain('Join an incident')
   expect(words).toContain('acme · 2 open')
   expect(words).toContain('Enter: join · your agent gets the shared context when you do')

@@ -50,7 +50,7 @@ export function footerOf(k, lp, nowMs, r, key = 'tab-live') {
   const w = liveWords(lp, nowMs, r)
   if (!w) return null
   if (w.tone === 'neutral') return k.text(w.text + (lp.inFlight ? ' · reading…' : ''), { key, dimColor: true })
-  return k.text(w.text, { key, color: TONE[w.tone] })
+  return k.toned(w.text, w.tone, { key })
 }
 
 // nowOf is the session clock's time through io, or `fallback` when io has none.

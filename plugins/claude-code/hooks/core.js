@@ -222,3 +222,15 @@ export function ago(ms) {
   if (m < 60) return m + 'm'
   return Math.round(m / 60) + 'h'
 }
+
+// quoteDraft is text quoted into the prompt as a draft: every line behind
+// "> ", then a blank line, so the person writes their own words under it.
+export function quoteDraft(text) {
+  return (
+    String(text ?? '')
+      .trim()
+      .split('\n')
+      .map((l) => '> ' + l)
+      .join('\n') + '\n\n'
+  )
+}

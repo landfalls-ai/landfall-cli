@@ -302,3 +302,11 @@ export function orderRooms(rooms) {
 export function roomArgs(r) {
   return r && r.roomKey ? ['--room', r.roomKey] : []
 }
+
+// Every row the console adds to the person's own conversation goes through here, so the wording
+// of what was refused lives in one place. Answers the deny reason, or null once stored.
+export async function appendNote(io, text) {
+  if (!io || typeof io.append !== 'function') return 'This Claude Code cannot add notes to the chat.'
+  if (!text || !String(text).trim()) return 'Nothing to add.'
+  return io.append(String(text))
+}

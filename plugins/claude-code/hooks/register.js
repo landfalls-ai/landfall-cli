@@ -456,5 +456,15 @@ function makeIo($, surface) {
     copy: (text) => $.ui.copy({ text, surface: surface || undefined }),
     now: () => $.clock.now(),
     invalidateContext: () => $.ui.invalidate('prompt.context'),
+    // A user-role row the model reads and the person does not see as typed; no turn starts.
+    // Answers the deny reason, or null once stored.
+    append: async (text) => {
+      try {
+        const got = await $.session.append({ message: { type: 'user', content: [{ type: 'text', text }] } })
+        return got && got.deny ? String(got.deny) : null
+      } catch (err) {
+        return String(err).slice(0, 200)
+      }
+    },
   }
 }

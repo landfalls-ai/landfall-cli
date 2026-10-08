@@ -356,6 +356,8 @@ func readCommands(ui *UI) []*cobra.Command {
 		newLBCommand(ui),
 		newCommsCommand(ui),
 		newBrainCommand(ui),
+		newArtifactsCommand(ui),
+		newArtifactCommand(ui),
 	}
 }
 

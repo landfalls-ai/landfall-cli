@@ -475,6 +475,9 @@ func (h *Handler) Handle(ctx context.Context, req Request) Response {
 	case "read":
 		return d.read(ctx, req)
 
+	case "read-raw":
+		return d.readRaw(ctx, req)
+
 	case "allow-cwd":
 		return d.allowCwd(req)
 	}
@@ -664,7 +667,7 @@ func (d *Daemon) serveConn(ctx context.Context, conn net.Conn) {
 			// A signal read goes to the room's source through the credential
 			// proxy; the two-second budget is for the status line's reads.
 			_ = conn.SetDeadline(time.Now().Add(QueryTimeout))
-		case "read":
+		case "read", "read-raw":
 			_ = conn.SetDeadline(time.Now().Add(ReadTimeout))
 		case "link":
 			_ = conn.SetDeadline(time.Now().Add(LinkWait + 2*time.Second))

@@ -48,9 +48,12 @@ const (
 )
 
 func newWallCommand(ui *UI) *cobra.Command {
-	return newReadCommand(ui, "wall", func(cmd *cobra.Command, ws hooks.Workspace, room string) map[string]any {
-		return RunWall(cmdContext(cmd), room, defaultReadDeps(ws))
+	var person string
+	c := newReadCommand(ui, "wall", func(cmd *cobra.Command, ws hooks.Workspace, room string) map[string]any {
+		return RunWallWith(cmdContext(cmd), WallOptions{Room: room, Person: person, Me: defaultMe(ws)}, defaultReadDeps(ws))
 	})
+	c.Flags().StringVar(&person, "person", "", "one person's dashboard: their humanActorId, or me")
+	return c
 }
 
 // projectedWidget is one widget folded from its agent.widget.* events.
@@ -127,32 +130,18 @@ func projectWall(events []timelineEvent) []*projectedWidget {
 // sharedArrangement is the latest canvas.layout.saved for the shared wall:
 // its order and who shared it.
 func sharedArrangement(events []timelineEvent) (order []string, sharedBy string, found bool) {
-	best := int64(-1)
-	for _, e := range events {
-		if e.Type != "canvas.layout.saved" || e.Seq == nil || *e.Seq <= best {
-			continue
-		}
-		if jStr(e.Payload, "scope") != "shared" {
-			continue
-		}
-		layout := jObj(e.Payload, "layout")
-		if v, ok := jNum(layout, "v"); !ok || v != 1 {
-			continue
-		}
-		var ids []string
-		for _, id := range jList(layout, "order") {
-			if s, ok := id.(string); ok && s != "" {
-				ids = append(ids, s)
-			}
-		}
-		best, order, sharedBy, found = *e.Seq, ids, jStr(e.Payload, "displayName"), true
-	}
-	return order, sharedBy, found
+	return layoutOrder(events, "shared")
 }
 
-// RunWall builds the wall answer.
+// RunWall builds the shared wall's answer.
 func RunWall(ctx context.Context, roomSel string, d ReadDeps) map[string]any {
-	room, why := pickRoom(d, roomSel)
+	return RunWallWith(ctx, WallOptions{Room: roomSel}, d)
+}
+
+// RunWallWith builds the wall answer: the shared wall, or with o.Person one
+// person's dashboard (wallperson.go). Every answer carries the people.
+func RunWallWith(ctx context.Context, o WallOptions, d ReadDeps) map[string]any {
+	room, why := pickRoom(d, o.Room)
 	if why != "" {
 		return failure(why)
 	}
@@ -163,6 +152,9 @@ func RunWall(ctx context.Context, roomSel string, d ReadDeps) map[string]any {
 	var events []timelineEvent
 	if err := json.Unmarshal(raw, &events); err != nil {
 		return failure("Landfall sent a timeline this CLI could not read.")
+	}
+	if strings.TrimSpace(o.Person) != "" {
+		return runWallPerson(ctx, room, events, o)
 	}
 
 	var widgets []*projectedWidget
@@ -253,7 +245,7 @@ func RunWall(ctx context.Context, roomSel string, d ReadDeps) map[string]any {
 		}
 		out = append(out, flat)
 	}
-	ans := map[string]any{"ok": true, "widgets": out, "unavailable": unavailable}
+	ans := map[string]any{"ok": true, "widgets": out, "unavailable": unavailable, "people": peopleRows(wallPeople(events))}
 	if sharedBy != "" {
 		ans["sharedBy"] = sharedBy
 	}

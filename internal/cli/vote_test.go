@@ -23,8 +23,8 @@ type seen struct {
 	Body               map[string]any
 }
 
-// fakeLandfall answers every request with status and body, and records it.
-type fakeLandfall struct {
+// personFakeLandfall answers every request with status and body, and records it.
+type personFakeLandfall struct {
 	mu     sync.Mutex
 	got    []seen
 	status int
@@ -32,9 +32,9 @@ type fakeLandfall struct {
 	srv    *httptest.Server
 }
 
-func newFakeLandfall(t *testing.T, status int, body string) *fakeLandfall {
+func newPersonFakeLandfall(t *testing.T, status int, body string) *personFakeLandfall {
 	t.Helper()
-	f := &fakeLandfall{status: status, body: body}
+	f := &personFakeLandfall{status: status, body: body}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		raw, _ := io.ReadAll(r.Body)
 		var b map[string]any
@@ -50,7 +50,7 @@ func newFakeLandfall(t *testing.T, status int, body string) *fakeLandfall {
 	return f
 }
 
-func (f *fakeLandfall) requests() []seen {
+func (f *personFakeLandfall) requests() []seen {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]seen(nil), f.got...)
@@ -68,7 +68,7 @@ type who struct {
 	roomHuman        string
 }
 
-func personDeps(f *fakeLandfall, w who) PersonDeps {
+func personDeps(f *personFakeLandfall, w who) PersonDeps {
 	return PersonDeps{
 		Room: func(string) (client.Config, error) {
 			return client.Config{BaseURL: f.srv.URL, Slug: "acme", IncidentID: "inc-1", Token: "room-tok", HumanActorID: w.roomHuman}, nil
@@ -142,8 +142,8 @@ func TestVote(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f := newFakeLandfall(t, c.status, c.body)
-			got := roundTrip(t, RunVote(context.Background(), c.flags, personDeps(f, c.who)))
+			f := newPersonFakeLandfall(t, c.status, c.body)
+			got := personRoundTrip(t, RunVote(context.Background(), c.flags, personDeps(f, c.who)))
 			if !sameAnswer(got, c.want) {
 				t.Fatalf("answer = %v, want %v", got, c.want)
 			}
@@ -188,7 +188,7 @@ func TestVoteRoomAndTransportErrors(t *testing.T) {
 		t.Fatalf("answer = %v", got)
 	}
 
-	f := newFakeLandfall(t, 202, `{}`)
+	f := newPersonFakeLandfall(t, 202, `{}`)
 	f.srv.Close() // nobody answers
 	got = RunVote(context.Background(), VoteFlags{Claim: 1, Position: "corroborate"}, personDeps(f, personSignedIn))
 	if got["error"] != "Landfall did not answer. Check your connection and try again." {
@@ -201,7 +201,7 @@ func TestVoteCommandPrintsOneLineAndExitsZero(t *testing.T) {
 	prev := stdout
 	stdout = &out
 	defer func() { stdout = prev }()
-	if err := printAnswer(failAnswer("Sign in to vote as yourself: run landfall login.")); err != nil {
+	if err := printPersonAnswer(failAnswer("Sign in to vote as yourself: run landfall login.")); err != nil {
 		t.Fatalf("printAnswer returned %v; the command must exit 0", err)
 	}
 	if out.String() != `{"error":"Sign in to vote as yourself: run landfall login.","ok":false}`+"\n" {
@@ -223,7 +223,7 @@ func TestJWTSubjectAndPlainSentence(t *testing.T) {
 	}
 }
 
-func TestPickRoom(t *testing.T) {
+func TestPickPersonRoom(t *testing.T) {
 	rooms := []daemon.RoomView{
 		{RoomKey: "https://api/o/acme/inc-a", IncidentID: "aaaa-1111", DisplayID: "Acme 1", Readers: []*daemon.Reader{{WorkspaceKey: "other"}}},
 		{RoomKey: "https://api/o/acme/inc-b", IncidentID: "bbbb-2222", DisplayID: "Acme 2", Readers: []*daemon.Reader{{WorkspaceKey: "ws"}}},
@@ -237,11 +237,11 @@ func TestPickRoom(t *testing.T) {
 		"zzz":                      "",
 	}
 	for sel, want := range cases {
-		if got := pickRoom(rooms, "ws", sel); got != want {
-			t.Errorf("pickRoom(%q) = %q, want %q", sel, got, want)
+		if got := pickPersonRoom(rooms, "ws", sel); got != want {
+			t.Errorf("pickPersonRoom(%q) = %q, want %q", sel, got, want)
 		}
 	}
-	if got := pickRoom(rooms, "nowhere", ""); got != "" {
+	if got := pickPersonRoom(rooms, "nowhere", ""); got != "" {
 		t.Errorf("a folder in no room picked %q", got)
 	}
 }
@@ -267,8 +267,8 @@ func TestWatchRoomsCarryVotes(t *testing.T) {
 	}
 }
 
-// roundTrip passes an answer through JSON, as the front end reads it.
-func roundTrip(t *testing.T, answer map[string]any) map[string]any {
+// personRoundTrip passes an answer through JSON, as the front end reads it.
+func personRoundTrip(t *testing.T, answer map[string]any) map[string]any {
 	t.Helper()
 	body, err := json.Marshal(answer)
 	if err != nil {

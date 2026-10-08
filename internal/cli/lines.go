@@ -182,11 +182,11 @@ func newLinesCommand(ui *UI) *cobra.Command {
 		}
 		switch verb {
 		case "claim":
-			return printAnswer(RunLinesClaim(cmd.Context(), f, deps))
+			return printPersonAnswer(RunLinesClaim(cmd.Context(), f, deps))
 		case "release":
-			return printAnswer(RunLinesRelease(cmd.Context(), f, deps))
+			return printPersonAnswer(RunLinesRelease(cmd.Context(), f, deps))
 		}
-		return printAnswer(failAnswer(`Say claim or release: landfall lines claim --label "<text>", or landfall lines release --claim <claimId>.`))
+		return printPersonAnswer(failAnswer(`Say claim or release: landfall lines claim --label "<text>", or landfall lines release --claim <claimId>.`))
 	})
 	c.Flags().StringVar(&host, "host", "", "the agent host this session runs in")
 	c.Flags().StringVar(&f.Room, "room", "", "the room (its key or incident id); default: this folder's room")

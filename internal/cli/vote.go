@@ -251,8 +251,8 @@ func plainSentence(s string) string {
 
 func failAnswer(msg string) map[string]any { return map[string]any{"ok": false, "error": msg} }
 
-// printAnswer writes the one JSON line. The command exits 0 either way.
-func printAnswer(answer map[string]any) error {
+// printPersonAnswer writes the one JSON line. The command exits 0 either way.
+func printPersonAnswer(answer map[string]any) error {
 	var buf strings.Builder
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false) // "<claimId>" reads as written
@@ -272,7 +272,7 @@ func daemonRoomSession(ws hooks.Workspace, sel string) (client.Config, error) {
 	if err != nil || res == nil {
 		return client.Config{}, errors.New("No room is open on this machine. Join one first with landfall join and a share link.")
 	}
-	roomKey := pickRoom(res.Rooms, hooks.WorkspaceKey(ws.Dir()), sel)
+	roomKey := pickPersonRoom(res.Rooms, hooks.WorkspaceKey(ws.Dir()), sel)
 	if roomKey == "" {
 		if sel != "" {
 			return client.Config{}, errors.New("This machine is not in that room. Join it first with landfall join and a share link.")
@@ -286,9 +286,9 @@ func daemonRoomSession(ws hooks.Workspace, sel string) (client.Config, error) {
 	return *got.Room, nil
 }
 
-// pickRoom is the room a selector names: a roomKey, an incident id or its
+// pickPersonRoom is the room a selector names: a roomKey, an incident id or its
 // prefix, or a display id. With no selector, the first room this folder reads.
-func pickRoom(rooms []daemon.RoomView, workspaceKey, sel string) string {
+func pickPersonRoom(rooms []daemon.RoomView, workspaceKey, sel string) string {
 	sel = strings.TrimSpace(sel)
 	for _, r := range rooms {
 		if sel == "" {
@@ -348,7 +348,7 @@ func newVoteCommand(ui *UI) *cobra.Command {
 		if !cmd.Flags().Changed("claim") {
 			f.Claim = -1
 		}
-		return printAnswer(RunVote(cmd.Context(), f, PersonDeps{}.withDefaults(ws)))
+		return printPersonAnswer(RunVote(cmd.Context(), f, PersonDeps{}.withDefaults(ws)))
 	})
 	c.Flags().StringVar(&host, "host", "", "the agent host this session runs in")
 	c.Flags().StringVar(&f.Room, "room", "", "the room (its key or incident id); default: this folder's room")

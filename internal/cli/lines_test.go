@@ -57,8 +57,8 @@ func TestLinesClaim(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f := newFakeLandfall(t, c.status, c.body)
-			got := roundTrip(t, RunLinesClaim(context.Background(), LinesFlags{Label: c.label}, personDeps(f, c.who)))
+			f := newPersonFakeLandfall(t, c.status, c.body)
+			got := personRoundTrip(t, RunLinesClaim(context.Background(), LinesFlags{Label: c.label}, personDeps(f, c.who)))
 			if !sameAnswer(got, c.want) {
 				t.Fatalf("answer = %v, want %v", got, c.want)
 			}
@@ -113,8 +113,8 @@ func TestLinesRelease(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			f := newFakeLandfall(t, c.status, c.body)
-			got := roundTrip(t, RunLinesRelease(context.Background(), LinesFlags{Claim: c.claim}, personDeps(f, c.who)))
+			f := newPersonFakeLandfall(t, c.status, c.body)
+			got := personRoundTrip(t, RunLinesRelease(context.Background(), LinesFlags{Claim: c.claim}, personDeps(f, c.who)))
 			if !sameAnswer(got, c.want) {
 				t.Fatalf("answer = %v, want %v", got, c.want)
 			}
@@ -142,7 +142,7 @@ func TestLinesRelease(t *testing.T) {
 // TestPersonAnswersHaveNoEmDash: nothing these commands print to a person
 // carries an em dash, even when the server's own words do.
 func TestPersonAnswersHaveNoEmDash(t *testing.T) {
-	f := newFakeLandfall(t, 409, `{"message":"something odd — happened"}`)
+	f := newPersonFakeLandfall(t, 409, `{"message":"something odd — happened"}`)
 	for _, got := range []map[string]any{
 		RunVote(context.Background(), VoteFlags{Claim: 1, Position: "corroborate"}, personDeps(f, personSignedIn)),
 		RunLinesClaim(context.Background(), LinesFlags{Label: "dns"}, personDeps(f, personSignedIn)),

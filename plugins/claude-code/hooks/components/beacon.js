@@ -130,3 +130,7 @@ function stepTrack(k, roomKey, s) {
 function esc(s) {
   return String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c])
 }
+
+// tick runs every TICK_MS while the session lives: a component with an open
+// pane refreshes it here on its own cadence (nothing to do by default).
+export function tick(io, nowMs) {}

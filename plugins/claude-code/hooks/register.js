@@ -20,23 +20,23 @@
 
 import { HOST, declaredCommands, parseAnswer, room } from './core.js'
 import { kit } from './kit.js'
-import { install as installRoom, band as bandRoom, onSnapshot as onSnapshotRoom, start as startRoom } from './components/room.js'
-import { install as installChart, band as bandChart, onSnapshot as onSnapshotChart, start as startChart } from './components/chart.js'
-import { install as installDelivery, band as bandDelivery, onSnapshot as onSnapshotDelivery, start as startDelivery } from './components/delivery.js'
-import { install as installToolRows, band as bandToolRows, onSnapshot as onSnapshotToolRows, start as startToolRows } from './components/toolrows.js'
-import { install as installScope, band as bandScope, onSnapshot as onSnapshotScope, start as startScope } from './components/scope.js'
-import { install as installSound, band as bandSound, onSnapshot as onSnapshotSound, start as startSound } from './components/sound.js'
-import { install as installVote, band as bandVote, onSnapshot as onSnapshotVote, start as startVote } from './components/vote.js'
-import { install as installBeacon, band as bandBeacon, onSnapshot as onSnapshotBeacon, start as startBeacon } from './components/beacon.js'
-import { install as installIncidents, band as bandIncidents, onSnapshot as onSnapshotIncidents, start as startIncidents } from './components/incidents.js'
-import { install as installRoster, band as bandRoster, onSnapshot as onSnapshotRoster, start as startRoster } from './components/roster.js'
-import { install as installLines, band as bandLines, onSnapshot as onSnapshotLines, start as startLines } from './components/lines.js'
-import { install as installComms, band as bandComms, onSnapshot as onSnapshotComms, start as startComms } from './components/comms.js'
-import { install as installBrain, band as bandBrain, onSnapshot as onSnapshotBrain, start as startBrain } from './components/brain.js'
-import { install as installWall, band as bandWall, onSnapshot as onSnapshotWall, start as startWall } from './components/wall.js'
-import { install as installLb, band as bandLb, onSnapshot as onSnapshotLb, start as startLb } from './components/lb.js'
-import { install as installTopology, band as bandTopology, onSnapshot as onSnapshotTopology, start as startTopology } from './components/topology.js'
-import { install as installTimeline, band as bandTimeline, onSnapshot as onSnapshotTimeline, start as startTimeline } from './components/timeline.js'
+import { install as installRoom, band as bandRoom, onSnapshot as onSnapshotRoom, start as startRoom, tick as tickRoom } from './components/room.js'
+import { install as installChart, band as bandChart, onSnapshot as onSnapshotChart, start as startChart, tick as tickChart } from './components/chart.js'
+import { install as installDelivery, band as bandDelivery, onSnapshot as onSnapshotDelivery, start as startDelivery, tick as tickDelivery } from './components/delivery.js'
+import { install as installToolRows, band as bandToolRows, onSnapshot as onSnapshotToolRows, start as startToolRows, tick as tickToolRows } from './components/toolrows.js'
+import { install as installScope, band as bandScope, onSnapshot as onSnapshotScope, start as startScope, tick as tickScope } from './components/scope.js'
+import { install as installSound, band as bandSound, onSnapshot as onSnapshotSound, start as startSound, tick as tickSound } from './components/sound.js'
+import { install as installVote, band as bandVote, onSnapshot as onSnapshotVote, start as startVote, tick as tickVote } from './components/vote.js'
+import { install as installBeacon, band as bandBeacon, onSnapshot as onSnapshotBeacon, start as startBeacon, tick as tickBeacon } from './components/beacon.js'
+import { install as installIncidents, band as bandIncidents, onSnapshot as onSnapshotIncidents, start as startIncidents, tick as tickIncidents } from './components/incidents.js'
+import { install as installRoster, band as bandRoster, onSnapshot as onSnapshotRoster, start as startRoster, tick as tickRoster } from './components/roster.js'
+import { install as installLines, band as bandLines, onSnapshot as onSnapshotLines, start as startLines, tick as tickLines } from './components/lines.js'
+import { install as installComms, band as bandComms, onSnapshot as onSnapshotComms, start as startComms, tick as tickComms } from './components/comms.js'
+import { install as installBrain, band as bandBrain, onSnapshot as onSnapshotBrain, start as startBrain, tick as tickBrain } from './components/brain.js'
+import { install as installWall, band as bandWall, onSnapshot as onSnapshotWall, start as startWall, tick as tickWall } from './components/wall.js'
+import { install as installLb, band as bandLb, onSnapshot as onSnapshotLb, start as startLb, tick as tickLb } from './components/lb.js'
+import { install as installTopology, band as bandTopology, onSnapshot as onSnapshotTopology, start as startTopology, tick as tickTopology } from './components/topology.js'
+import { install as installTimeline, band as bandTimeline, onSnapshot as onSnapshotTimeline, start as startTimeline, tick as tickTimeline } from './components/timeline.js'
 
 export function register(on, options) {
   // Components first: install() declares their commands, which the
@@ -65,6 +65,7 @@ export function register(on, options) {
     for (const c of declaredCommands()) await $.command.register(c)
     await startAll($)
     startWatch($)
+    $.clock.every(TICK_MS, () => tickAll($))
     return next(e)
   })
 
@@ -233,6 +234,101 @@ function startWatch($) {
 }
 
 const RESTART_MS = 3000
+
+// TICK_MS is the session clock components refresh open panes on (tick).
+const TICK_MS = 5000
+
+// tickAll gives every component the clock: live panes refresh on their own
+// cadence (the wall's data every 15 s, as the war room's own canvas does).
+async function tickAll($) {
+  const io = makeIo($, null)
+  const nowMs = Number(await $.clock.now())
+  try {
+    await tickRoom(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickChart(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickDelivery(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickToolRows(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickScope(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickSound(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickVote(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickBeacon(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickIncidents(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickRoster(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickLines(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickComms(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickBrain(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickWall(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickLb(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickTopology(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+  try {
+    await tickTimeline(io, nowMs)
+  } catch {
+    // One component's tick never stops the others.
+  }
+}
 
 // applySnapshot takes one line of the stream, tells every component, redraws.
 function applySnapshot($, line) {

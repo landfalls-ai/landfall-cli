@@ -92,3 +92,7 @@ export function topologyText(a) {
   if (!g) return NO_GRAPH
   return [g.title || 'Topology', ...graphLines(g.nodes, g.edges).map((l) => '  ' + l)].join('\n')
 }
+
+// tick runs every TICK_MS while the session lives: a component with an open
+// pane refreshes it here on its own cadence (nothing to do by default).
+export function tick(io, nowMs) {}

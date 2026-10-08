@@ -78,3 +78,7 @@ export function scopeText(snap) {
     lines.join('\n')
   )
 }
+
+// tick runs every TICK_MS while the session lives: a component with an open
+// pane refreshes it here on its own cadence (nothing to do by default).
+export function tick(io, nowMs) {}

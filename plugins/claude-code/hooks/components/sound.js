@@ -111,3 +111,7 @@ export function switchText(isOn) {
     'one soft chime when an incident you are in becomes SEV1, or when a new finding waits on your vote. It plays on macOS only.'
   )
 }
+
+// tick runs every TICK_MS while the session lives: a component with an open
+// pane refreshes it here on its own cadence (nothing to do by default).
+export function tick(io, nowMs) {}

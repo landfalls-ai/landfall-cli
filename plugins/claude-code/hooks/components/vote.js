@@ -405,3 +405,7 @@ function votesText(r) {
   out.push('Vote as yourself: landfall vote --claim <seq> --position corroborate|contest [--reason "<why>"]')
   return out.join('\n')
 }
+
+// tick runs every TICK_MS while the session lives: a component with an open
+// pane refreshes it here on its own cadence (nothing to do by default).
+export function tick(io, nowMs) {}

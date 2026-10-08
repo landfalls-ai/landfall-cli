@@ -13,6 +13,7 @@
 //   band(io, e, k)              rows for the band above the prompt, or null
 //   onSnapshot(io, snap, prev)  after each new `landfall watch` line (toasts, sounds)
 //   start(io)                   once at session start, after commands register
+//   tick(io, nowMs)             every 5 s, from the session clock (live panes refresh here)
 //
 // `$` NEVER CROSSES A FILE. The engine's validator follows `$` only into
 // functions declared in the same file, so register.js hands components an

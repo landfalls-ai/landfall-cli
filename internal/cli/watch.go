@@ -302,6 +302,9 @@ func watchSnapshot(ws hooks.Workspace) WatchSnapshot {
 		snap.Line = StatusLine(ws)
 		return snap
 	}
+	// The room this session is in now leads, on the status line and on the
+	// stream alike: a reader of the stream takes rooms[0] as "the room".
+	currentRooms(res.Rooms, hooks.WorkspaceKey(ws.Dir()), ws.Harness)
 	if line := daemon.FormatStatusLine(res.Rooms); line != "" {
 		ids := make([]string, 0, len(res.Rooms))
 		for _, r := range res.Rooms {

@@ -21,7 +21,7 @@
 // the wall holds more widgets than the CLI reads at once, `totalWidgets` says
 // how many there are and the pane says so.
 
-import { HOST, addCommand, currentRoom, parseAnswer, room, roomName } from '../core.js'
+import { HOST, addCommand, currentOf, currentRoom, parseAnswer, room, roomName } from '../core.js'
 import { kit } from '../kit.js'
 import { closed, drawn, due, liveFooter, livePane, readLive, WALL_MS, widgetSeqOf, opened as markOpen } from '../live.js'
 import {
@@ -161,7 +161,7 @@ export function onSnapshot(io, snap, prev) {
   if (!lp.open) return
   const r = wallRoom(snap)
   const ws = widgetSeqOf(r)
-  if (ws != null && ws > lp.seq) void loadWall(io)
+  if (movedRoom(r) || (ws != null && ws > lp.seq)) void loadWall(io)
 }
 
 export function start(io) {}
@@ -176,8 +176,9 @@ export async function tick(io, nowMs) {
   }
   if (!lp.open) return
   io.invalidate()
-  const ws = widgetSeqOf(wallRoom(room.snapshot))
-  if (due(lp, nowMs, REFRESH_MS) || (ws != null && ws > lp.seq && !lp.inFlight)) void loadWall(io)
+  const r = wallRoom(room.snapshot)
+  const ws = widgetSeqOf(r)
+  if (due(lp, nowMs, REFRESH_MS) || ((movedRoom(r) || (ws != null && ws > lp.seq)) && !lp.inFlight)) void loadWall(io)
 }
 
 // announce shows the waiting new-widget toast, unless one was shown within
@@ -248,21 +249,24 @@ async function ioNow(io) {
   }
 }
 
-// wallRoom is the room the wall reads: the one it was opened on, else the first.
+// wallRoom is the room the wall reads: the room this session is in now
+// (core.js currentOf), never simply the stream's first.
 function wallRoom(snap) {
-  const rooms = (snap && snap.rooms) || []
-  return rooms.find((x) => x.roomKey === wall.roomKey) || rooms[0] || null
+  return currentOf(snap)
+}
+
+// movedRoom: the session is in another room than the one the wall last read
+// (its agent joined a new room), so an open wall reads that one.
+function movedRoom(r) {
+  return !!(r && wall.roomKey && r.roomKey !== wall.roomKey)
 }
 
 // loadWall runs `landfall wall` for the wall's room, one read at a time; a
 // widget event seen mid-read reads once more after it.
 async function loadWall(io) {
-  if (!wall.roomKey || !room.snapshot.rooms.some((x) => x.roomKey === wall.roomKey)) {
-    const r = currentRoom()
-    wall.roomKey = r ? r.roomKey : ''
-  }
   const fetch = () => {
     const r = wallRoom(room.snapshot)
+    wall.roomKey = r ? r.roomKey : ''
     const ws = widgetSeqOf(r)
     lp.seq = ws == null ? -1 : ws
     io.invalidate()
@@ -482,9 +486,15 @@ function withUnit(v, unit) {
   return fmt(v) + (unit === '%' ? '' : ' ') + unit
 }
 
-// geoName is a place as a person reads it: "us-east-1 · N. Virginia".
-function geoName(p) {
-  return p.label && p.label !== p.place ? p.place + ' · ' + p.label : String(p.place || p.label || '?')
+// geoName is a place as a person reads it: "us-east-1 · N. Virginia". A
+// label that already starts with the place ("eu-west-1 · 13.1%", the server's
+// own label for a critical place) is said once, not "eu-west-1 · eu-west-1 · …".
+export function geoName(p) {
+  const place = String(p.place || '')
+  const label = String(p.label || '')
+  if (!label || label === place) return place || '?'
+  if (!place || label.startsWith(place)) return label
+  return place + ' · ' + label
 }
 
 // moreWords says the wall holds more widgets than were read.

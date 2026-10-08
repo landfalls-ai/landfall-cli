@@ -27,6 +27,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +51,9 @@ type ReadDeps struct {
 	// WorkspaceKey is this checkout's key: a room is "this folder's" when a
 	// reader of this workspace reads it.
 	WorkspaceKey string
+	// Harness is the agent host this command runs for (--host), so the room
+	// this session's own agent is in can be told from another one's.
+	Harness string
 	// Rooms is the daemon's `rooms` op.
 	Rooms func() ([]daemon.RoomView, error)
 	// Peek is the daemon's `peek` op for this workspace: the rooms this
@@ -76,6 +80,7 @@ func defaultReadDeps(ws hooks.Workspace) ReadDeps {
 	sock := hooks.DaemonSocketPath(ws)
 	return ReadDeps{
 		WorkspaceKey: hooks.WorkspaceKey(ws.Dir()),
+		Harness:      ws.Harness,
 		Rooms: func() ([]daemon.RoomView, error) {
 			res, err := daemon.Send(sock, daemon.Request{Op: "rooms"}, time.Second)
 			var ve *daemon.VersionError
@@ -149,7 +154,7 @@ func (d ReadDeps) now() time.Time {
 
 // pickRoom finds the room a command is about. With sel (`--room`), any room
 // open on this machine whose key matches, or whose incident id or display id
-// does; without it, the first room this checkout reads.
+// does; without it, the room this checkout is in now (currentRooms first).
 func pickRoom(d ReadDeps, sel string) (daemon.RoomView, string) {
 	if d.Rooms == nil {
 		return daemon.RoomView{}, msgNoRoom
@@ -172,12 +177,84 @@ func pickRoom(d ReadDeps, sel string) (daemon.RoomView, string) {
 		}
 		return daemon.RoomView{}, "No room " + sel + " is open on this machine. Join it first."
 	}
+	var mine []daemon.RoomView
 	for _, r := range rooms {
 		if readsWorkspace(r, d.WorkspaceKey) {
-			return r, ""
+			mine = append(mine, r)
 		}
 	}
-	return daemon.RoomView{}, msgNoRoom
+	if len(mine) == 0 {
+		return daemon.RoomView{}, msgNoRoom
+	}
+	if len(mine) > 1 && d.Peek != nil {
+		// The `rooms` op carries no status; the peek does (from the cached
+		// frame, never a network wait). Only asked when there is a choice.
+		if peeked, err := d.Peek(); err == nil {
+			byKey := map[string]daemon.RoomView{}
+			for _, p := range peeked {
+				byKey[p.RoomKey] = p
+			}
+			for i, r := range mine {
+				if p, ok := byKey[r.RoomKey]; ok {
+					mine[i].Status, mine[i].Agent = p.Status, p.Agent
+				}
+			}
+		}
+	}
+	currentRooms(mine, d.WorkspaceKey, d.Harness)
+	return mine[0], ""
+}
+
+// currentRooms orders a checkout's rooms so the one it is in NOW comes
+// first. A daemon keeps a room after its incident is over (a reader keeps its
+// cursor for an hour), so "the first room" was often an older, resolved one.
+// In order:
+//
+//  1. the room this session's own agent is in: a connected agent reader of
+//     this checkout and harness (or the peek's agent.inRoom);
+//  2. an open incident before a resolved one;
+//  3. the newest activity (maxSeq) first.
+//
+// The sort is stable, so rooms equal on all three keep the daemon's order.
+func currentRooms(rooms []daemon.RoomView, workspaceKey, harness string) {
+	sort.SliceStable(rooms, func(i, j int) bool {
+		ai, aj := agentIsIn(rooms[i], workspaceKey, harness), agentIsIn(rooms[j], workspaceKey, harness)
+		if ai != aj {
+			return ai
+		}
+		oi, oj := !roomIsOver(rooms[i]), !roomIsOver(rooms[j])
+		if oi != oj {
+			return oi
+		}
+		return rooms[i].MaxSeq > rooms[j].MaxSeq
+	})
+}
+
+// agentIsIn reports whether this checkout's agent (of this harness, when one
+// is named) is in the room.
+func agentIsIn(r daemon.RoomView, workspaceKey, harness string) bool {
+	if r.Agent != nil && r.Agent.InRoom {
+		return true
+	}
+	if workspaceKey == "" {
+		return false
+	}
+	for _, rd := range r.Readers {
+		if rd == nil || rd.Kind != daemon.KindAgent || !rd.Connected || rd.WorkspaceKey != workspaceKey {
+			continue
+		}
+		if harness != "" && rd.Harness != "" && rd.Harness != harness {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// roomIsOver reports a room whose incident is resolved, closed or in
+// postmortem, as far as the daemon knows.
+func roomIsOver(r daemon.RoomView) bool {
+	return r.Status != nil && closedStatus(r.Status.Status)
 }
 
 // readsWorkspace reports whether a reader of this checkout reads the room.

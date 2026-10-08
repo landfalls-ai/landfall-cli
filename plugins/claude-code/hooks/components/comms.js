@@ -112,7 +112,7 @@ export async function tick(io, nowMs) {
   if (!lp.open) return
   io.invalidate()
   const r = currentRoom()
-  if (due(lp, nowMs, LIST_MS) && (view.roomKey || r)) void load(io, view.roomKey || r.roomKey)
+  if (due(lp, nowMs, LIST_MS) && r) void load(io, r.roomKey)
 }
 
 // load runs `landfall comms` for the room and redraws, one read at a time.

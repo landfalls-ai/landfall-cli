@@ -16,6 +16,7 @@ import (
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 	"github.com/landfalls-ai/landfall-cli/internal/daemon"
+	"github.com/landfalls-ai/landfall-cli/internal/narrate"
 )
 
 const (
@@ -310,5 +311,102 @@ func TestPickRoom(t *testing.T) {
 	}
 	if _, why := pickRoom(noRoomDeps(), ""); why != msgNoRoom {
 		t.Fatalf("no daemon: %q", why)
+	}
+}
+
+// TestPickRoomPrefersTheRoomThisSessionIsIn: a daemon attached to an older,
+// resolved room and the current one answers with the current one, never the
+// first by key (the live run's desktop panes read the old room).
+func TestPickRoomPrefersTheRoomThisSessionIsIn(t *testing.T) {
+	term := func() *daemon.Reader { return &daemon.Reader{Kind: daemon.KindTerminal, WorkspaceKey: "ws"} }
+	agent := func(harness string, connected bool) *daemon.Reader {
+		return &daemon.Reader{Kind: daemon.KindAgent, WorkspaceKey: "ws", Harness: harness, Connected: connected}
+	}
+	resolved := &narrate.RoomStatus{Status: "resolved"}
+	open := &narrate.RoomStatus{Status: "investigating"}
+
+	cases := []struct {
+		name  string
+		rooms []daemon.RoomView
+		peek  []daemon.RoomView
+		want  string
+	}{
+		{
+			name: "the room this harness's agent is in, though older and quieter",
+			rooms: []daemon.RoomView{
+				{RoomKey: "a-old", MaxSeq: 400, Readers: []*daemon.Reader{term(), agent("codex", true)}},
+				{RoomKey: "b-new", MaxSeq: 30, Readers: []*daemon.Reader{term(), agent("claude-code", true)}},
+			},
+			want: "b-new",
+		},
+		{
+			name: "an agent that left does not count",
+			rooms: []daemon.RoomView{
+				{RoomKey: "a", MaxSeq: 10, Readers: []*daemon.Reader{term(), agent("claude-code", false)}},
+				{RoomKey: "b", MaxSeq: 20, Readers: []*daemon.Reader{term()}},
+			},
+			want: "b",
+		},
+		{
+			name: "an open incident before a resolved one, read from the peek",
+			rooms: []daemon.RoomView{
+				{RoomKey: "a-resolved", MaxSeq: 500, Readers: []*daemon.Reader{term()}},
+				{RoomKey: "b-open", MaxSeq: 40, Readers: []*daemon.Reader{term()}},
+			},
+			peek: []daemon.RoomView{{RoomKey: "a-resolved", Status: resolved}, {RoomKey: "b-open", Status: open}},
+			want: "b-open",
+		},
+		{
+			name: "the peek's agent.inRoom counts too",
+			rooms: []daemon.RoomView{
+				{RoomKey: "a", MaxSeq: 500, Readers: []*daemon.Reader{term()}},
+				{RoomKey: "b", MaxSeq: 40, Readers: []*daemon.Reader{term()}},
+			},
+			peek: []daemon.RoomView{{RoomKey: "a", Agent: &daemon.AgentView{}}, {RoomKey: "b", Agent: &daemon.AgentView{InRoom: true}}},
+			want: "b",
+		},
+		{
+			name: "otherwise the newest activity",
+			rooms: []daemon.RoomView{
+				{RoomKey: "a", MaxSeq: 10, Readers: []*daemon.Reader{term()}},
+				{RoomKey: "b", MaxSeq: 99, Readers: []*daemon.Reader{term()}},
+			},
+			want: "b",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := ReadDeps{
+				WorkspaceKey: "ws", Harness: "claude-code",
+				Rooms: func() ([]daemon.RoomView, error) { return tc.rooms, nil },
+				Peek:  func() ([]daemon.RoomView, error) { return tc.peek, nil },
+			}
+			if r, why := pickRoom(d, ""); why != "" || r.RoomKey != tc.want {
+				t.Fatalf("pickRoom = %q %q, want %q", r.RoomKey, why, tc.want)
+			}
+			// --room still names any room outright.
+			if r, _ := pickRoom(d, tc.rooms[0].RoomKey); r.RoomKey != tc.rooms[0].RoomKey {
+				t.Fatalf("--room %q = %q", tc.rooms[0].RoomKey, r.RoomKey)
+			}
+		})
+	}
+}
+
+// TestCurrentRoomsOrdersTheWatchStream: the stream's rooms[0] is the room the
+// mod draws, so the peek is ordered the same way before it is written.
+func TestCurrentRoomsOrdersTheWatchStream(t *testing.T) {
+	rooms := []daemon.RoomView{
+		{RoomKey: "a", MaxSeq: 900, Status: &narrate.RoomStatus{Status: "resolved"}, Agent: &daemon.AgentView{}},
+		{RoomKey: "b", MaxSeq: 100, Status: &narrate.RoomStatus{Status: "investigating"}, Agent: &daemon.AgentView{}},
+		{RoomKey: "c", MaxSeq: 50, Status: &narrate.RoomStatus{Status: "investigating"}, Agent: &daemon.AgentView{InRoom: true}},
+		{RoomKey: "d", MaxSeq: 300, Status: &narrate.RoomStatus{Status: "closed"}},
+	}
+	currentRooms(rooms, "ws", "claude-code")
+	got := ""
+	for _, r := range rooms {
+		got += r.RoomKey
+	}
+	if got != "cbad" {
+		t.Fatalf("order = %q, want the agent's room, the open one, then resolved by newest", got)
 	}
 }

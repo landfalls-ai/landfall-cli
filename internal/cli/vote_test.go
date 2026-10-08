@@ -237,12 +237,23 @@ func TestPickPersonRoom(t *testing.T) {
 		"zzz":                      "",
 	}
 	for sel, want := range cases {
-		if got := pickPersonRoom(rooms, "ws", sel); got != want {
+		if got := pickPersonRoom(rooms, "ws", "", sel); got != want {
 			t.Errorf("pickPersonRoom(%q) = %q, want %q", sel, got, want)
 		}
 	}
-	if got := pickPersonRoom(rooms, "nowhere", ""); got != "" {
+	if got := pickPersonRoom(rooms, "nowhere", "", ""); got != "" {
 		t.Errorf("a folder in no room picked %q", got)
+	}
+	// Two rooms read by this folder: the one its agent is in, not the first.
+	both := []daemon.RoomView{
+		{RoomKey: "old", IncidentID: "old-1", MaxSeq: 90, Readers: []*daemon.Reader{{WorkspaceKey: "ws", Kind: daemon.KindTerminal}}},
+		{RoomKey: "new", IncidentID: "new-1", MaxSeq: 12, Readers: []*daemon.Reader{
+			{WorkspaceKey: "ws", Kind: daemon.KindTerminal},
+			{WorkspaceKey: "ws", Kind: daemon.KindAgent, Harness: "claude-code", Connected: true},
+		}},
+	}
+	if got := pickPersonRoom(both, "ws", "claude-code", ""); got != "new" {
+		t.Errorf("with two rooms the agent's own room leads, got %q", got)
 	}
 }
 

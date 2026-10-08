@@ -4,7 +4,7 @@
 // person's room daemon make the same read and queues the chart, so no points
 // are copied by anyone.
 
-import { HOST, addCommand, clip, room } from '../core.js'
+import { HOST, addCommand, clip, currentRoom, room, roomArgs } from '../core.js'
 
 // The agent's latest metric read that can become a chart: { query, label,
 // toolUseId } (the call's id, so its tool row can offer the same key).
@@ -88,7 +88,7 @@ export async function pinChart(io) {
   chart.ready = null
   io.invalidate()
   try {
-    const run = await io.process([room.bin, 'chart', '--host', HOST, '--query', JSON.stringify({ ...c.query, title: c.label })], {
+    const run = await io.process([room.bin, 'chart', '--host', HOST, ...roomArgs(currentRoom()), '--query', JSON.stringify({ ...c.query, title: c.label })], {
       timeoutMs: 40000,
     })
     let answer = {}

@@ -23,10 +23,12 @@ import {
   currentRoom,
   dot,
   newestLine,
+  orderRooms,
   pending,
   personLine,
   plainLine,
   room,
+  roomIsOver,
   roomName,
   severityTone,
   statusTone,
@@ -90,7 +92,8 @@ export function install(on) {
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, (e.props.bodyColumns ?? 80) - 2)
     const rows = []
-    for (const r of room.snapshot.rooms) {
+    const { shown, earlier } = roomsToList(room.snapshot.rooms)
+    for (const r of shown) {
       rows.push(Text({ key: 'h-' + r.roomKey, bold: true, children: [clip(roomName(r), width)] }))
       if (notLive(r)) rows.push(Text({ key: 'conn-' + r.roomKey, color: TONE.warning, children: [RECONNECTING] }))
       const you = youWords(r)
@@ -120,6 +123,7 @@ export function install(on) {
       })
       rows.push(Text({ key: 's-' + r.roomKey, children: [' '] }))
     }
+    if (earlier.length > 0) rows.push(Text({ key: 'earlier', dimColor: true, children: [clip(earlierLine(earlier), width)] }))
     const line = statusLine(room.snapshot)
     if (line) rows.push(Text({ key: 'line', dimColor: true, children: [clip(line, width)] }))
     rows.push(
@@ -354,7 +358,8 @@ function bandRich(io, k, rooms, r, hint) {
 function paneRich(k, act) {
   const { Box, Text } = k.els
   const cards = []
-  for (const r of room.snapshot.rooms) {
+  const { shown, earlier } = roomsToList(room.snapshot.rooms)
+  for (const r of shown) {
     const key = 'room-' + r.roomKey
     const st = r.status
     const kids = [
@@ -389,6 +394,7 @@ function paneRich(k, act) {
     })
     cards.push(k.card(kids, { key, tone: st && severityTone(st.severity) === 'critical' ? 'critical' : undefined }))
   }
+  if (earlier.length > 0) cards.push(k.dim(earlierLine(earlier), 'earlier'))
   const line = statusLine(room.snapshot)
   if (line) cards.push(k.dim(line, 'line'))
   cards.push(
@@ -428,7 +434,7 @@ function personRow(k, p, key) {
 // then the others who are here, as avatars with their names.
 function hintRich(k, hint) {
   const { Box, Text } = k.els
-  const r = room.snapshot.rooms[0]
+  const r = currentRoom()
   const others = (r?.status?.people ?? []).filter((p) => p.here && !p.you)
   const shown = others.slice(0, k.mobile ? 2 : 4)
   const kids = []
@@ -470,7 +476,8 @@ function glance(snap) {
 // roomText is /room's answer where no pane can be drawn (`claude -p`).
 export function roomText() {
   const out = []
-  for (const r of room.snapshot.rooms) {
+  const { shown, earlier } = roomsToList(room.snapshot.rooms)
+  for (const r of shown) {
     out.push(roomName(r) + ' · ' + r.count + ' new')
     if (notLive(r)) out.push('  ' + RECONNECTING)
     const you = youWords(r)
@@ -484,7 +491,26 @@ export function roomText() {
     }
     for (const line of r.digest ?? []) out.push('  ' + plainLine(line))
   }
+  if (earlier.length > 0) out.push(earlierLine(earlier))
   return out.join('\n')
+}
+
+// roomsToList is /room's rooms: the one this session is in now first, in
+// full, then any other open room in full; rooms after the first whose
+// incident is over are only named, on one dim line (earlierLine). A daemon
+// keeps a resolved room for a while, and it read as the current one.
+export function roomsToList(rooms) {
+  const ordered = orderRooms(rooms)
+  const shown = []
+  const earlier = []
+  ordered.forEach((r, i) => (i > 0 && roomIsOver(r) ? earlier : shown).push(r))
+  return { shown, earlier }
+}
+
+// earlierLine is the dim line for rooms that are over:
+// "Earlier: Acme 166 (resolved), Acme 160 (closed)".
+export function earlierLine(rooms) {
+  return 'Earlier: ' + rooms.map((r) => (r.displayId || roomName(r)) + (r.status && r.status.status ? ' (' + r.status.status + ')' : '')).join(', ')
 }
 
 // tick runs every TICK_MS while the session lives: a component with an open

@@ -15,7 +15,7 @@
 // CloudWatch's own minute. A failed read keeps the last good board and says
 // it is stale; the last line says how old what it shows is.
 
-import { HOST, addCommand, clip, currentRoom, parseAnswer, room, roomName } from '../core.js'
+import { HOST, addCommand, clip, currentRoom, parseAnswer, room, roomArgs, roomName } from '../core.js'
 import { kit } from '../kit.js'
 import { closed, drawn, due, LB_MS, liveFooter, livePane, readLive, opened as markOpen } from '../live.js'
 import { byZone, clipText, fiveXxTone, fmt, healthTone, healthyTone, hhmm, lastPct, pctCell, toneColor } from '../views.js'
@@ -156,7 +156,7 @@ async function shareLb($) {
   $.ui.invalidate('ui.render')
   const title = shareTitle(a)
   try {
-    const run = await $.process.run([room.bin, 'chart', '--host', HOST, '--query', JSON.stringify({ ...a.query, title })], { timeoutMs: 40000 })
+    const run = await $.process.run([room.bin, 'chart', '--host', HOST, ...roomArgs(currentRoom()), '--query', JSON.stringify({ ...a.query, title })], { timeoutMs: 40000 })
     const answer = parseAnswer(run)
     if (answer.ok) await $.ui.toast('Chart added to your dashboard in the room: ' + (answer.title || title), { timeoutMs: 6000 })
     else await $.ui.toast('Chart not added: ' + clip(String(answer.error || 'no answer'), 200), { timeoutMs: 8000 })

@@ -10,7 +10,7 @@
 // (review.md #1), never $.mcp.call. The person's own claims (`mine`) are never
 // offered: the server already counts them, and a second vote is refused.
 
-import { addCommand, clip, currentRoom, parseAnswer, room, roomName, severityTone } from '../core.js'
+import { addCommand, clip, currentOf, currentRoom, parseAnswer, room, roomName, severityTone } from '../core.js'
 import { TONE, kit } from '../kit.js'
 
 export const PANE = 'landfall-vote'
@@ -110,7 +110,7 @@ export function onSnapshot(io, snap) {
       told.add(id)
       io.toast(author(v) + ' asked for your vote on #' + v.claimSeq, 8000)
       // Never over a reason the person is typing.
-      if (r === snap.rooms[0] && docks() && !(pane && pane.contesting)) void openPane(io, r, v, false, true)
+      if (r === currentOf(snap) && docks() && !(pane && pane.contesting)) void openPane(io, r, v, false, true)
     }
   }
 }

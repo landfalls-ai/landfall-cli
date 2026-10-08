@@ -83,14 +83,24 @@ export function parseAnswer(run) {
   return { ok: false, error: clip(((run && (run.stderr || run.stdout)) || 'no answer').trim(), 200) }
 }
 
-// The only room, or the first one; most sessions sit in one.
+// currentRoom is the room this session is in NOW (orderRooms), not the
+// stream's first: a daemon keeps an older, resolved room for a while after
+// its incident ends, and every pane and command acts on this one.
 export function currentRoom() {
-  return room.snapshot.rooms[0] || null
+  return currentOf(room.snapshot)
 }
 
-// pending is the rooms with untold news the person has not set aside.
+// currentOf is a snapshot's current room, or null.
+export function currentOf(snap) {
+  return orderRooms((snap && snap.rooms) || [])[0] || null
+}
+
+// pending is the rooms with untold news the person has not set aside, the
+// current room first. A room whose incident is over has no news worth the
+// band unless it is the only one.
 export function pending() {
-  return room.snapshot.rooms.filter((r) => r.count > 0 && r.maxSeq > (room.laterAt[r.roomKey] ?? -1))
+  const rooms = orderRooms(room.snapshot.rooms)
+  return rooms.filter((r, i) => r.count > 0 && r.maxSeq > (room.laterAt[r.roomKey] ?? -1) && (i === 0 || !roomIsOver(r)))
 }
 
 export function roomName(r) {
@@ -196,8 +206,8 @@ export function whereIs(p) {
 
 // whoIsHere is the line under the prompt: the other people who are here.
 export function whoIsHere() {
-  if (room.snapshot.rooms.length !== 1) return ''
-  const st = room.snapshot.rooms[0].status
+  const r = currentRoom()
+  const st = r && r.status
   if (!st) return ''
   const others = (st.people ?? []).filter((p) => p.here && !p.you)
   if (others.length === 0) return ''
@@ -251,4 +261,44 @@ export function toolsOf(p, { hereOnly = false } = {}) {
   }
   for (const [tool, t] of byTool) out.push(tool + (t.here ? '' : ' (away)') + (t.doing.length > 0 ? ': ' + t.doing.join(', ') : ''))
   return out
+}
+
+// agentIn reports that this session's own agent is in the room (the watch
+// stream's agent.inRoom).
+export function agentIn(r) {
+  return !!(r && r.agent && r.agent.inRoom === true)
+}
+
+// roomIsOver reports a room whose incident is resolved, closed or in
+// postmortem (the CLI's closedStatus).
+export function roomIsOver(r) {
+  const s = ((r && r.status && r.status.status) || '').toLowerCase().trim()
+  return s === 'resolved' || s === 'closed' || s === 'postmortem'
+}
+
+// orderRooms is a copy of the rooms with the one this session is in now
+// first: the room its own agent is in, then an open incident before one that
+// is over, then the newest activity (maxSeq). Rooms equal on all three keep
+// the stream's order. The CLI orders the stream the same way (currentRooms);
+// this keeps a mod in step with an older CLI that does not.
+export function orderRooms(rooms) {
+  return (rooms || [])
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ai = agentIn(a.r) ? 0 : 1
+      const bi = agentIn(b.r) ? 0 : 1
+      if (ai !== bi) return ai - bi
+      const ao = roomIsOver(a.r) ? 1 : 0
+      const bo = roomIsOver(b.r) ? 1 : 0
+      if (ao !== bo) return ao - bo
+      const d = (b.r.maxSeq ?? 0) - (a.r.maxSeq ?? 0)
+      return d !== 0 ? d : a.i - b.i
+    })
+    .map((x) => x.r)
+}
+
+// roomArgs is `--room <key>` for a CLI run about one room, so the CLI never
+// falls back to a room of its own choosing; nothing when there is no room.
+export function roomArgs(r) {
+  return r && r.roomKey ? ['--room', r.roomKey] : []
 }

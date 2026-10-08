@@ -272,7 +272,7 @@ func daemonRoomSession(ws hooks.Workspace, sel string) (client.Config, error) {
 	if err != nil || res == nil {
 		return client.Config{}, errors.New("No room is open on this machine. Join one first with landfall join and a share link.")
 	}
-	roomKey := pickPersonRoom(res.Rooms, hooks.WorkspaceKey(ws.Dir()), sel)
+	roomKey := pickPersonRoom(res.Rooms, hooks.WorkspaceKey(ws.Dir()), ws.Harness, sel)
 	if roomKey == "" {
 		if sel != "" {
 			return client.Config{}, errors.New("This machine is not in that room. Join it first with landfall join and a share link.")
@@ -287,18 +287,24 @@ func daemonRoomSession(ws hooks.Workspace, sel string) (client.Config, error) {
 }
 
 // pickPersonRoom is the room a selector names: a roomKey, an incident id or its
-// prefix, or a display id. With no selector, the first room this folder reads.
-func pickPersonRoom(rooms []daemon.RoomView, workspaceKey, sel string) string {
+// prefix, or a display id. With no selector, the room this folder is in now
+// (currentRooms: its agent's room, then an open one, then the newest).
+func pickPersonRoom(rooms []daemon.RoomView, workspaceKey, harness, sel string) string {
 	sel = strings.TrimSpace(sel)
-	for _, r := range rooms {
-		if sel == "" {
-			for _, rd := range r.Readers {
-				if rd.WorkspaceKey == workspaceKey {
-					return r.RoomKey
-				}
+	if sel == "" {
+		var mine []daemon.RoomView
+		for _, r := range rooms {
+			if readsWorkspace(r, workspaceKey) {
+				mine = append(mine, r)
 			}
-			continue
 		}
+		if len(mine) == 0 {
+			return ""
+		}
+		currentRooms(mine, workspaceKey, harness)
+		return mine[0].RoomKey
+	}
+	for _, r := range rooms {
 		if r.RoomKey == sel || r.IncidentID == sel || (len(sel) >= 4 && strings.HasPrefix(r.IncidentID, sel)) || (r.DisplayID != "" && r.DisplayID == sel) {
 			return r.RoomKey
 		}

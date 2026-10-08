@@ -1,6 +1,11 @@
 // The room at a glance: the band's news rows (keys 1 to 3), the /room pane,
 // who is here under the prompt, the status line, and the toasts for an
 // @-mention, a status change and Beacon ending a run.
+//
+// Every site draws for its surface (kit.js): the terminal as text and keys,
+// exactly as it always has; the desktop Code tab and VS Code as a branded card
+// with the Beacon mark, status and severity pills, avatars with presence and
+// real buttons; mobile as the same card, compact.
 
 import {
   ADDRESSED,
@@ -14,9 +19,13 @@ import {
   plainLine,
   room,
   roomName,
+  severityTone,
+  statusTone,
   statusWords,
+  whereIs,
   whoIsHere,
 } from '../core.js'
+import { kit } from '../kit.js'
 
 export const PANE = 'landfall-room'
 
@@ -44,12 +53,26 @@ export function install(on) {
     if (e.props.isDraft) return next(e)
     const tail = whoIsHere()
     if (!tail) return next(e)
-    return next({ ...e, props: { ...e.props, tail: (e.props.tail ? e.props.tail + '  ' : '') + tail } })
+    if (e.surface === 'terminal') {
+      return next({ ...e, props: { ...e.props, tail: (e.props.tail ? e.props.tail + '  ' : '') + tail } })
+    }
+    // Only the terminal draws `tail`: elsewhere the line is drawn here, the
+    // engine's own hint first, then who is here as avatars.
+    return hintRich(kit($.ui.resolve(e), e), e.props.hint)
   })
 
   // The room, in a pane: the room at a glance, then every untold line.
   on('ui.render', { component: 'Pane' }, async ($, e, next) => {
     if (e.requestId !== PANE) return next(e)
+    if (e.surface !== 'terminal') {
+      return paneRich(kit($.ui.resolve(e), e), {
+        catchUp: async () => {
+          await $.ui.close({ id: PANE })
+          await $.prompt.fill({ text: CATCH_UP })
+        },
+        close: () => $.ui.close({ id: PANE }),
+      })
+    }
     const { Box, Text, Button } = $.ui.resolve(e)
     const width = Math.max(20, (e.props.bodyColumns ?? 80) - 2)
     const rows = []
@@ -112,6 +135,7 @@ export function install(on) {
 export async function band(io, e, k) {
   const rooms = pending()
   if (rooms.length === 0) return null
+  if (!k.terminal) return bandRich(io, k, rooms)
   const { Text } = k.els
   const r = rooms[0]
   const total = rooms.reduce((n, x) => n + x.count, 0)
@@ -183,6 +207,170 @@ export function onSnapshot(io, snap) {
 }
 
 export function start(io) {}
+
+// --- off the terminal: the desktop Code tab, VS Code, mobile ---------------
+
+// roomPills is a room's severity, status and connection as pills.
+function roomPills(k, r, key) {
+  const st = r.status || {}
+  const out = []
+  if (st.severity) out.push(k.pill(st.severity, severityTone(st.severity), key + '-sev'))
+  if (st.status) out.push(k.pill(st.status, statusTone(st.status), key + '-st'))
+  if (r.connection && r.connection !== 'live') out.push(k.pill(r.connection, 'warning', key + '-conn'))
+  return out
+}
+
+// bandRich is the band as one card: the room with its pills and who is here,
+// the newest line with Beacon's state, then Catch up, Show the room, Later.
+function bandRich(io, k, rooms) {
+  const { Box, Text } = k.els
+  const r = rooms[0]
+  const st = r.status || {}
+  const total = rooms.reduce((n, x) => n + x.count, 0)
+  const name = roomName(r)
+  const title = Box({
+    key: 'news-title',
+    flexDirection: 'row',
+    columnGap: 1,
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    children: [
+      k.mark('news-mark', 18),
+      Text({ key: 'news-name', bold: true, children: [k.mobile ? clip(name, 28) : name] }),
+      ...roomPills(k, r, 'news'),
+      k.pill(total === 1 ? '1 new' : total + ' new', 'neutral', 'news-count'),
+    ],
+  })
+  const people = st.people ?? []
+  const here = people.filter((p) => p.here)
+  let head = title
+  if (k.mobile) {
+    // Compact: who is here as a count, not faces.
+    if (here.length > 0) head = k.col([title, k.dim(here.length + ' here', 'news-here')], 'news-head')
+  } else if (here.length > 0) {
+    head = Box({ key: 'news-head', flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', columnGap: 2, children: [title, k.avatars(here, { key: 'news-avs', max: 5 })] })
+  }
+  const said = plainLine(newestLine(r.digest ?? []))
+  const tail = []
+  if (r.votesAwaited === 1) tail.push('1 vote awaited')
+  if (r.votesAwaited > 1) tail.push(r.votesAwaited + ' votes awaited')
+  if (st.beacon) tail.push('Beacon ' + st.beacon)
+  const line = [said, ...tail].filter(Boolean).join(' · ')
+  const keys = [
+    k.button({ key: 'catch-up', label: 'Catch up', hotkey: '1', primary: true, onPress: async () => void (await io.fill(CATCH_UP)) }),
+    k.mobile ? null : k.button({ key: 'show', label: 'Show the room', hotkey: '2', onPress: async () => void (await io.open(PANE, 'Landfall', { focus: true, closeOnEscape: true })) }),
+    k.button({
+      key: 'later',
+      label: 'Later',
+      hotkey: '3',
+      dim: true,
+      onPress: () => {
+        for (const x of rooms) room.laterAt[x.roomKey] = x.maxSeq
+        io.invalidate()
+      },
+    }),
+  ]
+  return [
+    k.card(
+      [head, line ? Text({ key: 'news-l', dimColor: true, children: [clip(line, k.mobile ? 90 : Math.max(40, k.width * 2))] }) : null, k.row(keys, 'news-keys', 1)],
+      { key: 'news-card', tone: severityTone(st.severity) === 'critical' ? 'critical' : undefined },
+    ),
+  ]
+}
+
+// paneRich is /room as cards: each room at a glance, everyone in it with
+// their avatar, where they work and what their agents are doing, then the news.
+function paneRich(k, act) {
+  const { Box, Text } = k.els
+  const cards = []
+  for (const r of room.snapshot.rooms) {
+    const key = 'room-' + r.roomKey
+    const st = r.status
+    const kids = [
+      Box({
+        key: key + '-h',
+        flexDirection: 'row',
+        columnGap: 1,
+        flexWrap: 'wrap',
+        alignItems: 'center',
+        children: [k.mark(key + '-m', 20), Text({ key: key + '-name', bold: true, children: [roomName(r)] }), ...roomPills(k, r, key)],
+      }),
+    ]
+    if (st) {
+      if (st.beacon) kids.push(k.dim('Beacon ' + st.beacon, key + '-beacon'))
+      if (st.theory) kids.push(k.quote('Leading theory: ' + st.theory, key + '-theory'))
+      const people = st.people ?? []
+      if (people.length > 0) {
+        kids.push(Text({ key: key + '-ph', bold: true, children: ['In the room (' + people.filter((p) => p.here).length + ' here)'] }))
+        people.forEach((p, i) => kids.push(personRow(k, p, key + '-p' + i)))
+      }
+    }
+    const news = [r.count === 1 ? '1 new' : r.count + ' new']
+    if (r.connection && r.connection !== 'live') news.push(r.connection)
+    kids.push(Text({ key: key + '-nh', bold: true, children: ['News · ' + news.join(' · ')] }))
+    const lines = r.digest ?? []
+    if (lines.length === 0) kids.push(k.dim('Nothing new since you last spoke.', key + '-none'))
+    lines.forEach((line, i) => {
+      const addressed = line.endsWith(ADDRESSED)
+      kids.push(Text({ key: key + '-n' + i, bold: addressed, children: [(addressed ? '@ ' : '') + plainLine(line)] }))
+    })
+    cards.push(k.card(kids, { key, tone: st && severityTone(st.severity) === 'critical' ? 'critical' : undefined }))
+  }
+  const line = statusLine(room.snapshot)
+  if (line) cards.push(k.dim(line, 'line'))
+  cards.push(
+    k.row(
+      [
+        k.button({ key: 'pane-catch-up', label: 'Catch up', hotkey: 'c', primary: true, onPress: act.catchUp }),
+        k.button({ key: 'pane-close', label: 'Close', dismiss: true, onPress: act.close }),
+      ],
+      'actions',
+      1,
+    ),
+  )
+  return Box({ flexDirection: 'column', rowGap: 1, children: cards })
+}
+
+// personRow is one person: avatar, name, then where they work and what their
+// agents are doing.
+function personRow(k, p, key) {
+  const { Box, Text } = k.els
+  const doing = []
+  for (const a of p.agents ?? []) if (a.doing) doing.push(a.tool + ': ' + a.doing)
+  const where = whereIs(p)
+  const detail = [where || (p.here ? '' : 'away'), ...doing].filter(Boolean).join(' · ')
+  const name = Text({ key: key + '-n', bold: true, dimColor: !p.here, children: [p.name + (p.you ? ' (you)' : '')] })
+  if (!k.rich) return Text({ key, dimColor: !p.here, children: [personLine(p)] })
+  return Box({
+    key,
+    flexDirection: 'row',
+    columnGap: 1,
+    alignItems: 'center',
+    children: [
+      k.avatar(p.name, !!p.here, { key: key + '-av', you: !!p.you }),
+      Box({ key: key + '-c', flexDirection: 'column', children: [name, detail ? k.dim(detail, key + '-d') : null].filter(Boolean) }),
+    ],
+  })
+}
+
+// hintRich is the line under the prompt off the terminal: the engine's hint,
+// then the others who are here, as avatars with their names.
+function hintRich(k, hint) {
+  const { Box, Text } = k.els
+  const r = room.snapshot.rooms[0]
+  const others = (r?.status?.people ?? []).filter((p) => p.here && !p.you)
+  const shown = others.slice(0, k.mobile ? 2 : 4)
+  const kids = []
+  if (hint) kids.push(Text({ key: 'hint', dimColor: true, children: [hint] }))
+  kids.push(Text({ key: 'here', dimColor: true, children: ['Here:'] }))
+  shown.forEach((p, i) => {
+    const where = whereIs(p)
+    kids.push(k.avatar(p.name, true, { key: 'hint-av' + i, px: 16 }))
+    kids.push(Text({ key: 'hint-n' + i, dimColor: true, children: [where ? p.name + ' (' + where + ')' : p.name] }))
+  })
+  if (others.length > shown.length) kids.push(Text({ key: 'hint-more', dimColor: true, children: [others.length - shown.length + ' more'] }))
+  return Box({ flexDirection: 'row', columnGap: 1, flexWrap: 'wrap', alignItems: 'center', children: kids })
+}
 
 // statusLine is the daemon's line with the room at a glance after the room's
 // name: "🟡 Acme 82 · mitigated · SEV2 · 4 here · Beacon concluded · 3 new".

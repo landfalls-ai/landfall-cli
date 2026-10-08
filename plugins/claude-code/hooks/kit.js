@@ -13,6 +13,21 @@
 //
 // THE SIGNATURES ARE A CONTRACT between components written in parallel: add
 // pieces freely, change a signature only with every caller.
+//
+// THE PIECES (k = kit($.ui.resolve(e), e)):
+//   k.surface, k.terminal, k.rich (draws Svg), k.mobile (compact: no fields), k.width
+//   k.mark(key?, px?)                      the Beacon mark, or ◆ on the terminal
+//   k.pill(text, tone?, key?)              "● SEV2" in its tone; a rounded chip off the terminal
+//   k.header({ key, title, pills, dim })   mark, title, pills
+//   k.button({ key, label, hotkey, onPress, primary, dim, dismiss })
+//   k.row(children, key?, gap?) / k.col(children, key?, gap?) / k.text(text, props?)
+//   k.spark(values, opts) / k.heat(grid, opts) / k.svg(source, opts)
+//   k.avatar(name, here, { key, you, px })  a round initial with a presence dot; "● name" on the terminal
+//   k.avatars(people, { key, max })        avatars of people ({ name, here, you }), "+N" past max
+//   k.card(children, { key, tone })        a bordered card off the terminal; a plain column on it
+//   k.quote(text, key?)                    someone's words: italic off the terminal, dim on it
+//   k.dim(text, key?)                      a dim line
+//   k.table(rows, { key, widths })         rows of cells (strings or elements) in aligned columns
 
 export const TONE = {
   critical: '#d03b3b',
@@ -50,6 +65,8 @@ export function kit(els, e) {
   const surface = e.surface || 'terminal'
   const terminal = surface === 'terminal'
   const rich = !terminal && typeof els.Svg === 'function'
+  // Mobile draws no fields and little width: components draw it compact.
+  const mobile = surface === 'mobile'
   const width = Math.max(20, (e.props?.bodyColumns ?? e.viewport?.columns ?? 80) - 2)
   const { Box, Text, Button } = els
 
@@ -58,6 +75,7 @@ export function kit(els, e) {
     surface,
     terminal,
     rich,
+    mobile,
     width,
 
     // mark is the Landfall mark: the pixel Beacon on a remote surface, a glyph in a terminal.
@@ -66,11 +84,14 @@ export function kit(els, e) {
       return Text({ key, bold: true, children: ['◆'] })
     },
 
-    // pill is a short state word in its tone: "● SEV2".
+    // pill is a short state word in its tone: "● SEV2". Off the terminal it is
+    // a rounded chip around the same text, so a search for the text finds it
+    // on every surface.
     pill(text, tone = 'neutral', key) {
       const color = TONE[tone] || TONE.neutral
-      if (rich) return Text({ key, color, bold: true, children: ['● ' + text] })
-      return Text({ key, color, children: ['● ' + text] })
+      if (terminal) return Text({ key, color, children: ['● ' + text] })
+      const label = Text({ ...(key ? { key: key + '-t' } : {}), color, bold: true, children: ['● ' + text] })
+      return Box({ key, borderStyle: 'round', borderColor: color, paddingX: 1, children: [label] })
     },
 
     // header is the branded title row: mark, title, then pills.
@@ -83,13 +104,18 @@ export function kit(els, e) {
 
     // button is a Button that reads as a key on the terminal ("1: catch up")
     // and as a real button elsewhere. `primary` marks the main action.
-    button({ key, label, hotkey, onPress, primary, dim }) {
+    // `dismiss` marks the one that closes its site (a desktop draws its own
+    // close control for it).
+    button({ key, label, hotkey, onPress, primary, dim, dismiss }) {
       const props = { key, label, onPress }
       if (hotkey) props.hotkey = hotkey
       if (terminal) {
         props.plain = true
         if (dim) props.dimColor = true
-      } else if (primary) props.variant = 'primary'
+      } else {
+        if (primary) props.variant = 'primary'
+        if (dismiss) props.role = 'dismiss'
+      }
       return Button(props)
     },
 
@@ -161,6 +187,85 @@ export function kit(els, e) {
       return Text({ key, children: [grid.map((r) => r.map((t) => (t ? '█' : '▪')).join('')).join('\n')] })
     },
 
+    // avatar is one person: a round initial in their own hue with a presence
+    // dot (green here, grey away) where Svg draws; "● name" / "○ name" on the
+    // terminal, green while here.
+    avatar(name, here, { key = 'av-' + name, you, px = 22 } = {}) {
+      const label = String(name || '?') + (you ? ' (you)' : '')
+      if (rich) {
+        return els.Svg({ key, source: avatarSvg(name, here, px, you), alt: label + (here ? ', here' : ', away'), width: px, height: px })
+      }
+      if (here) return Text({ key, color: TONE.good, children: ['● ' + label] })
+      return Text({ key, dimColor: true, children: ['○ ' + label] })
+    },
+
+    // avatars is a row of people ({ name, here, you }), the ones here first,
+    // with "+N" past `max`.
+    avatars(people, { key = 'avs', max = 6 } = {}) {
+      const list = [...(people || [])].sort((a, b) => Number(!!b.here) - Number(!!a.here))
+      if (list.length === 0) return null
+      const shown = list.slice(0, max).map((p, i) => k.avatar(p.name, !!p.here, { key: key + '-' + i, you: !!p.you }))
+      if (list.length > max) shown.push(Text({ key: key + '-more', dimColor: true, children: ['+' + (list.length - max)] }))
+      return Box({ key, flexDirection: 'row', columnGap: rich ? 0 : 2, flexWrap: 'wrap', alignItems: 'center', children: shown })
+    },
+
+    // card holds one thing (a room, a vote, a tool's answer) in a rounded
+    // border off the terminal; on the terminal it is a plain column, so text
+    // there reads as it always has.
+    card(children, { key = 'card', tone, gap = 0 } = {}) {
+      const kids = (children || []).filter(Boolean)
+      if (terminal) return Box({ key, flexDirection: 'column', rowGap: gap, children: kids })
+      return Box({
+        key,
+        flexDirection: 'column',
+        rowGap: Math.max(gap, mobile ? 0 : 1),
+        borderStyle: 'round',
+        borderColor: tone ? TONE[tone] || TONE.neutral : TONE.neutral,
+        paddingX: 1,
+        children: kids,
+      })
+    },
+
+    // quote is someone's words.
+    quote(text, key = 'quote') {
+      if (terminal) return Text({ key, dimColor: true, children: [String(text)] })
+      return Text({ key, italic: true, children: [String(text)] })
+    },
+
+    dim(text, key = 'dim') {
+      return Text({ key, dimColor: true, children: [String(text)] })
+    },
+
+    // table lays rows of cells out in columns: a string cell is text, anything
+    // else an element. `widths` fixes column widths in cells (the last column
+    // takes the rest); left out, each column is as wide as its widest text.
+    table(rows, { key = 'table', widths } = {}) {
+      if (!rows || rows.length === 0) return null
+      const cols = Math.max(...rows.map((r) => r.length))
+      const w = []
+      for (let c = 0; c < cols; c++) {
+        if (widths && widths[c] != null) w.push(widths[c])
+        else w.push(Math.max(...rows.map((r) => (typeof r[c] === 'string' ? r[c].length : 4))) + 2)
+      }
+      return Box({
+        key,
+        flexDirection: 'column',
+        children: rows.map((r, y) =>
+          Box({
+            key: key + '-r' + y,
+            flexDirection: 'row',
+            children: r.map((cell, x) =>
+              Box({
+                key: key + '-r' + y + 'c' + x,
+                ...(x === cols - 1 ? { flexShrink: 1 } : { width: w[x], flexShrink: 0 }),
+                children: [typeof cell === 'string' ? Text({ key: key + '-t' + y + 'c' + x, children: [cell] }) : cell],
+              }),
+            ),
+          }),
+        ),
+      })
+    },
+
     // svg draws raw markup on a surface that can, or the alt text where it cannot.
     svg(source, { key = 'svg', alt = '', width, height, hover } = {}) {
       if (rich) return els.Svg({ key, source, alt, width, height, isInteractive: !!hover })
@@ -168,6 +273,23 @@ export function kit(els, e) {
     },
   }
   return k
+}
+
+// A person's hue, from their name, so the same person reads the same everywhere.
+const AVATAR_HUES = ['#2a78d6', '#8a5cd6', '#0e8a7e', '#c2571a', '#b03a78', '#4b6bb0', '#5f8a1e', '#a0662a']
+
+export function avatarSvg(name, here, px = 22, you = false) {
+  const n = String(name || '?')
+  let h = 0
+  for (let i = 0; i < n.length; i++) h = (h * 31 + n.charCodeAt(i)) >>> 0
+  const fill = AVATAR_HUES[h % AVATAR_HUES.length]
+  const initial = esc((you ? 'Y' : n.trim()[0] || '?').toUpperCase())
+  let s = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+  s += '<circle cx="12" cy="12" r="10.5" fill="' + fill + '"' + (here ? '' : ' fill-opacity=".45"') + '/>'
+  s += '<text x="12" y="16" text-anchor="middle" font-family="-apple-system,Segoe UI,sans-serif" font-size="11" font-weight="600" fill="#ffffff">' + initial + '</text>'
+  s += '<circle cx="19.5" cy="19.5" r="3.6" fill="' + (here ? TONE.good : '#9a9a96') + '" stroke="#ffffff" stroke-width="1.4"/>'
+  s += '<title>' + esc(n + (here ? ' · here' : ' · away')) + '</title>'
+  return s + '</svg>'
 }
 
 const BLOCKS = [0x2581, 0x2582, 0x2583, 0x2584, 0x2585, 0x2586, 0x2587, 0x2588]

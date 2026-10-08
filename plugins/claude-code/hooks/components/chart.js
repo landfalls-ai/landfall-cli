@@ -6,7 +6,8 @@
 
 import { HOST, addCommand, clip, room } from '../core.js'
 
-// The agent's latest metric read that can become a chart: { query, label, points }.
+// The agent's latest metric read that can become a chart: { query, label,
+// toolUseId } (the call's id, so its tool row can offer the same key).
 export const chart = { ready: null, pinning: false }
 
 export function install(on) {
@@ -32,7 +33,7 @@ export function install(on) {
         if (e.params) query.params = e.params
         if (e.connection) query.connection = e.connection
         if (e.account) query.account = e.account
-        chart.ready = { query, label: chartLabel(e) }
+        chart.ready = { query, label: chartLabel(e), toolUseId: e.tool_use_id }
         $.ui.invalidate('ui.render')
       }
     } catch {
@@ -47,6 +48,20 @@ export function install(on) {
 export async function band(io, e, k) {
   const c = chart.ready
   if (!c) return null
+  if (!k.terminal) {
+    // Off the terminal: one real button that names the metric.
+    return [
+      k.row(
+        [
+          k.mark('chart-m', 14),
+          k.dim('Chart ready', 'chart-l'),
+          k.button({ key: 'pin', label: clip('Add chart: ' + c.label, k.mobile ? 36 : 60), hotkey: '4', onPress: () => pinChart(io) }),
+        ],
+        'chart-row',
+        1,
+      ),
+    ]
+  }
   return [
     k.row(
       [

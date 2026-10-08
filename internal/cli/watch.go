@@ -18,13 +18,18 @@ package cli
 //	{"type":"rooms","line":"<the status line>","rooms":[{...}]}
 //
 // Each room is the daemon's `peek` for this workspace's terminal reader:
-// what the PERSON has not been told. Nothing here moves a cursor. Delivery to
+// what the PERSON has not been told, the room at a glance, and the votes the
+// person (not their agent) is asked for. Nothing here moves a cursor. Delivery to
 // the agent stays with the user-prompt-submit hook, which the mod runs on the
 // person's next message, so watching never counts as telling.
 //
 // WHEN IT WAKES. On every event a room's `subscribe` stream pushes, and on a
 // slow tick as well, which picks up a room joined after start, a daemon that
 // restarted, and the held count only this checkout's spool knows.
+//
+// WHAT IT COSTS. Nothing on the network per tick: the peek answers from the
+// daemon's cache, and the daemon reads the person's view (votes, claims,
+// lines) only when an event changes it or it is older than PersonTTL.
 //
 // WHEN IT ENDS. On SIGINT/SIGTERM, when stdout is closed, or when the process
 // that started it is gone (a mod's child is killed with its module, but a
@@ -75,9 +80,14 @@ type WatchRoom struct {
 	// user-prompt-submit hook would hand them to the agent.
 	Digest []string `json:"digest,omitempty"`
 	// Status is the room at a glance: the incident's status and severity, who
-	// is in it with their agents, Beacon's run, the leading theory. Absent from
-	// a daemon of an older build.
+	// is in it with their agents and the latest each added, Beacon's run and
+	// step and last answer, the leading theory, the held lines, the focus and
+	// the pinned scope. Absent from a daemon of an older build.
 	Status *narrate.RoomStatus `json:"status,omitempty"`
+	// Votes is every staged claim awaiting the PERSON's position, the human
+	// view (contracts/cli-json.md §1 as amended by review finding 2). Always
+	// present, empty when nothing waits; VotesAwaited stays the agent's count.
+	Votes []narrate.Vote `json:"votes"`
 }
 
 // WatchSnapshot is one line of the stream.
@@ -203,20 +213,37 @@ func watchSnapshot(ws hooks.Workspace) WatchSnapshot {
 	if err != nil || res == nil || !res.OK {
 		return snap
 	}
-	for _, r := range res.Rooms {
+	snap.Rooms = watchRoomsOf(res.Rooms)
+	return snap
+}
+
+// watchRoomsOf is the daemon's peek as the stream's rooms.
+func watchRoomsOf(rooms []daemon.RoomView) []WatchRoom {
+	var out []WatchRoom
+	for _, r := range rooms {
 		addressed := 0
 		for _, e := range r.Events {
 			if daemon.IsAddressed(e) {
 				addressed++
 			}
 		}
-		snap.Rooms = append(snap.Rooms, WatchRoom{
+		out = append(out, WatchRoom{
 			RoomKey: r.RoomKey, IncidentID: r.IncidentID, DisplayID: r.DisplayID, Title: r.Title,
 			Slug: r.Slug, Connection: string(r.Connection), Count: r.Count, Addressed: addressed,
 			VotesAwaited: r.VotesAwaited, MaxSeq: r.MaxSeq, Digest: r.Digest, Status: r.Status,
+			Votes: votesOrEmpty(r.Votes),
 		})
 	}
-	return snap
+	return out
+}
+
+// votesOrEmpty keeps `votes` an array on the wire, so a reader can take its
+// length without a guard.
+func votesOrEmpty(v []narrate.Vote) []narrate.Vote {
+	if v == nil {
+		return []narrate.Vote{}
+	}
+	return v
 }
 
 // watchSubscribe holds the daemon's subscribe stream for one room, waking the

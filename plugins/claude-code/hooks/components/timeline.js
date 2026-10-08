@@ -268,3 +268,14 @@ export function timelineText() {
   if (tl.hasMore) lines.unshift('  (earlier events not shown)')
   return [head, ...lines].join('\n')
 }
+
+// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
+export function tab(k, io, nowMs, args) {
+  return []
+}
+
+export function badge() {
+  return null
+}
+
+export function warm(io) {}

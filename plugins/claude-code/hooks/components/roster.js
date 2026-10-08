@@ -200,3 +200,14 @@ function esc(s) {
 // tick runs every TICK_MS while the session lives: a component with an open
 // pane refreshes it here on its own cadence (nothing to do by default).
 export function tick(io, nowMs) {}
+
+// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
+export function tab(k, io, nowMs, args) {
+  return []
+}
+
+export function badge() {
+  return null
+}
+
+export function warm(io) {}

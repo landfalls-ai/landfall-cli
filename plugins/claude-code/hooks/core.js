@@ -310,3 +310,20 @@ export async function appendNote(io, text) {
   if (!text || !String(text).trim()) return 'Nothing to add.'
   return io.append(String(text))
 }
+
+// THE CONSOLE. One pane, id `landfall`, drawn by console.js; its tab state lives here so any
+// component can open it on its own tab (vote.js on a new vote, wall.js's openWall) without
+// importing console.js. Tab keys, in the switcher's order (spec §2.7).
+export const CONSOLE = 'landfall'
+export const TABS = ['home', 'vote', 'context', 'wall', 'people', 'timeline', 'lb', 'incidents', 'more']
+export const consoleState = { tab: 'home', open: false, args: null, warm: new Set() }
+
+// Opens (or refocuses) the console on a tab, with that tab's arguments (a person, a chip, a
+// dashboard, a load balancer). Never starts a turn.
+export function openConsole(io, tab, args) {
+  if (tab && TABS.includes(tab)) consoleState.tab = tab
+  consoleState.args = args || null
+  consoleState.open = true
+  io.open(CONSOLE, 'Landfall')
+  io.invalidate()
+}

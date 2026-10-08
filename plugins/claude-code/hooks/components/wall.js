@@ -604,3 +604,14 @@ function proseLine(text) {
   const m = /^\s{0,3}#{1,6}\s+(.*)$/.exec(String(text ?? ''))
   return m ? { text: m[1].trim(), heading: true } : { text: String(text ?? ''), heading: false }
 }
+
+// THE CONSOLE CONTRACT (core.js CONSOLE): console.js calls these by name. Stubs until this tab is built.
+export function tab(k, io, nowMs, args) {
+  return []
+}
+
+export function badge() {
+  return null
+}
+
+export function warm(io) {}

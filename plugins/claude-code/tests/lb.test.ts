@@ -441,3 +441,11 @@ test('on the desktop the health and 5xx labels sit on the text baseline of their
   const boxes = nodes(chromed(lbMod, fakeKit('desktop'), fakeIo().io, NOW, null), 'Box')
   for (const key of ['lb0-h', 'lb0-tg0-n', 'lb0-hr0']) expect(boxes.find((b) => b.props.key === key)?.props.alignItems).toBe('center')
 })
+
+test('a refused read after the room is mitigated says live reads ended, not that the agent left', () => {
+  const refused = { ok: false, error: 'Landfall refused this read: your agent is not in the room right now. Rejoin from Incidents.' }
+  expect(lbMod.lbError(refused, { status: { status: 'mitigated' } })).toBe(lbMod.MSG_READS_ENDED)
+  expect(lbMod.lbError(refused, { status: { status: 'open' } })).toBe(refused.error)
+  const aws = { ok: false, error: 'The room’s AWS connection could not read load balancers. Try again shortly.' }
+  expect(lbMod.lbError(aws, { status: { status: 'resolved' } })).toBe(aws.error)
+})

@@ -112,7 +112,7 @@ export function tab(k, io, nowMs, args) {
   if (!a) {
     rows.push(k.text('Reading the room’s AWS connection…', { key: 'lb-empty', dimColor: true }))
   } else if (!a.ok) {
-    rows.push(k.text(clipText(a.error || 'The load balancers could not be read.', k.width), { key: 'lb-err' }))
+    rows.push(k.text(clipText(lbError(a, currentRoom()), k.width), { key: 'lb-err' }))
   } else {
     for (const [i, one] of (a.loadBalancers || []).entries()) rows.push(...lbView(k, one, 'lb' + i, a))
     if ((a.loadBalancers || []).length === 0) rows.push(k.text('No load balancers in scope.', { key: 'lb-none', dimColor: true }))
@@ -420,10 +420,22 @@ function fillGaps(values) {
   return values.map((v) => (typeof v === 'number' ? (last = v) : last))
 }
 
+// READS_END are the statuses at which the server revokes live signal reads (the incident-resolve
+// revocation listener's vocabulary): once the room is there, a refused read is that, not the agent.
+const READS_END = new Set(['mitigated', 'recovered', 'resolved', 'closed', 'done', 'postmortem'])
+export const MSG_READS_ENDED = 'Live reads end once the incident is mitigated or resolved.'
+
+// lbError is the line a failed read shows.
+export function lbError(a, r) {
+  const status = ((r && r.status && r.status.status) || '').toLowerCase().trim()
+  if (READS_END.has(status) && /Landfall refused this read/.test(String(a.error || ''))) return MSG_READS_ENDED
+  return a.error || 'The load balancers could not be read.'
+}
+
 // lbText is /lb's answer where no pane can be drawn.
 export function lbText(a) {
   if (!a) return 'The load balancers could not be read.'
-  if (!a.ok) return a.error || 'The load balancers could not be read.'
+  if (!a.ok) return lbError(a, currentRoom())
   const out = []
   for (const one of a.loadBalancers || []) {
     out.push((one.name || 'load balancer') + ' · healthy ' + (one.healthy ?? 0) + ' of ' + (one.total ?? 0) + (a.region ? ' · ' + a.region : ''))

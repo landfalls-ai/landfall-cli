@@ -457,7 +457,7 @@ function sharedBody(k, io, nowMs) {
   const tail = [a.windowMs ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean)
   rows.push(heading(k, 'wall-h', a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall', tail.length ? ' · ' + tail.join(' · ') : ''))
   const widgets = fitRows(k, visibleWidgets(a), { prefix: 'w', gone: (a.unavailable || []).length, kind: 'shared' })
-  placeFocus(widgets, lp.seq)
+  placeFocus(k, 'w', widgets, lp.seq)
   if (wall.topology) {
     const g = graphOf(a)
     if (!g) rows.push(k.text(NO_GRAPH, { key: 'wall-nograph', dimColor: true }))
@@ -468,7 +468,7 @@ function sharedBody(k, io, nowMs) {
   }
   if (widgets.length === 0) rows.push(k.text('Nothing is on the wall yet.', { key: 'wall-none', dimColor: true }))
   const two = k.rich && k.width >= 90
-  rows.push(...widgetCards(k, io, widgets, { prefix: 'w', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, two }))
+  rows.push(...widgetCards(k, io, widgets, { prefix: 'w', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, two, rows: true }))
   const gone = a.unavailable || []
   if (gone.length > 0) {
     rows.push(gap(k, 'un-g'))
@@ -513,13 +513,13 @@ function personBody(k, io, nowMs, m) {
     return rows
   }
   const widgets = fitRows(k, visibleWidgets(a), { prefix: 'pw', snapshot: true, gone: (a.unavailable || []).length, kind: 'person' })
-  placeFocus(widgets, pp.seq)
+  placeFocus(k, 'pw', widgets, pp.seq)
   if (widgets.length === 0) {
     rows.push(k.text(none, { key: 'wall-pnone', dimColor: true }))
     return rows
   }
   rows.push(heading(k, 'wall-h', name + ' dashboard', dashboardTail(widgets, a.totalWidgets, mine, nowMs, pp.inFlight)))
-  rows.push(...widgetCards(k, io, widgets, { prefix: 'pw', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, snapshot: true, two: k.rich && k.width >= 90 }))
+  rows.push(...widgetCards(k, io, widgets, { prefix: 'pw', selected: clampSel(widgets), onSelect: (i) => selectWidget(io, i), nowMs, snapshot: true, two: k.rich && k.width >= 90, rows: true }))
   const more = moreWords(a, widgets.length)
   if (more) {
     rows.push(gap(k, 'wall-g-more'))
@@ -568,13 +568,30 @@ export function heading(k, key, title, tail) {
 //   o: { prefix, selected, onSelect(i), nowMs, snapshot, two }
 export function widgetCards(k, io, widgets, o) {
   const cards = widgets.map((w, i) => card(k, w, i, o))
+  // The console scrolls its body a row at a time. On a surface that scrolls (not the terminal, which
+  // fits the cards to its pane) the Wall hands it one row per card, or per pair of cards in two
+  // columns, so it can bring any one of them into view; a whole list in one element could only be
+  // shown from its first card.
+  if (o.rows && !k.terminal) {
+    if (!o.two) return cards
+    const pairs = []
+    for (let i = 0; i < cards.length; i += 2) {
+      pairs.push(k.els.Box({ key: o.prefix + '-r' + i / 2, flexDirection: 'row', columnGap: 2, children: cards.slice(i, i + 2) }))
+    }
+    return pairs
+  }
   if (o.two) return [k.els.Box({ key: o.prefix + '-grid', flexDirection: 'row', flexWrap: 'wrap', columnGap: 2, rowGap: 1, children: cards })]
   return [k.col(cards, o.prefix + '-list', 1)]
 }
 
+// cardKey is the key a widget's card is drawn under.
+export function cardKey(prefix, w, i) {
+  return prefix + '-' + (w.id || i)
+}
+
 // card is one widget: its title (a press selects it), then its body.
 function card(k, w, i, o) {
-  const key = o.prefix + '-' + (w.id || i)
+  const key = cardKey(o.prefix, w, i)
   const chosen = i === o.selected
   const inner = o.two ? Math.max(20, Math.floor(k.width / 2) - 4) : k.width
   const when = o.snapshot && w.capturedAt ? ageWords(o.nowMs - Date.parse(w.capturedAt)) : ''
@@ -729,6 +746,8 @@ export function onSnapshot(io, snap, prev) {
     if (seq == null || seq <= seen) continue
     news.seen[r.roomKey] = seq
     news.pending = { seq, title: nw.title || nw.type || 'a widget', by: nw.by || '', scope: nw.scope === 'person' ? 'person' : 'wall', personId: nw.humanActorId ? String(nw.humanActorId) : '' }
+    const cur = currentRoom()
+    if (cur && cur.roomKey === r.roomKey) followArrival(news.pending)
   }
   if (news.pending) void announce(io)
   if (!lp.open || !reading('wall')) return
@@ -842,14 +861,39 @@ function applyFocus(io, members) {
 
 // placeFocus selects the offered widget among those drawn. A card is found by the seq the CLI put
 // on it; one that has since been refreshed (a person's widget under the same title) by its title,
-// once the dashboard was read after the widget landed. Found or not, it is spent then.
-function placeFocus(widgets, readAt) {
+// once the dashboard was read after the widget landed. Found or not, it is spent then. Where the
+// pane scrolls (not the terminal, which fits its cards) the found card is also brought into view:
+// the console takes its key as the row to show next (consoleState.scrollTo).
+function placeFocus(k, prefix, widgets, readAt) {
   const f = wall.focus
   if (!f || !f.dashed) return
   let i = widgets.findIndex((w) => w.seq === f.seq)
   if (i < 0 && readAt >= f.seq) i = widgets.findIndex((w) => norm(w.title) === norm(f.title))
-  if (i >= 0) wall.selected = i
+  if (i >= 0) {
+    wall.selected = i
+    if (!k.terminal) consoleState.scrollTo = cardKey(prefix, widgets[i], i)
+  }
   if (i >= 0 || readAt >= f.seq) wall.focus = null
+}
+
+// followArrival: a widget landed on the dashboard the open Wall shows, so the Wall selects it and
+// brings it into view without a turn and without any call: the same selection `n` moves, and
+// placeFocus does the rest once the dashboard has been read with it in.
+function followArrival(w) {
+  if (!(consoleState.open && consoleState.tab === 'wall')) return
+  const r = currentRoom()
+  if (!r) return
+  const mine = w.scope === 'person' && isYou(w.personId)
+  let here
+  if (w.scope !== 'person') here = wall.dashboard === 'shared'
+  else if (mine) here = wall.dashboard === 'mine'
+  else {
+    const m = memberList(r, lp.answer).find((x) => x.id && x.id === w.personId)
+    here = !!m && wall.dashboard === m.key
+  }
+  if (!here) return
+  wall.topology = false
+  wall.focus = { seq: w.seq, title: w.title, personId: w.scope === 'person' ? w.personId : '', mine, dashed: true }
 }
 async function ioNow(io, p = lp) {
   try {

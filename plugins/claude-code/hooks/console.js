@@ -638,7 +638,10 @@ function drawConsole(k, io, nowMs, e) {
   view.keys = rows.map((x) => keysIn(x))
   view.visible = Math.max(1, (bodyRows || 40) - 1)
   if (consoleState.scrollTo) {
-    const i = view.keys.findIndex((set) => [...set].some((key) => key === consoleState.scrollTo || key.startsWith(consoleState.scrollTo)))
+    const want = consoleState.scrollTo
+    // The row that holds the element itself; failing that, one whose key starts with it.
+    let i = view.keys.findIndex((set) => set.has(want))
+    if (i < 0) i = view.keys.findIndex((set) => [...set].some((key) => key.startsWith(want)))
     if (i >= 0) consoleState.offset = i
     consoleState.scrollTo = ''
   }

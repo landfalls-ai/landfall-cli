@@ -132,12 +132,6 @@ func (l *lineLog) waitLine(t *testing.T, from int, want string, within time.Dura
 	}
 }
 
-func (l *lineLog) count() int {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	return len(l.lines)
-}
-
 // liveWorkspace is a checkout with a short runtime dir (socket path limits).
 func liveWorkspace(t *testing.T, harness string) hooks.Workspace {
 	dir, runDir := shortTempDir(t), shortTempDir(t)

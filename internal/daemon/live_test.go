@@ -84,8 +84,8 @@ func TestPeekCarriesTheWallsNewestChange(t *testing.T) {
 	}
 
 	// A teammate's edge widget, then the person pinning it.
-	wire.emit(client.Event{Seq: seq(240), Type: "edge.widget", ActorType: "human", Payload: map[string]any{"widgetType": "stat", "title": "p95 latency", "displayName": "bob", "data": map[string]any{"value": 840}}})
-	if v := peekOne(t, d, "ws", "claude-code"); v.NewestWidget == nil || *v.NewestWidget != (WidgetView{Seq: 240, Title: "p95 latency", Type: "stat", By: "bob"}) {
+	wire.emit(client.Event{Seq: seq(240), Type: "edge.widget", ActorType: "human", Payload: map[string]any{"widgetType": "stat", "title": "p95 latency", "displayName": "bob", "humanActorId": "h-bob", "data": map[string]any{"value": 840}}})
+	if v := peekOne(t, d, "ws", "claude-code"); v.NewestWidget == nil || *v.NewestWidget != (WidgetView{Seq: 240, Title: "p95 latency", Type: "stat", By: "bob", Scope: "person", HumanActorID: "h-bob"}) {
 		t.Fatalf("edge widget: %+v", v.NewestWidget)
 	}
 	wire.emit(client.Event{Seq: seq(241), Type: "widget.pinned", ActorType: "human", Payload: map[string]any{"sourceSeq": float64(240), "displayName": "alice"}})
@@ -97,6 +97,10 @@ func TestPeekCarriesTheWallsNewestChange(t *testing.T) {
 	wire.emit(client.Event{Seq: seq(244), Type: "agent.widget.failed", ActorType: "agent", Payload: map[string]any{"widgetId": "w2", "error": "no data"}})
 	if v := peekOne(t, d, "ws", "claude-code"); v.WidgetSeq != 244 || v.NewestWidget.Seq != 241 {
 		t.Fatalf("unpin, layout, failure: seq %d newest %+v", v.WidgetSeq, v.NewestWidget)
+	}
+	// A pin is the shared wall's, not the pinner's own dashboard's.
+	if v := peekOne(t, d, "ws", "claude-code"); v.NewestWidget.Scope != "" || v.NewestWidget.HumanActorID != "" {
+		t.Fatalf("a pin sits on the shared wall: %+v", v.NewestWidget)
 	}
 	// An event older than the newest (a late backfill) never takes its place.
 	wire.emit(client.Event{Seq: seq(200), Type: "edge.widget", Payload: map[string]any{"widgetType": "stat", "title": "old"}})
@@ -367,5 +371,41 @@ func TestHumanWidgetID(t *testing.T) {
 		if got := humanWidgetID(id); got != want {
 			t.Errorf("humanWidgetID(%q) = %q, want %q", id, got, want)
 		}
+	}
+}
+
+// A widget built before the daemon joined is pinned after: the pin is still
+// news, named from the wall the room read when it opened.
+func TestAPinOfAWidgetFromBeforeJoiningLands(t *testing.T) {
+	wire := &fakeWire{}
+	edge := &fakeEdge{}
+	edge.updates = func(since int64) []client.Event {
+		if since != 0 {
+			return nil
+		}
+		return []client.Event{
+			{Seq: seq(6), Type: "edge.widget", ActorType: "human", Payload: map[string]any{"widgetType": "stat", "title": "Pool saturation", "displayName": "alice", "humanActorId": "h-alice"}},
+		}
+	}
+	d, _ := testDaemon(t, edge, wire)
+	attachAgentAt(t, d, "ws", "claude-code", "1")
+	room := d.rooms()[0]
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		room.mu.Lock()
+		meta := room.wall.bySeq.get(6)
+		room.mu.Unlock()
+		if meta != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the wall was never read when the room opened")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	wire.emit(client.Event{Seq: seq(57), Type: "widget.pinned", ActorType: "human", Payload: map[string]any{"sourceSeq": float64(6), "displayName": "bob"}})
+	v := peekOne(t, d, "ws", "claude-code")
+	if v.WidgetSeq != 57 || v.NewestWidget == nil || *v.NewestWidget != (WidgetView{Seq: 57, Title: "Pool saturation", Type: "stat", By: "bob"}) {
+		t.Fatalf("pin: seq %d newest %+v", v.WidgetSeq, v.NewestWidget)
 	}
 }

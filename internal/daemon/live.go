@@ -18,8 +18,9 @@ package daemon
 // pin names the edge widget's seq, so those are remembered by seq.
 //
 // WHAT "LANDED" MEANS. The first agent.widget.executed or rendered of a widget
-// id, every edge.widget (each is a new reading, even under an old title), and
-// a pin (the card now sits on the shared wall). A refresh, a failure, an unpin
+// id, every edge.widget (each is a new reading, even under an old title; it
+// lands on its author's own dashboard, not the shared wall, which the view
+// says with its scope), and a pin (the card now sits on the shared wall). A refresh, a failure, an unpin
 // and a saved arrangement move widgetSeq only: the wall is re-read, but nothing
 // is new on it.
 //
@@ -47,6 +48,11 @@ type WidgetView struct {
 	Title string `json:"title,omitempty"`
 	Type  string `json:"type,omitempty"`
 	By    string `json:"by,omitempty"`
+	// Scope is "person" for a widget on one person's own dashboard (an
+	// edge.widget: share_with_room), whose humanActorId is HumanActorID; empty
+	// for the shared wall (a Beacon widget, a pin).
+	Scope        string `json:"scope,omitempty"`
+	HumanActorID string `json:"humanActorId,omitempty"`
 }
 
 // AgentView is this workspace's agent session in a room, as a watcher sees it:
@@ -165,7 +171,8 @@ func (r *Room) noteWallLocked(evt client.Event) {
 		meta.typ = firstText(p, "widgetType", "type")
 		meta.by = widgetBy(evt)
 		meta.landed = true
-		r.landWidgetLocked(WidgetView{Seq: seq, Title: meta.title, Type: meta.typ, By: meta.by})
+		who, _ := p["humanActorId"].(string)
+		r.landWidgetLocked(WidgetView{Seq: seq, Title: meta.title, Type: meta.typ, By: meta.by, Scope: "person", HumanActorID: who})
 	case evt.Type == "widget.pinned":
 		v := WidgetView{Seq: seq, By: widgetBy(evt)}
 		if src := payloadSeq(p, "sourceSeq"); src > 0 {

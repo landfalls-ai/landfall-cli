@@ -11,9 +11,17 @@ package cli
 // (core-api mcp-gateway incident-reader.ts `canvas`). Failed widgets are left
 // out, as there.
 //
+// Pins: a person can pin a widget from a sub-investigation dashboard to the
+// shared canvas (a human-only widget.pinned {sourceSeq}, widget.unpinned to
+// take it off). The web folds them as widget-catalog pinnedWidgetSeqs
+// does (last event per source seq wins, in the order they were pinned) and
+// draws each pinned edge.widget after the built ones, resolved through
+// supersession so a pin follows the widget's latest version
+// (WarRoomPage.tsx pinnedWidgets); this folds the same.
+//
 // Which order: the latest canvas.layout.saved for scope "shared"
 // (warroom-ui sharedLayout.ts latestSharedLayout); widgets it does not name
-// follow in the order they were built.
+// follow in the order they were built, pins last.
 //
 // Which data, and as whom: a widget whose data is on the timeline (data-only
 // or platform-built) is drawn from that. A query-backed one (it has a
@@ -60,6 +68,11 @@ func newWallCommand(ui *UI) *cobra.Command {
 type projectedWidget struct {
 	id, typ, title, status, moduleID, errText string
 	data                                      map[string]any
+	// landedSeq is the seq of the event that put the widget on the wall: the
+	// first agent.widget.executed (or rendered), a pin, or an edge.widget. The
+	// newest by it is the one a short pane must not drop.
+	landedSeq int64
+	pinned    bool
 	// groupPlaces is, per query of a grouped build (validated
 	// build.scope.query), the value of the dimension the widget is grouped by,
 	// in query order: what each series is about when its own label is not.
@@ -106,7 +119,13 @@ func projectWall(events []timelineEvent) []*projectedWidget {
 			if t := jStr(p, "title"); t != "" {
 				w.title = t
 			}
-		case "agent.widget.executed":
+		case "agent.widget.executed", "agent.widget.rendered":
+			if w.landedSeq == 0 {
+				w.landedSeq = e.SeqOrZero()
+			}
+			if e.Type == "agent.widget.rendered" {
+				break
+			}
 			if t := jStr(p, "type"); t != "" {
 				w.typ = t
 			}
@@ -123,6 +142,85 @@ func projectWall(events []timelineEvent) []*projectedWidget {
 	out := make([]*projectedWidget, 0, len(order))
 	for _, id := range order {
 		out = append(out, byID[id])
+	}
+	return out
+}
+
+// pinnedWall is the widgets pinned to the shared canvas: each pinned
+// edge.widget, rendered ones only, once per card, in the order they were
+// pinned. landedSeq is the pin's own seq.
+func pinnedWall(events []timelineEvent) []*projectedWidget {
+	type pin struct{ src, at int64 }
+	var order []pin
+	for _, e := range events {
+		if e.Type != "widget.pinned" && e.Type != "widget.unpinned" {
+			continue
+		}
+		f, ok := jNum(e.Payload, "sourceSeq")
+		if !ok {
+			continue
+		}
+		src := int64(f)
+		for i := range order {
+			if order[i].src == src {
+				order = append(order[:i], order[i+1:]...)
+				break
+			}
+		}
+		if e.Type == "widget.pinned" {
+			order = append(order, pin{src: src, at: e.SeqOrZero()})
+		}
+	}
+	cards := projectEdgeWidgets(events, "")
+	var out []*projectedWidget
+	byCard := map[string]*projectedWidget{}
+	for _, pn := range order {
+		var card *edgeWidget
+		for _, c := range cards {
+			if c.seq == pn.src {
+				card = c
+				break
+			}
+			for _, v := range c.versions {
+				if v.seq == pn.src {
+					card = c
+				}
+			}
+			if card != nil {
+				break
+			}
+		}
+		if card == nil || card.status != "rendered" {
+			continue
+		}
+		if have := byCard[card.id]; have != nil {
+			if pn.at > have.landedSeq {
+				have.landedSeq = pn.at
+			}
+			continue
+		}
+		w := card.projectedWidget
+		w.landedSeq, w.pinned = pn.at, true
+		byCard[card.id] = &w
+		out = append(out, &w)
+	}
+	return out
+}
+
+// keepNewest cuts widgets to n without losing the newest one.
+func keepNewest(widgets []*projectedWidget, n int) []*projectedWidget {
+	if len(widgets) <= n {
+		return widgets
+	}
+	out := append([]*projectedWidget(nil), widgets[:n]...)
+	newest := -1
+	for i, w := range widgets {
+		if w.landedSeq > 0 && (newest < 0 || w.landedSeq > widgets[newest].landedSeq) {
+			newest = i
+		}
+	}
+	if newest >= n {
+		out[n-1] = widgets[newest]
 	}
 	return out
 }
@@ -163,12 +261,11 @@ func RunWallWith(ctx context.Context, o WallOptions, d ReadDeps) map[string]any 
 			widgets = append(widgets, w)
 		}
 	}
+	widgets = append(widgets, pinnedWall(events)...)
 	order, sharedBy, _ := sharedArrangement(events)
 	widgets = arrange(widgets, order)
 	total := len(widgets)
-	if len(widgets) > wallWidgetsMax {
-		widgets = widgets[:wallWidgetsMax]
-	}
+	widgets = keepNewest(widgets, wallWidgetsMax)
 
 	// Query-backed widgets are resolved as the person, in one batch.
 	var toResolve []string
@@ -242,6 +339,12 @@ func RunWallWith(ctx context.Context, o WallOptions, d ReadDeps) map[string]any 
 		flat := flattenWidget(w.id, w.typ, w.title, data)
 		if w.typ == "geo" {
 			nameGroupedPlaces(flat, w.groupPlaces)
+		}
+		if w.landedSeq > 0 {
+			flat["seq"] = w.landedSeq
+		}
+		if w.pinned {
+			flat["pinned"] = true
 		}
 		out = append(out, flat)
 	}

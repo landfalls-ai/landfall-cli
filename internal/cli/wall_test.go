@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
 )
@@ -282,5 +283,88 @@ func TestFlattenGeoTakesAHandWrittenPlaceKey(t *testing.T) {
 	pts := w["points"].([]map[string]any)
 	if pts[0]["place"] != "eu-west-1" || pts[1]["place"] != "Frankfurt" {
 		t.Fatalf("points: %v", pts)
+	}
+}
+
+// pinEvents is a canvas with one built widget and four pinned from alice's
+// and bob's dashboards: the edge wall used to show none of them.
+func pinEvents() []map[string]any {
+	stat := func(v float64) map[string]any { return map[string]any{"value": v, "unit": "%"} }
+	return []map[string]any{
+		{"seq": 1, "type": "agent.widget.requested", "payload": map[string]any{"widgetId": "w1", "title": "Healthy origins", "widgetType": "stat"}},
+		{"seq": 2, "type": "agent.widget.executed", "payload": map[string]any{"widgetId": "w1", "type": "stat", "data": stat(4)}},
+		edgeRow(3, "edge.widget", "h-alice", "alice", map[string]any{"widgetType": "stat", "title": "Pool saturation", "data": stat(81)}),
+		edgeRow(4, "edge.widget", "h-alice", "alice", map[string]any{"widgetType": "stat", "title": "Queue depth", "data": stat(12)}),
+		edgeRow(5, "edge.widget", "h-bob", "bob", map[string]any{"widgetType": "stat", "title": "Replica lag", "data": stat(9)}),
+		edgeRow(6, "edge.widget", "h-bob", "bob", map[string]any{"widgetType": "stat", "title": "Nothing yet", "data": map[string]any{}}),
+		// Alice's pool saturation is refreshed after it was pinned: the pin follows the card.
+		edgeRow(7, "edge.widget", "h-alice", "alice", map[string]any{"widgetType": "stat", "title": "Pool saturation", "data": stat(94)}),
+		{"seq": 8, "type": "widget.pinned", "payload": map[string]any{"sourceSeq": 3}},
+		{"seq": 9, "type": "widget.pinned", "payload": map[string]any{"sourceSeq": 4}},
+		{"seq": 10, "type": "widget.pinned", "payload": map[string]any{"sourceSeq": 5}},
+		{"seq": 11, "type": "widget.pinned", "payload": map[string]any{"sourceSeq": 6}},
+		{"seq": 12, "type": "widget.unpinned", "payload": map[string]any{"sourceSeq": 4}},
+		{"seq": 13, "type": "widget.pinned", "payload": map[string]any{"sourceSeq": 7}},
+		{"seq": 14, "type": "widget.pinned", "payload": map[string]any{"sourceSeq": "x"}},
+	}
+}
+
+func wallIDs(ans map[string]any) []string {
+	var ids []string
+	for _, w := range ans["widgets"].([]any) {
+		ids = append(ids, w.(map[string]any)["id"].(string))
+	}
+	return ids
+}
+
+func TestWallFoldsPinsAndUnpinsAsTheWebDoes(t *testing.T) {
+	f := newFakeLandfall(t)
+	f.serveEvents(eventsPath, pinEvents())
+	ans := roundTrip(t, RunWall(context.Background(), "rk1", f.deps(true)))
+	// The built widget first, then the pins in the order they were pinned: a
+	// card once (a second pin of an older version is the same card), none for
+	// the unpinned one, none for a snapshot with no data.
+	got := wallIDs(ans)
+	want := []string{"w1", "edge-widget-7", "edge-widget-5"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
+		t.Fatalf("widgets = %v, want %v", got, want)
+	}
+	pool := ans["widgets"].([]any)[1].(map[string]any)
+	if pool["title"] != "Pool saturation" || pool["value"] != "94" || pool["pinned"] != true || pool["seq"] != float64(13) {
+		t.Fatalf("pinned card follows the latest version: %v", pool)
+	}
+	if built := ans["widgets"].([]any)[0].(map[string]any); built["seq"] != float64(2) || built["pinned"] != nil {
+		t.Fatalf("built widget: %v", built)
+	}
+	if len(f.callsTo(widgetsDataPath)) != 0 {
+		t.Fatalf("a snapshot is not re-read")
+	}
+}
+
+func TestWallPinsFollowTheSharedArrangementThenBuildOrder(t *testing.T) {
+	f := newFakeLandfall(t)
+	events := append(pinEvents(), map[string]any{"seq": 15, "type": "canvas.layout.saved", "payload": map[string]any{"scope": "shared", "layout": map[string]any{"v": 1, "order": []any{"edge-widget-5", "w1"}}, "displayName": "carol"}})
+	f.serveEvents(eventsPath, events)
+	ans := roundTrip(t, RunWall(context.Background(), "rk1", f.deps(true)))
+	got := wallIDs(ans)
+	if len(got) != 3 || got[0] != "edge-widget-5" || got[1] != "w1" || got[2] != "edge-widget-7" {
+		t.Fatalf("arranged first, the rest after: %v", got)
+	}
+}
+
+func TestWallKeepsTheNewestWidgetWhenItCutsTheList(t *testing.T) {
+	ws := make([]*projectedWidget, 0, 45)
+	for i := 1; i <= 45; i++ {
+		ws = append(ws, &projectedWidget{id: fmt.Sprintf("w%d", i), landedSeq: int64(i)})
+	}
+	ws[10].landedSeq = 999 // refreshed late, but landed as a pin
+	out := keepNewest(ws, 40)
+	if len(out) != 40 || out[10].id != "w11" || out[39].id != "w40" {
+		t.Fatalf("newest inside the cut: %d %s %s", len(out), out[10].id, out[39].id)
+	}
+	ws[10].landedSeq = 11
+	out = keepNewest(ws, 40)
+	if len(out) != 40 || out[39].id != "w45" || out[38].id != "w39" {
+		t.Fatalf("newest outside the cut takes the last place: %s %s", out[39].id, out[38].id)
 	}
 }

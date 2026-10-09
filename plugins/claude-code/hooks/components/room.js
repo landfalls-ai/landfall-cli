@@ -114,7 +114,7 @@ export function bandHead(io, e, k) {
   return [Box({ key: 'news-head', flexDirection: 'row', justifyContent: 'space-between', flexWrap: 'wrap', columnGap: 2, children: [title, k.avatars(here, { key: 'news-avs', max: 5 })] })]
 }
 
-// bandNews is row 5: for a minute after a new widget the wall's offer (`New on the wall: …` and
+// bandNews is row 5: for a minute after a new widget the wall's offer (`New on the wall: …`, or `New in bob's investigation: …`, and
 // `w: open the wall`, the key whole and the text clipped), else the newest news line, dim. Only
 // while there is news. Off the terminal the news line is left out while a vote waits (the vote
 // is the news).
@@ -124,7 +124,7 @@ export async function bandNews(io, e, k) {
   const hint = wallHint(await nowOf(io))
   if (hint) {
     const key = k.button({ key: 'open-wall', label: k.terminal ? 'open the wall' : 'Open the wall', hotkey: 'w', onPress: async () => void (await openWall(io)) })
-    const text = k.text(clip('New on the wall: ' + hint.title, Math.max(16, k.width - 22)), { key: 'wall-new', dimColor: true })
+    const text = k.text(clip(hint.words || 'New on the wall: ' + hint.title, Math.max(16, k.width - 22)), { key: 'wall-new', dimColor: true })
     return [k.row([text, key], 'news-wall', 3)]
   }
   if (pending().length === 0) return null

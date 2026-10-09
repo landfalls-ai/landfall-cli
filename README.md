@@ -170,8 +170,13 @@ uninstall` removes it. Every tab, key and read is listed in
 
 #### Claude desktop
 
-The Code tab of the Claude desktop app loads the same mod. It is installed at user scope,
-so the Code tab picks it up with no extra step. There the console draws as native cards and
+The Code tab of the Claude desktop app runs the same mod. Turn it on there under **+**,
+**Add plugins** (it may be listed as Disabled), and in a new session send any message before
+`/landfall`: a new session knows a mod's commands once it has started. Known issue in the desktop
+app with Claude Code 2.1.293: a Code session can still miss the installed mod; until the app fixes
+it, start Claude with
+`open -a Claude --env CLAUDE_CODE_PLUGIN_DIRS="$(ls -d ~/.claude/plugins/cache/landfall/landfall/*/ | sort -V | tail -1)"`.
+There the console draws as native cards and
 buttons, and the tab names shorten to fit the dock.
 
 Claude desktop chat (not the Code tab) has no mods. Landfall reaches it through the hosted

@@ -91,19 +91,25 @@ const wall = {
   topologyDone: false,
   // The target the person read in `pp` is of (`me` or a humanActorId).
   ppFor: '',
+  // The widget the console was opened on (`w` from the band): {seq, title, personId, mine, dashed}.
+  // It selects its dashboard once, then its card once the card is drawn.
+  focus: null,
 }
 
 // New widgets (FR-L4): the newest widget seq seen per room (the first sight
 // of a room is not news), one waiting while the toast gap runs, when the last
-// toast was shown and until when the band offers `w`.
-const news = { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '' }
+// toast was shown and until when the band offers `w`, in what words, and which
+// widget `w` opens the console on.
+const news = { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '', hintWords: '', hintFocus: null }
 
 // reset starts the tab's state over (tests; a hot reload does the same by itself).
 export function reset() {
   Object.assign(lp, livePane())
   Object.assign(pp, livePane())
   Object.assign(wall, { roomKey: '', dashboard: 'shared', dashName: '', selected: 0, pending: '', topology: false, topologyDone: false, ppFor: '' })
-  Object.assign(news, { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '' })
+  Object.assign(news, { seen: {}, pending: null, toastAt: null, hintUntil: 0, hintTitle: '', hintWords: '', hintFocus: null })
+  wall.focus = null
+  for (const key of Object.keys(shownNow)) delete shownNow[key]
 }
 
 // The tab has no command or pane of its own: /landfall wall opens the console.
@@ -183,15 +189,58 @@ function items(members) {
   return out
 }
 
-// fit says how the selector reads in `width` cells: whole, then names clipped
-// to 8, then without counts; past that it wraps (it is content, not navigation).
-function fit(list, current, width) {
-  const label = (it, clipTo, counts) => (clipTo ? clip(it.label, clipTo) : it.label) + (counts && it.count > 0 ? ' ' + it.count : '')
-  const cells = (clipTo, counts) => list.reduce((n, it) => n + label(it, clipTo, counts).length + (it.key === current ? 2 : 0), 0) + 2 * (list.length - 1)
-  for (const [clipTo, counts] of [[0, true], [8, true], [8, false]]) {
-    if (cells(clipTo, counts) <= width) return { texts: list.map((it) => label(it, clipTo, counts)), wrap: false }
+// sharedPrefix is the prefix every name starts with, up to and including its last boundary (-, _, .
+// or a space), or '' when they share none or one name would be left empty. Teammates named
+// collab-alice and collab-bob are alice and bob in a chip.
+export function sharedPrefix(names) {
+  if (names.length < 2) return ''
+  let n = 0
+  while (names.every((s) => s.length > n && s[n] === names[0][n])) n++
+  const cut = names[0].slice(0, n).search(/[-_. ][^-_. ]*$/)
+  if (cut < 0) return ''
+  const prefix = names[0].slice(0, cut + 1)
+  return names.every((s) => s.length > prefix.length) ? prefix : ''
+}
+
+// distinctClips clips each name to `width` cells so that no two read alike: the end is cut as
+// usual, and names the cut leaves identical keep their start and take the next characters that
+// tell them apart from the end (`alexa…ra`, `alexa…er`). Names that are identical stay so.
+export function distinctClips(names, width) {
+  const out = names.map((s) => clip(s, width))
+  const groups = new Map()
+  out.forEach((c, i) => groups.set(c, [...(groups.get(c) || []), i]))
+  for (const idx of groups.values()) {
+    if (idx.length < 2) continue
+    for (let tail = 1; tail < width - 1; tail++) {
+      const tried = idx.map((i) => names[i].slice(0, width - 1 - tail) + '…' + names[i].slice(-tail))
+      if (new Set(tried).size === idx.length) {
+        idx.forEach((i, j) => (out[i] = tried[j]))
+        break
+      }
+    }
   }
-  return { texts: list.map((it) => label(it, 8, false)), wrap: true }
+  return out
+}
+
+// fit says how the selector reads in `width` cells: whole, then without the prefix the people's
+// names share, then those names clipped to 8 (never two alike), then without counts; past that it
+// wraps (it is content, not navigation).
+function fit(list, current, width) {
+  const people = list.filter((it) => it.key !== 'shared' && it.key !== 'mine')
+  const prefix = sharedPrefix(people.map((it) => it.label))
+  const shown = (it, strip) => (strip && people.includes(it) ? it.label.slice(prefix.length) : it.label)
+  const texts = (strip, clipTo, counts) => {
+    const names = list.map((it) => shown(it, strip))
+    const clipped = clipTo ? distinctClips(names, clipTo) : names
+    return clipped.map((t, i) => t + (counts && list[i].count > 0 ? ' ' + list[i].count : ''))
+  }
+  const cells = (ts) => ts.reduce((n, t, i) => n + t.length + (list[i].key === current ? 2 : 0), 0) + 2 * (list.length - 1)
+  const steps = [[false, 0, true], ...(prefix ? [[true, 0, true]] : []), [!!prefix, 8, true], [!!prefix, 8, false]]
+  for (const [strip, clipTo, counts] of steps) {
+    const ts = texts(strip, clipTo, counts)
+    if (cells(ts) <= width) return { texts: ts, wrap: false }
+  }
+  return { texts: texts(!!prefix, 8, false), wrap: true }
 }
 
 // The selector is drawn in the chip idiom the Timeline kinds and More use
@@ -203,7 +252,7 @@ function selectorRow(k, io, list, current) {
   const { texts, wrap } = fit(list, current, k.width)
   const kids = list.map((it, i) => {
     const active = it.key === current
-    const props = { key: 'sel-' + it.key, label: (active ? '▸ ' : '') + texts[i], onPress: () => selectDashboard(io, it.key) }
+    const props = { key: 'sel-' + it.key, label: (active ? '▸ ' : '') + texts[i], onPress: () => pickDashboard(io, it.key) }
     if (k.terminal) props.plain = true
     if (!active) props.dimColor = true
     return Button(props)
@@ -249,7 +298,14 @@ function selectDashboard(io, key) {
   io.invalidate()
 }
 
+// pickDashboard is the person choosing a dashboard: the widget `w` meant is no longer wanted.
+function pickDashboard(io, key) {
+  wall.focus = null
+  selectDashboard(io, key)
+}
+
 function nextDashboard(io) {
+  wall.focus = null
   const r = currentRoom()
   const list = [{ key: 'shared' }, ...memberList(r, lp.answer)]
   const at = Math.max(0, list.findIndex((x) => x.key === wall.dashboard))
@@ -318,6 +374,10 @@ export function tab(k, io, nowMs, args) {
       markOpen(pp)
       void loadPerson(io)
     }
+  }
+  if (wall.focus && !wall.focus.dashed) {
+    applyFocus(io, members)
+    members = memberList(r, lp.answer)
   }
   const rows = [selectorRow(k, io, items(members), wall.dashboard)]
   // The terminal spends one blank row between blocks (round 2 issue 16); cards space themselves.
@@ -397,6 +457,7 @@ function sharedBody(k, io, nowMs) {
   const tail = [a.windowMs ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean)
   rows.push(heading(k, 'wall-h', a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall', tail.length ? ' · ' + tail.join(' · ') : ''))
   const widgets = fitRows(k, visibleWidgets(a), { prefix: 'w', gone: (a.unavailable || []).length, kind: 'shared' })
+  placeFocus(widgets, lp.seq)
   if (wall.topology) {
     const g = graphOf(a)
     if (!g) rows.push(k.text(NO_GRAPH, { key: 'wall-nograph', dimColor: true }))
@@ -452,6 +513,7 @@ function personBody(k, io, nowMs, m) {
     return rows
   }
   const widgets = fitRows(k, visibleWidgets(a), { prefix: 'pw', snapshot: true, gone: (a.unavailable || []).length, kind: 'person' })
+  placeFocus(widgets, pp.seq)
   if (widgets.length === 0) {
     rows.push(k.text(none, { key: 'wall-pnone', dimColor: true }))
     return rows
@@ -542,35 +604,52 @@ function card(k, w, i, o) {
 function shownWidgets() {
   const a = wall.dashboard === 'shared' ? lp.answer : pp.answer
   if (!a || !a.ok) return []
-  const n = drawnN[wall.dashboard === 'shared' ? 'shared' : 'person']
   const list = visibleWidgets(a)
-  return typeof n === 'number' ? list.slice(0, Math.max(1, n)) : list
+  const was = shownNow[wall.dashboard === 'shared' ? 'shared' : 'person']
+  if (!was) return list
+  // The widgets the last draw showed; if the wall was read again since, as many from the front.
+  const same = list.filter((w) => was.includes(w))
+  return same.length > 0 ? same : list.slice(0, Math.max(1, was.length))
 }
 
-// How many widgets the last draw of each dashboard showed (the terminal fits them to the pane).
-const drawnN = {}
+// The widgets the last draw of each dashboard showed (the terminal fits them to the pane).
+const shownNow = {}
+
+// newestOf is the widget that landed on the wall last, by the seq the CLI puts on each, or null
+// when none says (an older CLI).
+export function newestOf(list) {
+  let best = null
+  for (const w of list || []) if (typeof w.seq === 'number' && w.seq > 0 && (!best || w.seq > best.seq)) best = w
+  return best
+}
 
 // fitRows is the widgets that fit the terminal pane with the footer and keys row still in view:
 // cards are measured, and the tab stops before one that would push them off. At least one is
-// always drawn; the rest read "Showing N of M widgets". Off the terminal the pane scrolls as a
-// page does, so the cap alone applies.
+// always drawn, and the newest widget is always one of them: when the rest do not fit, the cards
+// before it give way (the shared arrangement otherwise holds). What is left reads "Showing N of M
+// widgets". Off the terminal the pane scrolls as a page does, so the cap alone applies.
 function fitRows(k, widgets, o) {
   if (!k.terminal || !consoleState.bodyRows || widgets.length < 2) {
-    drawnN[o.kind] = undefined
+    shownNow[o.kind] = undefined
     return widgets
   }
   // Rows the tab spends on everything but cards: the switcher, header, selector, heading, the
   // unavailable list, the 'Showing' line, the blank rows between those blocks, footer and keys.
   const budget = Math.max(8, consoleState.bodyRows - 18 - (o.gone ? o.gone + 2 : 0))
+  const heights = widgets.map((w, i) => estRows(card(k, w, i, { prefix: o.prefix, selected: -1, onSelect() {}, nowMs: 0, snapshot: !!o.snapshot, two: false }), k.width, true) + 1)
   const out = []
   let used = 0
   for (let i = 0; i < widgets.length; i++) {
-    const h = estRows(card(k, widgets[i], i, { prefix: o.prefix, selected: -1, onSelect() {}, nowMs: 0, snapshot: !!o.snapshot, two: false }), k.width, true) + 1
-    if (out.length >= 1 && used + h > budget) break
+    if (out.length >= 1 && used + heights[i] > budget) break
     out.push(widgets[i])
-    used += h
+    used += heights[i]
   }
-  drawnN[o.kind] = out.length
+  const newest = widgets.indexOf(newestOf(widgets))
+  if (newest >= out.length) {
+    while (out.length > 0 && used + heights[newest] > budget) used -= heights[widgets.indexOf(out.pop())]
+    out.push(widgets[newest])
+  }
+  shownNow[o.kind] = out
   return out
 }
 
@@ -583,15 +662,18 @@ export function setWallCap(n = WALL_CAP) {
   cap = n
 }
 
-// visibleWidgets are the answer's widgets the tab draws: the first WALL_CAP, with the topology
-// graph kept in view when a `/landfall topology` asked for one that fell past the cap.
+// visibleWidgets are the answer's widgets the tab draws: the first WALL_CAP, with the newest
+// widget kept in view when it fell past the cap, and the topology graph when a `/landfall
+// topology` asked for one that did.
 export function visibleWidgets(a) {
   const all = (a && a.widgets) || []
   if (all.length <= cap) return all
   const out = all.slice(0, cap)
+  const newest = newestOf(all)
+  if (newest && !out.includes(newest)) out[cap - 1] = newest
   if (wall.topology) {
     const g = graphOf(a)
-    if (g && !out.includes(g)) out[cap - 1] = g
+    if (g && !out.includes(g)) out[out[cap - 1] === newest && cap > 1 ? cap - 2 : cap - 1] = g
   }
   return out
 }
@@ -601,12 +683,14 @@ function clampSel(list) {
 }
 
 function selectWidget(io, i) {
+  wall.focus = null
   wall.selected = i
   wall.topology = false
   io.invalidate()
 }
 
 function selectNext(io) {
+  wall.focus = null
   const n = shownWidgets().length
   if (n > 0) wall.selected = (clampSel(shownWidgets()) + 1) % n
   wall.topology = false
@@ -644,7 +728,7 @@ export function onSnapshot(io, snap, prev) {
     }
     if (seq == null || seq <= seen) continue
     news.seen[r.roomKey] = seq
-    news.pending = { title: nw.title || nw.type || 'a widget', by: nw.by || '' }
+    news.pending = { seq, title: nw.title || nw.type || 'a widget', by: nw.by || '', scope: nw.scope === 'person' ? 'person' : 'wall', personId: nw.humanActorId ? String(nw.humanActorId) : '' }
   }
   if (news.pending) void announce(io)
   if (!lp.open || !reading('wall')) return
@@ -693,28 +777,80 @@ async function announce(io, nowMs) {
   news.toastAt = now
   news.hintUntil = now + HINT_MS
   news.hintTitle = w.title
-  io.toast(newWidgetWords(w), 6000)
+  const mine = w.scope === 'person' && isYou(w.personId)
+  news.hintFocus = { seq: w.seq, title: w.title, personId: w.scope === 'person' ? w.personId : '', mine, dashed: false }
+  const words = newWidgetWords(w, mine)
+  // The band names a shared widget by its title alone; a widget in somebody's investigation says whose.
+  news.hintWords = w.scope === 'person' ? words : 'New on the wall: ' + w.title
+  io.toast(words, 6000)
   io.invalidate()
 }
 
-// newWidgetWords is the toast: "New on the wall: 5xx by target group · by bob".
-export function newWidgetWords(w) {
-  return 'New on the wall: ' + w.title + (w.by ? ' · by ' + w.by : '')
+// isYou: the humanActorId is this machine's person, by the watch stream's people rows.
+function isYou(id) {
+  if (!id) return false
+  const r = currentRoom()
+  const me = ((r && r.status && r.status.people) || []).find((p) => p.you)
+  return !!me && idOfPerson(me, lp.answer) === id
+}
+
+// personName is the name a colleague goes by in this room, else what the stream called them.
+function personName(id, by) {
+  const row = id ? wallPeopleOf(lp.answer).find((w) => w.humanActorId === id) : null
+  return (row && row.displayName) || by || 'someone'
+}
+
+// newWidgetWords is the toast: "New on the wall: 5xx by target group · by bob", or for a widget
+// on a person's own dashboard "New in bob's investigation: 5xx by target group · by bob" ("your
+// investigation" when it is yours).
+export function newWidgetWords(w, mine) {
+  const by = w.by ? ' · by ' + w.by : ''
+  if (w.scope !== 'person') return 'New on the wall: ' + w.title + by
+  const whose = mine ? 'your' : personName(w.personId, w.by) + "'s"
+  return 'New in ' + whose + ' investigation: ' + w.title + by
 }
 
 // wallHint is what the band offers for a minute after a new widget: the
-// widget's title, or null.
+// widget's title and the words that name it, or null.
 export function wallHint(nowMs) {
   if (!news.hintUntil || nowMs >= news.hintUntil) return null
-  return { title: news.hintTitle }
+  return { title: news.hintTitle, words: news.hintWords }
 }
 
-// openWall is the `w` key and the new-widget offer: the person asked, so the console takes the keyboard.
+// openWall is the `w` key and the new-widget offer: the person asked, so the console takes the
+// keyboard, and it opens on the widget that was offered, on its own dashboard.
 export async function openWall(io) {
   news.hintUntil = 0
+  wall.focus = news.hintFocus
+  news.hintFocus = null
   await openConsole(io, 'wall', null, { focus: true })
+  io.invalidate()
 }
 
+// applyFocus shows the dashboard the offered widget is on, once.
+function applyFocus(io, members) {
+  const f = wall.focus
+  if (!f || f.dashed) return
+  f.dashed = true
+  if (!f.personId) {
+    if (wall.dashboard !== 'shared') selectDashboard(io, 'shared')
+    return
+  }
+  const key = f.mine ? 'mine' : (members.find((m) => m.id === f.personId) || {}).key
+  if (key && key !== wall.dashboard) selectDashboard(io, key)
+}
+
+// placeFocus selects the offered widget among those drawn. A card is found by the seq the CLI put
+// on it; one that has since been refreshed (a person's widget under the same title) by its title,
+// once the dashboard was read after the widget landed. Found or not, it is spent then.
+function placeFocus(widgets, readAt) {
+  const f = wall.focus
+  if (!f || !f.dashed) return
+  let i = widgets.findIndex((w) => w.seq === f.seq)
+  if (i < 0 && readAt >= f.seq) i = widgets.findIndex((w) => norm(w.title) === norm(f.title))
+  if (i >= 0) wall.selected = i
+  if (i >= 0 || readAt >= f.seq) wall.focus = null
+}
 async function ioNow(io, p = lp) {
   try {
     return Number(await io.now())

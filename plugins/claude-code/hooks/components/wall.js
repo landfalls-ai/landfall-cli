@@ -457,7 +457,7 @@ function sharedBody(k, io, nowMs) {
   const tail = [a.windowMs ? windowWords(a.windowMs) : '', lp.inFlight ? 'reading…' : ''].filter(Boolean)
   rows.push(heading(k, 'wall-h', a.sharedBy ? 'Wall · shared by ' + a.sharedBy : 'Wall', tail.length ? ' · ' + tail.join(' · ') : ''))
   const widgets = fitRows(k, visibleWidgets(a), { prefix: 'w', gone: (a.unavailable || []).length, kind: 'shared' })
-  placeFocus(k, 'w', widgets, lp.seq)
+  placeFocus(k, 'w', widgets, readSeqOf(lp.answer))
   if (wall.topology) {
     const g = graphOf(a)
     if (!g) rows.push(k.text(NO_GRAPH, { key: 'wall-nograph', dimColor: true }))
@@ -513,7 +513,7 @@ function personBody(k, io, nowMs, m) {
     return rows
   }
   const widgets = fitRows(k, visibleWidgets(a), { prefix: 'pw', snapshot: true, gone: (a.unavailable || []).length, kind: 'person' })
-  placeFocus(k, 'pw', widgets, pp.seq)
+  placeFocus(k, 'pw', widgets, readSeqOf(pp.answer))
   if (widgets.length === 0) {
     rows.push(k.text(none, { key: 'wall-pnone', dimColor: true }))
     return rows
@@ -861,7 +861,10 @@ function applyFocus(io, members) {
 
 // placeFocus selects the offered widget among those drawn. A card is found by the seq the CLI put
 // on it; one that has since been refreshed (a person's widget under the same title) by its title,
-// once the dashboard was read after the widget landed. Found or not, it is spent then. Where the
+// once the dashboard was read after the widget landed (`readAt` is the room seq the ANSWER being
+// drawn followed, never the seq a read still running was started for: the Wall draws while that
+// read runs, with the previous answer, and the focus must survive that draw). Found or not, it is
+// spent then. Where the
 // pane scrolls (not the terminal, which fits its cards) the found card is also brought into view:
 // the console takes its key as the row to show next (consoleState.scrollTo).
 function placeFocus(k, prefix, widgets, readAt) {
@@ -915,6 +918,21 @@ function movedRoom(r) {
   return !!(r && wall.roomKey && r.roomKey !== wall.roomKey)
 }
 
+// What room seq each answer was read at. lp.seq and pp.seq move when a read STARTS (they tell the
+// tab whether a newer one is due); this says what the answer on screen actually covers. The first
+// live run on the desktop app found the difference: the draw the read's own invalidate caused still
+// held the previous answer, read as "already read since the widget landed", and spent the focus.
+const readAtSeq = new WeakMap()
+function tagRead(pending, seq) {
+  return Promise.resolve(pending).then((answer) => {
+    if (answer && typeof answer === 'object') readAtSeq.set(answer, seq)
+    return answer
+  })
+}
+function readSeqOf(answer) {
+  return answer && typeof answer === 'object' && readAtSeq.has(answer) ? readAtSeq.get(answer) : -1
+}
+
 // loadWall runs `landfall wall` for the wall's room, one read at a time; a
 // widget event seen mid-read reads once more after it.
 async function loadWall(io) {
@@ -924,7 +942,7 @@ async function loadWall(io) {
     const ws = widgetSeqOf(r)
     lp.seq = ws == null ? -1 : ws
     io.invalidate()
-    return io.run(wallArgs(r), { timeoutMs: 30000 })
+    return tagRead(io.run(wallArgs(r), { timeoutMs: 30000 }), lp.seq)
   }
   await readLive(lp, fetch, () => ioNow(io, lp))
   const n = lp.answer && lp.answer.ok ? (lp.answer.widgets || []).length : 0
@@ -939,7 +957,7 @@ async function loadPerson(io) {
     const who = readTarget(wall.dashboard, r)
     pp.seq = r && typeof r.maxSeq === 'number' ? r.maxSeq : -1
     io.invalidate()
-    return who ? io.run(wallArgs(r, who), { timeoutMs: 30000 }) : { ok: false, error: 'Nobody to read.' }
+    return who ? tagRead(io.run(wallArgs(r, who), { timeoutMs: 30000 }), pp.seq) : { ok: false, error: 'Nobody to read.' }
   }
   await readLive(pp, fetch, () => ioNow(io, pp))
   const n = pp.answer && pp.answer.ok ? (pp.answer.widgets || []).length : 0

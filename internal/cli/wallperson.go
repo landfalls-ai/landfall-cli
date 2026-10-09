@@ -114,7 +114,7 @@ func projectEdgeWidgets(events []timelineEvent, humanActorID string) []*edgeWidg
 			captured = e.OccurredAt
 		}
 		w := &edgeWidget{
-			projectedWidget: projectedWidget{id: fmt.Sprintf("edge-widget-%d", e.SeqOrZero()), typ: typ, title: title, status: status, data: data},
+			projectedWidget: projectedWidget{id: fmt.Sprintf("edge-widget-%d", e.SeqOrZero()), typ: typ, title: title, status: status, data: data, landedSeq: e.SeqOrZero()},
 			humanActorID:    who,
 			seq:             e.SeqOrZero(),
 			capturedAt:      captured,
@@ -457,9 +457,7 @@ func runWallPerson(ctx context.Context, room daemon.RoomView, events []timelineE
 	}
 	plain = arrange(plain, order)
 	total := len(plain)
-	if len(plain) > wallWidgetsMax {
-		plain = plain[:wallWidgetsMax]
-	}
+	plain = keepNewest(plain, wallWidgetsMax)
 	widgets := make([]map[string]any, 0, len(plain))
 	for _, pw := range plain {
 		c := byID[pw.id]

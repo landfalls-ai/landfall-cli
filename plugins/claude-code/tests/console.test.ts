@@ -244,6 +244,64 @@ test('terminal: Home on a short inline pane drops from the bottom and says what 
   expect(words).toContain('More in Wall and Timeline.')
 })
 
+// Home's People rows: a real name must fit its column with a cell to spare, `(you)` on the same
+// line, and the next column must not start flush against it (a live run drew `●collab-… (yo` with
+// `u)` wrapped, and `collab-car…war room` with no gap).
+const LONG_PEOPLE = [
+  { name: 'collab-alice', you: true, here: true, agents: [{ tool: 'Claude Code', label: 'collab-alice-claude-code', here: true }] },
+  { name: 'collab-carol', here: true, browser: true },
+  { name: 'collab-bob-the-very-long-named-responder', here: true, browser: true },
+]
+
+function textOf(n: any): string {
+  if (!n || typeof n !== 'object') return ''
+  return (n.children ?? []).map((c: any) => (typeof c === 'string' ? c : textOf(c))).join('')
+}
+
+function findAll(n: any, pick: (n: any) => boolean, out: any[] = []): any[] {
+  if (!n || typeof n !== 'object') return out
+  if (pick(n)) out.push(n)
+  for (const c of n.children ?? []) findAll(c, pick, out)
+  return out
+}
+
+test('terminal: Home people rows with long names fit their column, (you) on the same line, a gap before the next column', async ($, on) => {
+  const r = roomOf({ status: { ...roomOf().status, people: LONG_PEOPLE } })
+  const w = await world($, on, { rooms: [r], answers: ANSWERS })
+  await $.command.run({ command: 'landfall', args: '' })
+  await w.clock.settle()
+  const pane = await $.ui.mount(consolePane('terminal') as never)
+  const tree = await pane.drawn()
+  const rows = findAll(tree, (n) => /^hp-t-r\d+$/.test(String(n.key ?? n.props?.key ?? '')))
+  expect(rows).toHaveLength(3)
+  const nameParts = (row: any) => row.children[0].children[0].children.map(textOf)
+  const byName = (name: string) => rows.find((row: any) => nameParts(row)[1].startsWith(name))
+  for (const row of rows) {
+    const [nameCol, whereCol] = row.children
+    const width = nameCol.props.width
+    // The name cell is one row of Texts (dot, name, (you)); their total leaves a cell before the next column.
+    expect(nameParts(row).join('').length).toBeLessThanOrEqual(width - 1)
+    expect(textOf(whereCol).length).toBeLessThanOrEqual(whereCol.props.width - 1)
+  }
+  expect(nameParts(byName('collab-alice'))).toEqual(['● ', 'collab-alice', ' (you)'])
+  expect(nameParts(byName('collab-carol'))).toEqual(['● ', 'collab-carol'])
+  // A name longer than its column is clipped with an ellipsis, not left to wrap.
+  expect(nameParts(byName('collab-bob'))[1]).toMatch(/…$/)
+})
+
+test('desktop: Home people rows clip a very long name, (you) kept', async ($, on) => {
+  const r = roomOf({ status: { ...roomOf().status, people: [{ ...LONG_PEOPLE[0], name: 'collab-alice-with-a-very-long-display-name' }, LONG_PEOPLE[1]] } })
+  const w = await world($, on, { rooms: [r], answers: ANSWERS, surface: 'desktop' })
+  await $.command.run({ command: 'landfall', args: '' })
+  await w.clock.settle()
+  const pane = await $.ui.mount(consolePane('desktop') as never)
+  const words = await texts(pane)
+  const you = words.find((t) => t.endsWith(' (you)'))!
+  expect(you.length).toBeLessThanOrEqual(28)
+  expect(you).toContain('…')
+  expect(words).toContain('collab-carol')
+})
+
 test('Home with no room points at Incidents above', async ($, on) => {
   await world($, on, { answers: { whoami: { ok: true, signedIn: true, org: 'acme' }, incidents: { ok: true, org: 'acme', incidents: [] } } })
   await $.command.run({ command: 'landfall', args: 'home' })

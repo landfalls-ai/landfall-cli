@@ -1050,6 +1050,14 @@ function lineOf(r, p) {
   return l ? lineLabel(l) : ''
 }
 
+// Home's People table (terminal): the name column holds the presence dot, the name and ` (you)`,
+// the where column the rest. Both are pre-clipped to leave one cell before the next column, so a
+// real name (`collab-alice`) neither wraps `(you)` onto a second line nor runs into the column
+// beside it. The third column (the latest line) takes what is left of the pane.
+const PEOPLE_NAME_W = 21
+const PEOPLE_WHERE_W = 24
+const PEOPLE_YOU = ' (you)'
+
 function peopleBlock(k, io, r, list, width) {
   const { Box, Text } = k.els
   const all = sortPeople((r.status && r.status.people) || [])
@@ -1058,23 +1066,23 @@ function peopleBlock(k, io, r, list, width) {
   const away = list.length - shown.length
   const heading = Text({ key: 'hp-h', bold: true, children: ['Here · ' + hereN] })
   if (k.terminal) {
-    const third = Math.max(10, width - 40)
+    const third = Math.max(10, width - PEOPLE_NAME_W - PEOPLE_WHERE_W)
     const tableRows = shown.map((p, i) => {
       const nameCell = Box({
         key: 'hp-n' + i,
         flexDirection: 'row',
         children: [
           Text({ key: 'd', ...(p.here ? { color: TONE.good } : { dimColor: true }), children: [p.here ? '● ' : '○ '] }),
-          Text({ key: 'n', bold: true, dimColor: !p.here, wrap: 'truncate-end', children: [p.name] }),
-          p.you ? Text({ key: 'y', dimColor: !p.here, children: [' (you)'] }) : null,
+          Text({ key: 'n', bold: true, dimColor: !p.here, wrap: 'truncate-end', children: [clip(p.name, PEOPLE_NAME_W - 1 - 2 - (p.you ? PEOPLE_YOU.length : 0))] }),
+          p.you ? Text({ key: 'y', dimColor: !p.here, children: [PEOPLE_YOU] }) : null,
         ].filter(Boolean),
       })
       const line = lineOf(r, p)
       const where = [whereIs(p) || (p.here ? '' : 'away'), line ? 'on ' + line : ''].filter(Boolean).join(' · ')
-      const whereCell = Text({ key: 'hp-w' + i, dimColor: !p.here, wrap: 'truncate-end', children: [clip(where, 26)] })
+      const whereCell = Text({ key: 'hp-w' + i, dimColor: !p.here, wrap: 'truncate-end', children: [clip(where, PEOPLE_WHERE_W - 1)] })
       return [nameCell, whereCell, latestCell(k, p, i, third)]
     })
-    const out = [heading, k.table(tableRows, { key: 'hp-t', widths: [13, 27] })]
+    const out = [heading, k.table(tableRows, { key: 'hp-t', widths: [PEOPLE_NAME_W, PEOPLE_WHERE_W] })]
     if (away > 0) out.push(Text({ key: 'hp-away', dimColor: true, children: ['+' + away + ' away'] }))
     return out
   }
@@ -1082,7 +1090,7 @@ function peopleBlock(k, io, r, list, width) {
   shown.forEach((p, i) => {
     const line = lineOf(r, p)
     const where = [whereIs(p) || (p.here ? '' : 'away'), line ? 'on ' + line : ''].filter(Boolean).join(' · ')
-    kids.push(k.row([k.avatar(p.name, !!p.here, { key: 'hp-av' + i, you: !!p.you }), Text({ key: 'hp-n' + i, bold: true, children: [p.name + (p.you ? ' (you)' : '')] }), where ? k.dim(where, 'hp-w' + i) : null], 'hp-r' + i, 1))
+    kids.push(k.row([k.avatar(p.name, !!p.here, { key: 'hp-av' + i, you: !!p.you }), Text({ key: 'hp-n' + i, bold: true, children: [clip(p.name, 28 - (p.you ? PEOPLE_YOU.length : 0)) + (p.you ? PEOPLE_YOU : '')] }), where ? k.dim(where, 'hp-w' + i) : null], 'hp-r' + i, 1))
     const l = p.latest
     if (l && l.text) {
       kids.push(

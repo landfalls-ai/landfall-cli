@@ -16,6 +16,10 @@ landfall hooks install
 On Claude Code 2.1.287+ that installs this mod (`landfall@landfall`) beside the hooks. By hand:
 `claude plugin marketplace add landfalls-ai/landfall-cli`, then `claude plugin install landfall@landfall`.
 
+Already have an older mod (it answers `/room`, and `/landfall` is not a command)? The console arrived in
+0.5.0: `brew upgrade landfall`, then `claude plugin marketplace update landfall` and
+`claude plugin update landfall@landfall`, and start a new session. `claude plugin list` shows your version.
+
 ## What it does
 
 One command, `/landfall`, and one pane, the console. Keys draft prompts or run the `landfall` CLI;

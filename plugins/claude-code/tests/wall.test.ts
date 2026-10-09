@@ -209,7 +209,7 @@ test('the wall draws every widget type in the shared arrangement, on each surfac
       expect(graph?.props.source).toContain('<title>cloudfront (cdn) · warning</title>')
       expect(graph?.props.source).toContain('<title>web-edge-alb to us-east-1c: established, both ways</title>')
       // Two columns when the pane is wide enough.
-      expect(pane.find({ type: 'Box', key: 'w-grid' })).toBeDefined()
+      expect(pane.find({ type: 'Box', key: 'w-r0' })).toBeDefined()
       expect(pane.all({ type: 'Raster' })).toHaveLength(0)
     }
   }
@@ -974,4 +974,106 @@ test('people named collab-alice, collab-bob and collab-carol read as alice, bob 
     const labels = new Drawn(pane.find({ key: 'wall-sel' })).all({ type: 'Button' }).map((c) => c.props.label.trim())
     expect(labels).toEqual(['▸ Shared wall', 'alice 2', 'bob', 'carol 1', 'mine'])
   }
+})
+
+// ---------------------------------------------------------------------------
+// A widget that arrives while the Wall is open is selected and brought into view (live run
+// 2026-10-09: a pin landed at the bottom of the shared wall, below the fold of the desktop dock).
+
+test('a pin arriving while the shared wall is open is selected, and on desktop brought into view', async () => {
+  for (const surface of SURFACES) {
+    begin()
+    let widgets = Array.from({ length: 5 }, (_, i) => statW('s' + i, 'Stat ' + i, 300 + i))
+    const io = fakeIo(() => ({ ok: true, sharedBy: 'carol', widgets }))
+    wallTab.warm(io as never)
+    await settle()
+    await feedNewest(io, { seq: 304, title: 'Stat 4' })
+    // The wall is open on the shared dashboard; carol pins a chart, which the arrangement puts last.
+    widgets = [...widgets, statW('pin', 'NAT packet drops by gateway', 320, { by: 'carol' })]
+    await feedNewest(io, { seq: 320, title: 'NAT packet drops by gateway', by: 'carol' })
+    await settle()
+    consoleState.scrollTo = ''
+    const pane = await draw(surface, io)
+    expect(pane.find({ type: 'Button', text: '▸ NAT packet drops by gateway' })).toBeDefined()
+    if (surface === 'terminal') {
+      // The terminal fits its cards to the pane: nothing scrolls, the list stays one element.
+      expect(consoleState.scrollTo).toBe('')
+      expect(pane.find({ key: 'w-list' })).toBeDefined()
+    } else {
+      // Desktop: one row per card, and the console is asked to show the new one.
+      expect(consoleState.scrollTo).toBe('w-pin')
+      expect(pane.find({ key: 'w-list' })).toBeUndefined()
+      // Two columns at this width: the pin sits in a row of its own pair, not in a whole-list element.
+      expect(pane.find({ type: 'Box', key: 'w-r2' })?.children.some((c: any) => c.key === 'w-pin')).toBe(true)
+    }
+    // Spent: n moves on from there as it always did.
+    consoleState.scrollTo = ''
+    const keys = new Drawn(wallTab.keys(kitFor(surface), io as never))
+    await keys.press('wall-next')
+    await draw(surface, io)
+    expect(consoleState.scrollTo).toBe('')
+  }
+})
+
+test('a pin arriving while another dashboard is shown does not move the wall', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  wallTab.warm(io as never)
+  await settle()
+  let pane = await draw('desktop', io)
+  await pane.press('sel-h-alice')
+  await settle()
+  await feedNewest(io, { seq: 400, title: 'old' }, { status: WITH_PEOPLE.status })
+  await feedNewest(io, { seq: 500, title: 'Healthy origins', by: 'dana' }, { status: WITH_PEOPLE.status })
+  await settle()
+  consoleState.scrollTo = ''
+  pane = await draw('desktop', io)
+  expect(consoleState.scrollTo).toBe('')
+  expect(pane.find({ type: 'Button', text: '▸ alice 2' })).toBeDefined()
+})
+
+test('a widget on the person dashboard being viewed is selected and, on desktop, brought into view', async () => {
+  for (const surface of SURFACES) {
+    begin([WITH_PEOPLE])
+    let mineWidgets: any[] = [...ALICE_WIDGETS]
+    const io = fakeIo((argv: string[]) => {
+      const at = argv.indexOf('--person')
+      if (at >= 0 && argv[at + 1] === 'h-alice') return { ...alicesDashboard, widgets: mineWidgets }
+      return personAnswers()(argv)
+    })
+    wallTab.warm(io as never)
+    await settle()
+    let pane = await draw(surface, io)
+    await pane.press('sel-h-alice')
+    await settle()
+    await feedNewest(io, { seq: 400, title: 'old', by: 'carol' }, { status: WITH_PEOPLE.status })
+    mineWidgets = [...mineWidgets, { id: 'edge-widget-230', type: 'stat', title: 'Retry storm', value: '9', capturedAt: SNAP_AT, seq: 430 }]
+    await feedNewest(io, { seq: 430, title: 'Retry storm', by: 'alice', scope: 'person', humanActorId: 'h-alice' }, { status: WITH_PEOPLE.status, maxSeq: 431 })
+    await settle()
+    consoleState.scrollTo = ''
+    pane = await draw(surface, io)
+    await settle()
+    consoleState.scrollTo = ''
+    pane = await draw(surface, io)
+    expect(pane.find({ type: 'Button', text: '▸ Retry storm' })).toBeDefined()
+    if (surface === 'terminal') expect(consoleState.scrollTo).toBe('')
+  }
+})
+
+test('w from the band lands on the offered widget on desktop too: selected and brought into view', async () => {
+  begin()
+  const widgets = Array.from({ length: 4 }, (_, i) => statW('s' + i, 'Stat ' + i, 300 + i))
+  const io = fakeIo(() => ({ ok: true, sharedBy: 'carol', widgets }))
+  wallTab.warm(io as never)
+  await settle()
+  await feedNewest(io, { seq: 300, title: 'Stat 0' })
+  // The console is closed when the widget lands, so only the band offers it.
+  consoleState.open = false
+  await feedNewest(io, { seq: 303, title: 'Stat 3', by: 'dana' })
+  await wallTab.tick(io as never, io.clock.t)
+  consoleState.scrollTo = ''
+  await wallTab.openWall(io as never)
+  const pane = await draw('desktop', io)
+  expect(pane.find({ type: 'Button', text: '▸ Stat 3' })).toBeDefined()
+  expect(consoleState.scrollTo).toBe('w-s3')
 })

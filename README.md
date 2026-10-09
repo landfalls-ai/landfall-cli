@@ -148,18 +148,36 @@ installs the **Landfall mod** (`landfall@landfall`, from this repository's plugi
 marketplace). The hooks can only speak when you send a message; the mod draws the room
 in the session the moment something happens, and still never takes a turn:
 
-- a band above the prompt: the room, how many updates you have not seen, the newest one
-  in words, and keys **1** catch up (drafts the prompt; you send it), **2** show the room,
-  **3** later
-- a toast when someone in the room names a person
-- the room's status line under the prompt, and `/room` to see every update in a pane
+- a band above the prompt, shown only while something needs you: the room, how many
+  updates you have not seen, a vote waiting on you, and the newest update in words
+- a toast when someone in the room names a person, a vote is asked of you, or Beacon concludes
+- the room's status line under the prompt
+- one command, `/landfall [tab]`, that opens the **console**, a pane with the tabs Home,
+  Vote, Context, Wall, People, Timeline, LB, Incidents and More
+
+Run `/landfall` and it takes you through the way in: if you are not signed in it shows a
+sign-in state (the CLI does the browser handoff), then an incident picker, then joins the
+room you pick and appends the room's shared context to your agent's conversation. It
+appends a note; it does not start a turn.
 
 Your agent still hears the room with your next message, exactly as with the hooks. While
 the mod is loaded, landfall's own `Stop`, `FileChanged` and `UserPromptSubmit` hooks and
 `landfall status` stay quiet, so nothing reaches you twice; `PreToolUse` is unchanged. An
 older Claude Code, and an organization that only allows managed mods, keep the hooks.
 `LANDFALL_CLAUDE_MOD=0 landfall hooks install` skips the mod; `/plugin` or `landfall hooks
-uninstall` removes it. Details: [`plugins/claude-code/README.md`](plugins/claude-code/README.md).
+uninstall` removes it. Every tab, key and read is listed in
+[`plugins/claude-code/README.md`](plugins/claude-code/README.md).
+
+#### Claude desktop
+
+The Code tab of the Claude desktop app loads the same mod. It is installed at user scope,
+so the Code tab picks it up with no extra step. There the console draws as native cards and
+buttons, and the tab names shorten to fit the dock.
+
+Claude desktop chat (not the Code tab) has no mods. Landfall reaches it through the hosted
+connector, a remote MCP server at `/o/<org>/mcp`, whose tools render as MCP Apps (incidents,
+the room, the canvas). See the docs for [Claude desktop](https://docs.landfalls.ai/claude-desktop)
+and the [manager connector](https://docs.landfalls.ai/integrations/manager-connector).
 
 No sign-in needed — this edits local config, so it also works from a provisioning
 script. Every write is an append into the host's own hook list: your existing hooks
@@ -616,6 +634,23 @@ landfall hooks install [--only <ids>] [--dry-run]      # register lifecycle hook
 export LANDFALL_STOP_HOOK=block                        # opt in: Stop refuses a conclusion (default: a notice)
 landfall hooks uninstall [--only <ids>]                # remove only landfall's hook entries
 landfall hooks policy [--init]                         # print (or scaffold) the prod allow-list
+landfall whoami [--json]                               # are you signed in, to which organization
+landfall login --json                                  # sign in; JSON lines for the Claude Code mod
+landfall join --incident <incidentId>                  # join a room picked from the list (no link)
+landfall incidents [--all]                             # open incidents, your rooms first (JSON)
+landfall brief                                         # the room's shared context (JSON)
+landfall artifacts                                     # files shared in the room (JSON)
+landfall artifact <id> [--max-chars <n>] [--bytes]     # read one shared file (JSON)
+landfall timeline [--kind <k>] [--limit <n>] [--before <seq>]   # the room's events (JSON)
+landfall wall [--person <id|me>]                       # the room's dashboard, or a person's (JSON)
+landfall lb [--lb <name|arn>] [--minutes <n>]          # load balancers, targets and 5xx (JSON)
+landfall comms                                         # stakeholder updates, read only (JSON)
+landfall brain --q "<words>"                           # search the company second brain (JSON)
+landfall vote --claim <seq> --position corroborate|contest [--reason "<why>"]   # your own position
+landfall lines claim --label "<text>"                  # claim a line of investigation
+landfall lines release --claim <id>                    # hand it back
+landfall open <url>                                    # open a page of your Landfall in the browser
+landfall watch [--tick-ms <n>]                         # stream the room's changes, for a host to run
 landfall --version                                     # print this build's version (also -v, version)
 ```
 

@@ -76,6 +76,24 @@ into functions declared in the same file. `hooks/kit.js` draws Landfall's pieces
 `hooks/views.js` holds the pure chart and graph drawings; `hooks/live.js` the bookkeeping every live
 read shares.
 
+## Claude desktop
+
+The Code tab of the Claude desktop app loads this same mod. What differs
+there:
+
+- The console draws as native cards and real buttons instead of key hints. The keys in the tables above
+  are the terminal's; on desktop you press the button.
+- The dock is narrow, so the tab switcher shortens names by a fixed ladder until the row fits: Load
+  balancers becomes `LB`, then Context `Ctx`, Timeline `Time`, Incidents `Inc` and People `Ppl`. It never
+  wraps, and the active tab keeps its fill. The pane title always says the full name (`Landfall · People`).
+- A drawing that shows hover titles sits in the desktop's own white frame, and the engine passes a hook
+  no theme, so the mod paints its own background and text colors in the SVG and switches them with
+  `prefers-color-scheme`.
+- The sound cue is macOS only, as above.
+
+Claude desktop chat (not the Code tab) has no mods. There Landfall comes through the hosted connector, a
+remote MCP server at `/o/<org>/mcp`, whose tools render as MCP Apps (incidents, room, canvas).
+
 ## How it fits with `landfall hooks install`
 
 Both stay installed. At session start the mod sets `LANDFALL_MOD=claude-code`; Claude Code passes it

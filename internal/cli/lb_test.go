@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -196,4 +197,26 @@ func wantJSON(t *testing.T, v any, want string) {
 	if string(b) != want {
 		t.Fatalf("got %s, want %s", b, want)
 	}
+}
+
+// Landfall's own out-of-scope refusal (the seat the read went out under has no
+// live grant) must not be told as the AWS connection failing.
+func TestLBTellsLandfallsRefusalFromAnAWSFailure(t *testing.T) {
+	f := newFakeLandfall(t)
+	lbFixture().install(f)
+	d := f.deps(false)
+	for _, why := range []string{
+		"the signal read was refused or unavailable: /plugins/cloudwatch/invoke → HTTP 403: out-of-scope",
+		"the signal read was refused or unavailable: /plugins/cloudwatch/invoke → HTTP 403",
+		"no-live-grant",
+	} {
+		d.Query = func(context.Context, string, chartQuery) (map[string]any, error) { return nil, errors.New(why) }
+		wantFailure(t, RunLB(context.Background(), LBOptions{}, d), msgReadRefused)
+	}
+	if strings.ContainsAny(msgReadRefused, "—–") || strings.Contains(msgReadRefused, "AWS") {
+		t.Fatalf("the sentence must be plain and not blame AWS: %q", msgReadRefused)
+	}
+	// A real provider error keeps the AWS wording.
+	d.Query = func(context.Context, string, chartQuery) (map[string]any, error) { return nil, errors.New("boom") }
+	wantFailure(t, RunLB(context.Background(), LBOptions{}, d), "The room's AWS connection could not read load balancers. Try again shortly.")
 }

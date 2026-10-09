@@ -37,6 +37,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// msgReadRefused is Landfall's own refusal of a read, not the AWS connection's.
+const msgReadRefused = "Landfall refused this read: your agent is not in the room right now. Rejoin from Incidents."
+
 const (
 	lbDefaultMinutes = 60
 	lbMaxMinutes     = 360
@@ -82,12 +85,17 @@ func lbRead(ctx context.Context, d ReadDeps, roomKey, operation string, params m
 	return res, ""
 }
 
-// lbRefusal is the sentence for a read the room's AWS connection could not make.
+// lbRefusal is the sentence for a read that could not be made. Landfall's own
+// refusal (HTTP 403 "out-of-scope": the agent seat the read went out under is
+// not in the room right now) is told apart from the room's AWS connection
+// failing, so a person is not sent to fix AWS for something it did not do.
 func lbRefusal(reason string) string {
 	r := strings.ToLower(reason)
 	switch {
 	case strings.Contains(r, "no such room"), strings.Contains(r, "did not answer"):
 		return msgNoRoom
+	case strings.Contains(r, "out-of-scope"), strings.Contains(r, "no-live-grant"), strings.Contains(r, "http 403"):
+		return msgReadRefused
 	case strings.Contains(r, "not connected"), strings.Contains(r, "unknown source"), strings.Contains(r, "404"):
 		return "The room has no AWS connection that can read load balancers."
 	case strings.Contains(r, "accessdenied"), strings.Contains(r, "not authorized"), strings.Contains(r, "403"):

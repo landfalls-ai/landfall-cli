@@ -82,8 +82,12 @@ read shares.
 
 ## Claude desktop
 
-The Code tab of the Claude desktop app loads this same mod. What differs
-there:
+The Code tab of the Claude desktop app runs this same mod. Turn it on under **+**, **Add plugins**
+(it may be listed as Disabled), and in a new session send any message before `/landfall` (a new
+session knows a mod's commands once it has started). Known issue with the desktop app's Claude Code
+2.1.293: a Code session can still miss the installed mod; until the app fixes it, start Claude with
+`open -a Claude --env CLAUDE_CODE_PLUGIN_DIRS="$(ls -d ~/.claude/plugins/cache/landfall/landfall/*/ | sort -V | tail -1)"`.
+What differs there:
 
 - The console draws as native cards and real buttons instead of key hints. The keys in the tables above
   are the terminal's; on desktop you press the button.

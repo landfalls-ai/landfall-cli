@@ -426,6 +426,16 @@ func (r *Room) ReapSeats(ctx context.Context, grace time.Duration) []string {
 		r.mu.Unlock()
 		return nil
 	}
+	if r.watchedLocked() {
+		// A person is watching through a console: its seat may have no agent
+		// reader yet (the agent adopts the room on its next tool call), and a
+		// subscription does not say which seat it watches. Leave them all.
+		for _, s := range r.seats {
+			s.idleSince = time.Time{}
+		}
+		r.mu.Unlock()
+		return nil
+	}
 	var gone []*Seat
 	for label, s := range r.seats {
 		if inUse[label] {
@@ -744,6 +754,7 @@ func (r *Room) Subscribe() (<-chan client.Event, func()) {
 	return ch, func() {
 		r.mu.Lock()
 		delete(r.subscribers, ch)
+		r.unwatchedLocked()
 		r.mu.Unlock()
 	}
 }
@@ -762,6 +773,7 @@ func (r *Room) SubscribeAll() (<-chan client.Event, func()) {
 	return ch, func() {
 		r.mu.Lock()
 		delete(r.wakers, ch)
+		r.unwatchedLocked()
 		r.mu.Unlock()
 	}
 }
@@ -869,7 +881,7 @@ func (r *Room) Detach(name string) {
 			}
 		}
 	}
-	if r.connectedLocked() == 0 {
+	if r.connectedLocked() == 0 && !r.watchedLocked() {
 		r.lastReaderLeftAt = r.deps.now()
 	}
 }
@@ -888,6 +900,20 @@ func (r *Room) connectedLocked() int {
 	return n
 }
 
+// watchedLocked reports a live subscription: a watch or a push stream held
+// open on the room. Someone is looking at it, whatever readers are attached.
+func (r *Room) watchedLocked() bool {
+	return len(r.subscribers)+len(r.wakers) > 0
+}
+
+// unwatchedLocked starts the idle grace when a subscription ended and left the
+// room with nobody: no connected reader and no other subscription.
+func (r *Room) unwatchedLocked() {
+	if r.connectedLocked() == 0 && !r.watchedLocked() {
+		r.lastReaderLeftAt = r.deps.now()
+	}
+}
+
 // ConnectedReaders is how many readers currently hold a live attachment.
 func (r *Room) ConnectedReaders() int {
 	r.mu.Lock()
@@ -895,7 +921,10 @@ func (r *Room) ConnectedReaders() int {
 	return r.connectedLocked()
 }
 
-// IdleSince is when the last reader left, or zero while any is attached. A
+// IdleSince is when the last reader left, or zero while any is attached or a
+// subscription is open (a console joins a room with only the person's terminal
+// reader, and its watch is the one thing holding the room; found live,
+// 2026-10-09). A
 // room that has had no attached reader since it was opened (one restored from
 // state after a stop, whose readers came back detached) counts as idle since it
 // was opened: otherwise a daemon restored with nobody reading would live for
@@ -903,7 +932,7 @@ func (r *Room) ConnectedReaders() int {
 func (r *Room) IdleSince() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.connectedLocked() > 0 {
+	if r.connectedLocked() > 0 || r.watchedLocked() {
 		return time.Time{}
 	}
 	if r.lastReaderLeftAt.IsZero() {

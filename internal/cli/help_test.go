@@ -20,6 +20,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -88,6 +89,35 @@ func TestHelpSpellingsPrintUsageAndExitZero(t *testing.T) {
 				t.Errorf("landfall %s stdout does not match %s:\n%s", spelling, installLine, stdout)
 			}
 		})
+	}
+}
+
+// TestHelpListsTheConsoleCommands: the commands the Claude Code mod runs are
+// in the usage text with their real flags, so a person reading --help can find
+// them. A command added to the mod's surface without a help line fails here.
+func TestHelpListsTheConsoleCommands(t *testing.T) {
+	stdout, _ := run(t, "--help")
+	for _, want := range []string{
+		"join --incident <incidentId>",
+		"whoami [--json]",
+		"login --json",
+		"incidents [--all]",
+		"brief [--room <room>]",
+		"artifacts [--room <room>]",
+		"artifact <id> [--max-chars <n>] [--bytes]",
+		"timeline [--kind <k>] [--limit <n>] [--before <seq>]",
+		"wall [--person <id|me>]",
+		"lb [--lb <name|arn>] [--minutes <n>]",
+		"comms [--room <room>]",
+		"brain [--q",
+		"vote --claim <seq> --position corroborate|contest",
+		"lines claim --label",
+		"open <url>",
+		"watch [--tick-ms <n>]",
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Errorf("--help does not list %q:\n%s", want, stdout)
+		}
 	}
 }
 

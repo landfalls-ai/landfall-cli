@@ -30,7 +30,8 @@ func workspaceRoom(ws hooks.Workspace, incidentFilter string) (roomKey, incident
 	key := hooks.WorkspaceKey(ws.Dir())
 	var matches []daemon.RoomView
 	for _, r := range res.Rooms {
-		if incidentFilter != "" && !strings.HasPrefix(r.IncidentID, incidentFilter) {
+		// The mod passes the room's key; a person types an incident id or its prefix.
+		if incidentFilter != "" && r.RoomKey != incidentFilter && !strings.HasPrefix(r.IncidentID, incidentFilter) {
 			continue
 		}
 		for _, rd := range r.Readers {

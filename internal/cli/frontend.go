@@ -45,6 +45,9 @@ type frontEnd struct {
 	link string
 	// lastEnsure rate-limits respawn attempts when the daemon has gone away.
 	lastEnsure time.Time
+	// seatPin is the seat label an adoption (adopt.go) joins under, set only
+	// for the length of that join. See seatLabel.
+	seatPin string
 }
 
 func newFrontEnd(ws hooks.Workspace, log func(string)) *frontEnd {
@@ -94,7 +97,21 @@ func (f *frontEnd) onInitialize(ci mcp.ClientInfo) {
 // seatLabel is the label this harness's agent session joins the room under:
 // LANDFALL_AGENT_LABEL when the person set one, else the host's own name
 // ("Claude Code", "Codex"), else whatever the config already carries.
+//
+// While an adoption is joining (pinSeat), the label is the one the room's
+// terminal join already holds, whatever LANDFALL_AGENT_LABEL says: a second
+// label would be a second /edge/join, a second presence, and a seat that
+// leaves the room 60 s later while every later read from this folder still
+// names it. The person's custom label is therefore not shown for a room they
+// put this folder in from the mod; it applies to every join the agent makes
+// itself (a pasted link, join_war_room, a startup link).
 func (f *frontEnd) seatLabel(cfg client.Config) string {
+	f.mu.Lock()
+	pin := f.seatPin
+	f.mu.Unlock()
+	if pin != "" {
+		return pin
+	}
 	if env := os.Getenv("LANDFALL_AGENT_LABEL"); env != "" {
 		return env
 	}
@@ -108,6 +125,19 @@ func (f *frontEnd) seatLabel(cfg client.Config) string {
 		return cfg.AgentLabel
 	}
 	return daemon.DefaultSeatLabel
+}
+
+// pinSeat makes every join until the returned release use label (an adoption's
+// seat). An empty label pins nothing.
+func (f *frontEnd) pinSeat(label string) (release func()) {
+	f.mu.Lock()
+	f.seatPin = label
+	f.mu.Unlock()
+	return func() {
+		f.mu.Lock()
+		f.seatPin = ""
+		f.mu.Unlock()
+	}
 }
 
 func (f *frontEnd) setLink(hash string) {

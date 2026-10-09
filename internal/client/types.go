@@ -259,6 +259,9 @@ type SearchResult struct {
 // Missing names the specific shortfalls blocking a staged claim's admission.
 type Missing struct {
 	Contradiction []int64 `json:"contradiction"`
+	// Corroborators is how many more distinct positions the bar still needs,
+	// when that is what the claim is short of.
+	Corroborators *int `json:"corroborators,omitempty"`
 }
 
 // Shortfall is why a staged claim has not been admitted yet.

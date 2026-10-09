@@ -1,6 +1,14 @@
 {
   "name": "landfall",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Keeps a Claude Code session current on its Landfall war room without taking a turn",
-  "author": { "name": "Landfall", "email": "jhonny@landfalls.ai" }
+  "author": { "name": "Landfall", "email": "jhonny@landfalls.ai" },
+  "userConfig": {
+    "sound": {
+      "type": "boolean",
+      "title": "Sound cues",
+      "description": "One soft chime when an incident you are in becomes SEV1, or when a new finding waits on your vote. Plays on macOS only.",
+      "default": false
+    }
+  }
 }

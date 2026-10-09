@@ -1,9 +1,11 @@
 package narrate
 
 import (
+	"encoding/json"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/landfalls-ai/landfall-cli/internal/client"
 )
@@ -25,16 +27,68 @@ type RoomStatus struct {
 	// this answer, so a watcher can ask again shortly rather than waiting out
 	// its tick. Not something to draw.
 	Refreshing bool `json:"refreshing,omitempty"`
+
+	// BeaconStep is Beacon's newest agent.step while a run is live.
+	BeaconStep *BeaconStep `json:"beaconStep,omitempty"`
+	// BeaconConclusion is what the latest concluded run settled on, kept by
+	// the daemon after the events that said it have left the ring.
+	BeaconConclusion *BeaconConclusion `json:"beaconConclusion,omitempty"`
+	// Lines are the lines of investigation someone holds right now.
+	Lines []Line `json:"lines,omitempty"`
+	// Focus is what a person last steered the investigation toward.
+	Focus string `json:"focus,omitempty"`
+	// Scope is what the room is pinned to, in short words ("component:web-edge").
+	Scope []string `json:"scope,omitempty"`
+}
+
+// Latest is a person's newest contribution to the shared context: a claim
+// (with where it stands at the gate) or, failing one newer, a note.
+type Latest struct {
+	Seq  int64  `json:"seq"`
+	Text string `json:"text"`
+	// State is staged, corroborated, contested, admitted, withdrawn or note.
+	State string `json:"state"`
+	AgeMs *int64 `json:"ageMs,omitempty"`
+}
+
+// BeaconStep is one step of Beacon's live run.
+type BeaconStep struct {
+	Text   string `json:"text"`
+	Step   int    `json:"step"`
+	RunSeq int64  `json:"runSeq"`
+}
+
+// BeaconConclusion is a concluded run's answer and the seq it concluded at.
+type BeaconConclusion struct {
+	Text string `json:"text"`
+	Seq  int64  `json:"seq"`
+}
+
+// Line is one held line of investigation.
+type Line struct {
+	ClaimID string `json:"claimId"`
+	Label   string `json:"label"`
+	LineKey string `json:"lineKey"`
+	// Owner is the holder's display name.
+	Owner string `json:"owner"`
+	You   bool   `json:"you,omitempty"`
+	AgeMs *int64 `json:"ageMs,omitempty"`
 }
 
 // Person is one human in the room with their agents. Here is true while any
 // of their browser tabs or agents is active; Browser while a tab is.
 type Person struct {
-	Name    string  `json:"name"`
-	You     bool    `json:"you,omitempty"`
-	Here    bool    `json:"here"`
-	Browser bool    `json:"browser,omitempty"`
-	Agents  []Agent `json:"agents,omitempty"`
+	Name string `json:"name"`
+	// HumanActorID is who the person is to the server, so a front end keys a
+	// person by id rather than by a name two people can share. Empty only
+	// when an older server sent no id.
+	HumanActorID string  `json:"humanActorId,omitempty"`
+	You          bool    `json:"you,omitempty"`
+	Here         bool    `json:"here"`
+	Browser      bool    `json:"browser,omitempty"`
+	Agents       []Agent `json:"agents,omitempty"`
+	// Latest is their newest contribution to the shared context, if any.
+	Latest *Latest `json:"latest,omitempty"`
 }
 
 // Agent is one agent session a person has in the room.
@@ -63,12 +117,43 @@ func StatusOf(f *client.ContextFrame, me, beacon string) RoomStatus {
 	}
 	st.Status = oneLine(Printable(f.Incident.Status), 40)
 	st.Severity = oneLine(Printable(f.Incident.Severity), 40)
-	st.People = peopleOf(f.Participants, me)
+	st.People = peopleOf(f.Participants, me, nil)
 	st.Theory = theoryOf(f.Brief)
 	return st
 }
 
-func peopleOf(parts []client.Participant, me string) []Person {
+// RoomReads is what the daemon reads beside the frame, as the person: the
+// room's events (its ring), the claims projection, the line claims, and the
+// conclusion it kept. NowMs is the caller's clock (this package reads none).
+type RoomReads struct {
+	Events     []client.Event
+	Claims     *client.ClaimsProjection
+	Lines      []client.LineClaim
+	Conclusion *BeaconConclusion
+	NowMs      int64
+}
+
+// StatusOfRoom is StatusOf plus everything the person reads beside the frame:
+// each person's latest contribution, Beacon's live step and last conclusion,
+// the held lines, and the room's focus and scope.
+func StatusOfRoom(f *client.ContextFrame, me string, r RoomReads) RoomStatus {
+	st := StatusOf(f, me, BeaconState(r.Events))
+	if f != nil {
+		st.People = peopleOf(f.Participants, me, LatestByPerson(r.Claims, r.Events, r.NowMs))
+		if f.Focus != nil {
+			st.Focus = oneLine(Printable(f.Focus.Focus), textMax)
+		}
+		st.Scope = ScopeOf(f.Attachments)
+	}
+	if st.Beacon == "investigating" {
+		st.BeaconStep = BeaconStepOf(r.Events)
+	}
+	st.BeaconConclusion = r.Conclusion
+	st.Lines = LinesOf(r.Lines, me, r.Events, r.NowMs)
+	return st
+}
+
+func peopleOf(parts []client.Participant, me string, latest map[string]*Latest) []Person {
 	byID := map[string]*Person{}
 	order := []string{}
 	for i, p := range parts {
@@ -80,6 +165,9 @@ func peopleOf(parts []client.Participant, me string) []Person {
 		person, ok := byID[id]
 		if !ok {
 			person = &Person{You: me != "" && id == me}
+			if p.HumanActorID != "" {
+				person.HumanActorID = oneLine(Printable(p.HumanActorID), 120)
+			}
 			byID[id] = person
 			order = append(order, id)
 		}
@@ -114,6 +202,9 @@ func peopleOf(parts []client.Participant, me string) []Person {
 		p := byID[id]
 		if p.Name == "" {
 			p.Name = "Participant"
+		}
+		if l, ok := latest[id]; ok {
+			p.Latest = l
 		}
 		out = append(out, *p)
 	}
@@ -209,4 +300,275 @@ var beaconWork = map[string]bool{
 	"agent.hypothesis.raised":    true,
 	"agent.remediation.proposed": true,
 	"agent.widget.requested":     true,
+}
+
+// noteTypes are the ring rows a person's note or finding arrives as when it
+// did not go through the gate as a claim (a note is an edge.finding with a
+// contributionKind marker).
+var noteTypes = map[string]bool{"edge.finding": true, "edge.hypothesis": true}
+
+// LatestByPerson is each person's newest contribution to the shared context,
+// keyed by their humanActorId: the newest claim they or their agents authored
+// (from the claims projection, which knows where it stands at the gate), or a
+// newer note from the ring. A claim's state is staged, corroborated (someone
+// other than the author's side agreed), contested (someone disagreed),
+// admitted or withdrawn.
+func LatestByPerson(claims *client.ClaimsProjection, events []client.Event, nowMs int64) map[string]*Latest {
+	out := map[string]*Latest{}
+	put := func(id string, l *Latest) {
+		if id == "" {
+			return
+		}
+		if have, ok := out[id]; ok && have.Seq >= l.Seq {
+			return
+		}
+		out[id] = l
+	}
+	if claims != nil {
+		for _, c := range claims.Claims {
+			text := oneLine(Printable(c.Statement), textMax)
+			state := claimState(c)
+			if state == "withdrawn" && text == "" {
+				text = "Withdrew a finding"
+			}
+			l := &Latest{Seq: c.Seq, Text: text, State: state}
+			if at, ok := parseTimeMs(c.At); ok {
+				l.AgeMs = ageMs(nowMs, at)
+			}
+			put(c.Author.HumanActorID, l)
+		}
+	}
+	for _, e := range events {
+		if e.Seq == nil || !noteTypes[e.Type] {
+			continue
+		}
+		id, _ := e.Payload["humanActorId"].(string)
+		text := oneLine(Printable(EventText(e.Payload)), textMax)
+		if id == "" || text == "" {
+			continue
+		}
+		l := &Latest{Seq: *e.Seq, Text: text, State: "note"}
+		if at, ok := EventAtMs(e); ok {
+			l.AgeMs = ageMs(nowMs, at)
+		}
+		put(id, l)
+	}
+	return out
+}
+
+// ClaimState is where a claim stands, in the words a person reads: the same
+// state a person's latest contribution carries (`landfall brief` folds each
+// open item's state with it).
+func ClaimState(c client.ClaimView) string { return claimState(c) }
+
+// claimState is where a claim stands, in the words a person reads.
+func claimState(c client.ClaimView) string {
+	switch c.State {
+	case "admitted", "withdrawn":
+		return c.State
+	}
+	corroborated := false
+	for _, p := range c.Positions {
+		// A position from the author's own side never counts, so it never
+		// moves the claim either way.
+		if p.Actor.HumanActorID != "" && p.Actor.HumanActorID == c.Author.HumanActorID {
+			continue
+		}
+		switch p.Position {
+		case "contest":
+			return "contested"
+		case "corroborate":
+			corroborated = true
+		}
+	}
+	if corroborated {
+		return "corroborated"
+	}
+	return "staged"
+}
+
+// scopeMax bounds how many pinned items the stream carries.
+const scopeMax = 12
+
+// ScopeOf is the room's pinned scope in short words: "<kind>:<label>".
+func ScopeOf(atts []client.FrameAttachment) []string {
+	var out []string
+	for _, a := range atts {
+		label := oneLine(Printable(a.Label), 60)
+		kind := oneLine(Printable(a.Kind), 24)
+		if label == "" {
+			continue
+		}
+		item := label
+		if kind != "" {
+			item = kind + ":" + label
+		}
+		out = append(out, item)
+		if len(out) == scopeMax {
+			break
+		}
+	}
+	return out
+}
+
+// BeaconStepOf is Beacon's newest agent.step, numbered within its run.
+// Nil when the ring holds no step.
+func BeaconStepOf(events []client.Event) *BeaconStep {
+	var newest *client.Event
+	for i := range events {
+		if events[i].Type == "agent.step" {
+			newest = &events[i]
+		}
+	}
+	if newest == nil {
+		return nil
+	}
+	text := oneLine(Printable(EventText(newest.Payload)), textMax)
+	if text == "" {
+		return nil
+	}
+	run := payloadInt(newest.Payload, "runSeq")
+	step := 0
+	for _, e := range events {
+		if e.Type == "agent.step" && payloadInt(e.Payload, "runSeq") == run && e.SeqOr(-1) <= newest.SeqOr(-1) {
+			step++
+		}
+	}
+	return &BeaconStep{Text: text, Step: step, RunSeq: run}
+}
+
+// BeaconConclusionOf is what the newest concluded run in the ring settled on:
+// the concluded row's own text when it carries any, else the run's newest
+// hypothesis, else its newest finding. Nil when no run concluded in the ring
+// or nothing in it says what the run found.
+func BeaconConclusionOf(events []client.Event) *BeaconConclusion {
+	end := -1
+	for i, e := range events {
+		if e.Type == "agent.run.concluded" && e.Seq != nil {
+			end = i
+		}
+	}
+	if end < 0 {
+		return nil
+	}
+	seq := *events[end].Seq
+	if t := oneLine(Printable(EventText(events[end].Payload)), textMax); t != "" {
+		return &BeaconConclusion{Text: t, Seq: seq}
+	}
+	start := 0
+	for i := end - 1; i >= 0; i-- {
+		if events[i].Type == "agent.run.started" || events[i].Type == "agent.run.concluded" || events[i].Type == "agent.run.gaveup" {
+			start = i + 1
+			break
+		}
+	}
+	for _, want := range []string{"agent.hypothesis.raised", "agent.finding"} {
+		for i := end - 1; i >= start; i-- {
+			if events[i].Type != want {
+				continue
+			}
+			if t := oneLine(Printable(EventText(events[i].Payload)), textMax); t != "" {
+				return &BeaconConclusion{Text: t, Seq: seq}
+			}
+		}
+	}
+	return nil
+}
+
+// linesMax bounds how many held lines the stream carries.
+const linesMax = 24
+
+// LinesOf is the held lines, oldest claim first. Age comes from the claim's
+// own row when the ring still has it.
+func LinesOf(claims []client.LineClaim, me string, events []client.Event, nowMs int64) []Line {
+	at := map[int64]int64{}
+	for _, e := range events {
+		if e.Type == "line.claimed" && e.Seq != nil {
+			if ms, ok := EventAtMs(e); ok {
+				at[*e.Seq] = ms
+			}
+		}
+	}
+	var out []Line
+	for _, c := range claims {
+		if c.State != "held" {
+			continue
+		}
+		owner := oneLine(Printable(c.Holder.DisplayName), 60)
+		if owner == "" {
+			owner = "Participant"
+		}
+		l := Line{
+			ClaimID: c.ClaimID,
+			Label:   oneLine(Printable(c.Label), 120),
+			LineKey: c.LineKey,
+			Owner:   owner,
+			You:     me != "" && c.Holder.HumanActorID == me,
+		}
+		if l.Label == "" {
+			l.Label = c.LineKey
+		}
+		if ms, ok := at[c.ClaimedAtSeq]; ok {
+			l.AgeMs = ageMs(nowMs, ms)
+		}
+		out = append(out, l)
+		if len(out) == linesMax {
+			break
+		}
+	}
+	return out
+}
+
+// EventAtMs is when an event happened: its payload's `at`, else the row's own
+// occurredAt. False when neither is there or readable.
+func EventAtMs(e client.Event) (int64, bool) {
+	if s, ok := e.Payload["at"].(string); ok {
+		if ms, ok := parseTimeMs(s); ok {
+			return ms, true
+		}
+	}
+	if len(e.Raw) > 0 {
+		var row struct {
+			OccurredAt string `json:"occurredAt"`
+		}
+		if json.Unmarshal(e.Raw, &row) == nil {
+			return parseTimeMs(row.OccurredAt)
+		}
+	}
+	return 0, false
+}
+
+func parseTimeMs(s string) (int64, bool) {
+	if s == "" {
+		return 0, false
+	}
+	t, err := time.Parse(time.RFC3339Nano, s)
+	if err != nil {
+		return 0, false
+	}
+	return t.UnixMilli(), true
+}
+
+// ageMs is now minus then, never negative; nil without a clock.
+func ageMs(nowMs, thenMs int64) *int64 {
+	if nowMs <= 0 {
+		return nil
+	}
+	d := nowMs - thenMs
+	if d < 0 {
+		d = 0
+	}
+	return &d
+}
+
+func payloadInt(p map[string]any, key string) int64 {
+	switch v := p[key].(type) {
+	case float64:
+		return int64(v)
+	case int64:
+		return v
+	case int:
+		return int64(v)
+	}
+	return -1
 }

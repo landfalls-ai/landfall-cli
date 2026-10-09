@@ -72,6 +72,10 @@ type LoginOptions struct {
 	// tests supply a no-op so no window pops on a developer's machine or a CI
 	// runner.
 	OpenBrowser func(url string) error
+	// OnURL, when set, is told the handoff URL the moment it is known, before
+	// the browser is opened, so a caller can show it as data (`landfall login
+	// --json`) as well as in the stderr line every sign-in logs.
+	OnURL func(url string)
 	// PollInterval / PollTimeout override the defaults above (tests only).
 	PollInterval time.Duration
 	PollTimeout  time.Duration
@@ -126,6 +130,9 @@ func Login(ctx context.Context, log Log, opts LoginOptions) (string, error) {
 		"opening your browser to sign in… if it does not open, visit:\n%s\n"+
 			"You will sign in the same way you sign in to Landfall on the web — with your "+
 			"password, or through your organization’s identity provider.", handoffURL))
+	if opts.OnURL != nil {
+		opts.OnURL(handoffURL)
+	}
 	openBrowser(opts.OpenBrowser, handoffURL)
 
 	session, err := PollForHandoff(ctx, resolved.API, nonce, opts.OrgSlug, PollOptions{

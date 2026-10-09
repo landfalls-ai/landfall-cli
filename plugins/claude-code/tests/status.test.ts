@@ -1,4 +1,5 @@
 import { expect, mock, test } from 'claude-code/testing'
+import { labelIn } from './_label'
 
 // The room at a glance, as `landfall watch` sends it (narrate.RoomStatus).
 function room(status: string, beacon: string) {
@@ -44,9 +45,9 @@ const HINT = {
 const PANE = {
   plugin: 'landfall',
   component: 'Pane',
-  requestId: 'landfall-room',
-  viewport: { columns: 120, rows: 40 },
-  props: { bodyColumns: 110, bodyRows: 30, view: {} },
+  requestId: 'landfall',
+  viewport: { columns: 168, rows: 52, isFullscreen: true },
+  props: { title: 'Landfall', isFocused: true, bodyColumns: 84, placement: 'dock', scroll: { offset: 0, bodyRows: 48 }, view: {} },
 } as const
 
 async function startWith($: any, on: any, lines: string[]) {
@@ -64,7 +65,7 @@ async function startWith($: any, on: any, lines: string[]) {
   on('command.register', () => ({ value: undefined }))
   on('process.spawn', async function* () {
     for (const l of lines) yield { stream: 'stdout', text: l }
-    return { code: 0, signal: null }
+    return { value: { code: 0, signal: null } }
   })
   on('ui.status', ($: any, e: any) => {
     statuses.push(e.text)
@@ -82,13 +83,13 @@ async function startWith($: any, on: any, lines: string[]) {
 
 test('the status line says the status, severity, who is here and Beacon', async ($, on) => {
   const { statuses } = await startWith($, on, [line('investigating', 'investigating')])
-  expect(statuses.at(-1)).toBe('🔴 Acme 82 · investigating · SEV2 · 3 here · Beacon investigating · 2 new')
+  expect(statuses.at(-1)).toBe('Acme 82 · SEV2 · investigating · 3 here · Beacon investigating · 2 new')
 })
 
-test('a mitigated incident turns the dot yellow, a resolved one green', async ($, on) => {
+test('the status line carries no emoji: the status word says where the incident is', async ($, on) => {
   const { statuses } = await startWith($, on, [line('mitigated', ''), line('resolved', 'concluded')])
-  expect(statuses[0]).toBe('🟡 Acme 82 · mitigated · SEV2 · 3 here · 2 new')
-  expect(statuses[1]).toBe('🟢 Acme 82 · resolved · SEV2 · 3 here · Beacon concluded · 2 new')
+  expect(statuses[0]).toBe('Acme 82 · SEV2 · mitigated · 3 here · 2 new')
+  expect(statuses[1]).toBe('Acme 82 · SEV2 · resolved · 3 here · Beacon concluded · 2 new')
 })
 
 test('a status change and Beacon ending are told once, the first sight is not', async ($, on) => {
@@ -125,15 +126,17 @@ test('under the prompt: the others who are here, and where', async ($, on) => {
   await typing.unmount()
 })
 
-test('/room opens on the room at a glance, everyone in it, then the news', async ($, on) => {
+test('/landfall opens on Home: the room at a glance, who is here and what they last shared', async ($, on) => {
+  on('ui.open', () => ({ value: { isPlaced: true } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '{"ok":false,"error":"not here"}\n', stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }))
   await startWith($, on, [line('investigating', 'investigating')])
+  await $.command.run({ command: 'landfall', args: '' })
   const pane = await $.ui.mount({ ...PANE, surface: 'terminal' } as never)
-  expect(await pane.find({ type: 'Text', text: 'investigating · SEV2 · Beacon investigating' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: 'Leading theory: the 14:32 web-edge deploy dropped healthy hosts in eu-west-1' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: 'In the room (3 here)' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '● alice (you) · Claude Code' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '● bob · Claude Code: querying ALB healthy hosts' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '● carol · war room' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: '○ dave · Codex (away) · away' })).toBeDefined()
-  expect(await pane.find({ type: 'Text', text: 'News · 2 new' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: '◆ Acme 82 · cloudfront-5xx-high' })).toBeDefined()
+  expect(labelIn(await pane.drawn(), 'SEV2')).toBeDefined()
+  expect(labelIn(await pane.drawn(), 'investigating')).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'Here · 3' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'alice' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: ' (you)' })).toBeDefined()
+  expect(await pane.find({ type: 'Text', text: 'war room' })).toBeDefined()
 })

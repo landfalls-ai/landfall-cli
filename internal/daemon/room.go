@@ -161,12 +161,26 @@ type Room struct {
 	// redeeming it again (which the server refuses).
 	links map[string]struct{}
 
+	// person is the room as the person reads it (person.go): their vote
+	// list, the claims projection, the line claims, Beacon's last answer.
+	person personState
+
+	// wall is what the room remembers of its wall (live.go); lastHeard is
+	// when the daemon last heard from the room (an event or a frame read).
+	wall      wallState
+	lastHeard time.Time
+
 	lastReaderLeftAt time.Time
 	openedAt         time.Time
 	deps             Deps
 	cancel           context.CancelFunc
 	stopWatch        func()
 	subscribers      map[chan client.Event]struct{}
+	// wakers are subscribers that asked for every change (a watch): every
+	// event that enters the ring, plumbing and this machine's own writes
+	// included, and a reader arriving or leaving. A watch redraws from the
+	// peek, so what it needs is the moment, not the filtered event.
+	wakers map[chan client.Event]struct{}
 }
 
 // OpenRoom joins the incident for the first harness on this machine and
@@ -536,6 +550,8 @@ func (r *Room) enqueueQuiet(evt client.Event) {
 	for len(r.events) > RingMax {
 		r.events = r.events[1:]
 	}
+	r.noteHeardLocked()
+	r.noteWallLocked(evt)
 }
 
 func (r *Room) start(ctx context.Context) {
@@ -577,6 +593,24 @@ func (r *Room) start(ctx context.Context) {
 			}
 		}
 	}()
+	r.seedWallAsync(roomCtx)
+	// The watched poll (person.go): while a watch is attached, the person's
+	// attention is read every PersonWatchedPoll, for the teammate's claims
+	// the server never pushes to an edge socket.
+	go func() {
+		t := time.NewTicker(PersonWatchedPoll)
+		defer t.Stop()
+		for {
+			select {
+			case <-roomCtx.Done():
+				return
+			case <-t.C:
+				r.mu.Lock()
+				r.pollPersonLocked()
+				r.mu.Unlock()
+			}
+		}
+	}()
 	if r.deps.Watch != nil {
 		// No echo suppression at the socket: with a seat per harness, what is
 		// one harness's own write is a sibling harness's news. Each reader's
@@ -612,11 +646,26 @@ func (r *Room) enqueue(evt client.Event) {
 		r.events = r.events[1:]
 	}
 	r.Connection = Live
-	subs := make([]chan client.Event, 0, len(r.subscribers))
+	r.noteHeardLocked()
+	r.noteWallLocked(evt)
+	if narrate.TouchesAttention(evt.Type) {
+		for _, st := range r.seats {
+			st.attentionStale = true
+		}
+	}
+	// The person's view is marked, and its read started, BEFORE anyone is
+	// woken: a watch woken by this event peeks at once, and used to find the
+	// view not yet marked, so nothing read it until a later peek (person.go).
+	r.markPersonLocked(evt)
+	r.refreshPersonLocked()
+	subs := make([]chan client.Event, 0, len(r.subscribers)+len(r.wakers))
 	if !isPlumbing(evt.Type) && !isOwn(evt, r.ownIDsLocked(nil)) {
 		for ch := range r.subscribers {
 			subs = append(subs, ch)
 		}
+	}
+	for ch := range r.wakers {
+		subs = append(subs, ch)
 	}
 	r.mu.Unlock()
 	for _, ch := range subs {
@@ -624,13 +673,6 @@ func (r *Room) enqueue(evt client.Event) {
 		case ch <- evt:
 		default: // a slow subscriber drops the event; it can `delta` for the rest
 		}
-	}
-	if narrate.TouchesAttention(evt.Type) {
-		r.mu.Lock()
-		for _, st := range r.seats {
-			st.attentionStale = true
-		}
-		r.mu.Unlock()
 	}
 	if touchesFrame(evt.Type) {
 		r.mu.Lock()
@@ -706,6 +748,43 @@ func (r *Room) Subscribe() (<-chan client.Event, func()) {
 	}
 }
 
+// SubscribeAll registers a stream of every change a watcher redraws for:
+// each event that enters the ring (no plumbing or own-write filter), and a
+// reader arriving or leaving (an event with no seq and type ReaderChanged).
+func (r *Room) SubscribeAll() (<-chan client.Event, func()) {
+	ch := make(chan client.Event, 64)
+	r.mu.Lock()
+	if r.wakers == nil {
+		r.wakers = map[chan client.Event]struct{}{}
+	}
+	r.wakers[ch] = struct{}{}
+	r.mu.Unlock()
+	return ch, func() {
+		r.mu.Lock()
+		delete(r.wakers, ch)
+		r.mu.Unlock()
+	}
+}
+
+// ReaderChanged is the type of the seq-less line SubscribeAll sends when a
+// reader attaches or detaches (the agent arriving is news to the band).
+const ReaderChanged = "landfall.reader.changed"
+
+// wakeAllLocked tells every SubscribeAll stream that a reader changed. Never
+// blocks: a stream that is full has a wake pending already.
+func (r *Room) wakeAllLocked() { r.wakeAllTypeLocked(ReaderChanged) }
+
+// wakeAllTypeLocked sends every SubscribeAll stream one seq-less line of the
+// given type (ReaderChanged, PersonChanged). Never blocks.
+func (r *Room) wakeAllTypeLocked(typ string) {
+	for ch := range r.wakers {
+		select {
+		case ch <- client.Event{Type: typ}:
+		default:
+		}
+	}
+}
+
 // MaxSeq is the newest seq the room has seen (from the ring or the frame).
 func (r *Room) MaxSeq() int64 {
 	r.mu.Lock()
@@ -739,9 +818,13 @@ func (r *Room) Attach(rd Reader) *Reader {
 			s.idleSince = time.Time{}
 		}
 	}
+	defer r.wakeAllLocked()
 	if existing, ok := r.readers[rd.Name]; ok {
 		existing.Connected = true
 		existing.LastSeenAt = now
+		if rd.PersonJoined {
+			existing.PersonJoined = true
+		}
 		if rd.Host != "" {
 			existing.Host = rd.Host
 		}
@@ -766,6 +849,7 @@ func (r *Room) Attach(rd Reader) *Reader {
 func (r *Room) Detach(name string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	defer r.wakeAllLocked()
 	rd, ok := r.readers[name]
 	if ok {
 		rd.Connected = false
@@ -930,6 +1014,7 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 	r.mu.Lock()
 	r.frame = f
 	r.frameAt = r.deps.now()
+	r.noteHeardLocked()
 	if r.frameGen == gen {
 		r.frameStale = false
 	}
@@ -946,13 +1031,24 @@ func (r *Room) Frame(ctx context.Context) (*client.ContextFrame, error) {
 // this read returns what is cached (nothing, the first time).
 func (r *Room) StatusView() narrate.RoomStatus {
 	r.refreshFrameAsync()
+	r.refreshPersonAsync()
 	r.mu.Lock()
 	f := r.frame
 	events := append([]client.Event(nil), r.events...)
 	me := r.Config.HumanActorID
+	// Only the frame: a person read that lands with a new answer wakes every
+	// watch itself (PersonChanged), so a watch need not poll for it.
 	loading := r.frameLoading
+	r.keepConclusionLocked()
+	reads := narrate.RoomReads{
+		Events:     events,
+		Claims:     r.person.claims,
+		Lines:      append([]client.LineClaim(nil), r.person.lines...),
+		Conclusion: r.person.conclusion,
+		NowMs:      r.deps.now().UnixMilli(),
+	}
 	r.mu.Unlock()
-	st := narrate.StatusOf(f, me, narrate.BeaconState(events))
+	st := narrate.StatusOfRoom(f, me, reads)
 	st.Refreshing = loading
 	return st
 }
@@ -1053,13 +1149,45 @@ func (r *Room) Client() session.EdgeClient {
 	return r.client
 }
 
-// ClientAndInstance is Client plus the primary seat's agent instance id, read
-// together: a `query` answers both, so `landfall chart` can queue what it built
-// under the seat the room knows.
+// ClientAndInstance is the client and agent instance id a console read
+// (`query`: landfall lb, chart, ...) goes out under, read together so
+// `landfall chart` can queue what it built under the seat the room knows.
+//
+// It prefers a LIVE seat: the server grants a signal read per tenant,
+// incident, person and agent instance, so a read under a seat nobody is in
+// any more is refused (`no-live-grant`) even though a sibling seat of the same
+// person is in the room. The primary seat is the answer while it is in use or
+// when no seat is (a room with only a terminal reader); otherwise the first
+// seat, by label, with a connected agent reader.
 func (r *Room) ClientAndInstance() (session.EdgeClient, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if s := r.liveSeatLocked(); s != nil {
+		return s.client, s.InstanceID
+	}
 	return r.client, r.AgentInstanceID
+}
+
+// liveSeatLocked is the seat a read should use when the primary is not in use
+// but another seat is; nil means "use the primary".
+func (r *Room) liveSeatLocked() *Seat {
+	inUse := map[string]bool{}
+	for _, rd := range r.readers {
+		if rd.Connected && rd.Kind == KindAgent {
+			if s := r.seatForLocked(rd); s != nil {
+				inUse[s.Label] = true
+			}
+		}
+	}
+	if len(inUse) == 0 || inUse[r.primary] {
+		return nil
+	}
+	labels := make([]string, 0, len(inUse))
+	for l := range inUse {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
+	return r.seats[labels[0]]
 }
 
 // Close stops presence and live watch and leaves the room.

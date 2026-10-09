@@ -63,6 +63,10 @@ func briefLines(items []client.BriefItem, heading string) []string {
 	return lines
 }
 
+// AdmissionLine is admissionLine for a caller outside this package
+// (`landfall brief` hands the same words to the console as data).
+func AdmissionLine(a *client.BriefAdmission) string { return admissionLine(a) }
+
 // admissionLine says how an item got into the main context, so an agent
 // reading the brief knows who vouched for what. "" when the server did not
 // say (an older server, or an item that was never admitted).

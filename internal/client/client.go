@@ -206,6 +206,14 @@ func lostRace(reason string) bool {
 // post issues a POST and decodes into `out` (which may be nil). A 202 carries
 // no body, exactly as the Node client assumed.
 func (c *Client) post(ctx context.Context, path string, body map[string]any, out any) error {
+	return c.send(ctx, http.MethodPost, path, body, out, false)
+}
+
+// send is post for any method that carries a JSON body (a DELETE with an
+// idempotency key, for one). readAccepted decodes a 202's body too: the
+// claims routes answer 202 with {ok, state}, and a person's vote reports the
+// state it left the claim in.
+func (c *Client) send(ctx context.Context, method, path string, body map[string]any, out any, readAccepted bool) error {
 	if body == nil {
 		body = map[string]any{}
 	}
@@ -213,7 +221,7 @@ func (c *Client) post(ctx context.Context, path string, body map[string]any, out
 	if err != nil {
 		return fmt.Errorf("%s → %w", path, err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base()+path, bytes.NewReader(encoded))
+	req, err := http.NewRequestWithContext(ctx, method, c.base()+path, bytes.NewReader(encoded))
 	if err != nil {
 		return fmt.Errorf("%s → %w", path, err)
 	}
@@ -236,7 +244,7 @@ func (c *Client) post(ctx context.Context, path string, body map[string]any, out
 		}
 		return &HTTPError{Path: path, Status: res.StatusCode, Reason: reason}
 	}
-	if res.StatusCode == http.StatusAccepted || out == nil {
+	if (res.StatusCode == http.StatusAccepted && !readAccepted) || out == nil {
 		_, _ = io.Copy(io.Discard, res.Body)
 		return nil
 	}

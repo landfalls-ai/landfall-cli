@@ -72,7 +72,40 @@ Commands:
   hooks uninstall [--only <ids>]                          remove only landfall's hook entries
   hooks policy [--init]                                   print the local production allow-list and
                                                           exactly what each rule would report
+  join --incident <incidentId>                           join the room you picked from the list (no link), then exit;
+                                                          answers one JSON line (used by the Claude Code mod)
+  whoami [--json]                                        are you signed in, to which organization and Landfall; no
+                                                          network call
+  login --json                                           sign in, printing the sign-in URL and the outcome as
+                                                          JSON lines (used by the Claude Code mod)
+  incidents [--all]                                      open incidents, your rooms first (--all adds those resolved
+                                                          in the last 24h); one JSON line
+  brief [--room <room>]                                  the room's shared context (established, open, who is
+                                                          here, scope, focus); one JSON line
+  artifacts [--room <room>]                              the files shared in the room; one JSON line
+  artifact <id> [--max-chars <n>] [--bytes]              read one shared file (text, or base64 up to 256 KB with
+                                                          --bytes); one JSON line
+  timeline [--kind <k>] [--limit <n>] [--before <seq>]   the room's events, newest first; kind is findings, status,
+                                                          beacon, people or all; one JSON line
+  wall [--person <id|me>] [--room <room>]                the room's dashboard widgets, or one person's; one JSON
+                                                          line
+  lb [--lb <name|arn>] [--minutes <n>]                   load balancers: targets by zone and health, 5xx per
+                                                          target group (CloudWatch); one JSON line
+  comms [--room <room>]                                  stakeholder updates (read only); one JSON line
+  brain [--q "<words>"]                                  search the company second brain; one JSON line
+  vote --claim <seq> --position corroborate|contest      take your own position on a finding, as you and never
+              [--reason "<why>"] [--room <room>]          as an agent (used by the Claude Code mod)
+  lines claim --label "<text>" | release --claim <id>    claim or hand back a line of investigation (used by the
+                                                          Claude Code mod)
+  open <url>                                             open a page of your Landfall in the browser; refuses any
+                                                          other address (used by the Claude Code mod)
+  watch [--tick-ms <n>]                                  stream the rooms this folder reads, one JSON line per
+                                                          change (started by a host, not typed)
   version (or --version, -v)                              print this build's version and exit
+
+  The commands from join --incident down to watch are for the Claude Code mod and other
+  front ends, not for typing. The read ones take --room <room> and --host <id>, print one JSON
+  line and exit 0 even on failure ({"ok":false,"error":"..."}).
 
 Run 'landfall <command>' with no further arguments for command-specific behavior.
 Docs: https://github.com/landfalls-ai/landfall-cli`
@@ -244,6 +277,8 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newStatusCommand(ui),
 		newWatchCommand(ui),
 		newChartCommand(ui),
+		newVoteCommand(ui),
+		newLinesCommand(ui),
 		newDaemonCommand(ui),
 		newRoomsCommand(ui),
 		newHeldCommand(ui),
@@ -252,6 +287,10 @@ func newRootCommand(ui *UI, link string) *cobra.Command {
 		newRemediationCommand(ui),
 	)
 	root.AddCommand(placeholderCommands(ui)...)
+	// The edge components' read commands (readcommon.go).
+	root.AddCommand(readCommands(ui)...)
+	// The console's sign-in check and shared context (whoami.go, brief.go).
+	root.AddCommand(newWhoamiCommand(ui), newBriefCommand(ui), newOpenCommand(ui))
 	return root
 }
 

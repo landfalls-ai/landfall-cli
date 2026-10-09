@@ -294,6 +294,28 @@ func TestThePrimarySeatLeavingPromotesItsSibling(t *testing.T) {
 	}
 }
 
+// A console read goes out under a seat somebody is in: while the primary's
+// agent has gone and a sibling is still reading, the server would refuse a
+// read under the primary's instance (no live grant).
+func TestAConsoleReadUsesALiveSeatNotAnIdlePrimary(t *testing.T) {
+	d, _, _ := seatDaemon(t)
+	ctx := context.Background()
+	a := attachAs(t, d, "Claude Code", "claude-code", "1", "")
+	b := attachAs(t, d, "Codex", "codex", "2", "")
+	room := d.room(a.RoomKey)
+	if _, id := room.ClientAndInstance(); id != a.AgentInstanceID {
+		t.Fatalf("with the primary in use the read uses it: %q", id)
+	}
+	d.handler.Handle(ctx, Request{Op: "detach", RoomKey: a.RoomKey, ReaderName: "claude-code:ws:1"})
+	if _, id := room.ClientAndInstance(); id != b.AgentInstanceID {
+		t.Fatalf("an idle primary must not carry a read while a sibling is live: %q", id)
+	}
+	d.handler.Handle(ctx, Request{Op: "detach", RoomKey: a.RoomKey, ReaderName: "codex:ws:2"})
+	if _, id := room.ClientAndInstance(); id != a.AgentInstanceID {
+		t.Fatalf("with no seat in use the primary answers: %q", id)
+	}
+}
+
 func TestRestoreRejoinsEverySeat(t *testing.T) {
 	d, f, _ := seatDaemon(t)
 	st := &State{V: StateVersion, Rooms: map[string]RoomState{

@@ -233,7 +233,7 @@ function listView(k, io, r, people) {
         k.row(
           [
             Text({ key: 'dot-' + id, color: p.here ? TONE.good : TONE.neutral, dimColor: !p.here, children: [p.here ? '●' : '○'] }),
-            Button({ key: 'open-' + i, label: name, plain: true, dimColor: !p.here, onPress: open }),
+            Button({ key: 'open-' + i, label: name, plain: true, dimColor: !p.here, onPress: open, ...(i === 0 && !ui.claiming ? { autoFocus: true } : {}) }),
             via ? Text({ key: 'via-' + id, dimColor: true, children: [clip(via, Math.max(10, k.width - name.length - 4))] }) : null,
           ],
           'pr-' + id,
@@ -250,7 +250,7 @@ function listView(k, io, r, people) {
     const stacked = k.width < 70
     const buttonCells = textCells(openLabel) + BUTTON_CHROME
     const metaRoom = Math.max(8, k.width - 4 - 4 - 1 - (stacked ? 0 : buttonCells + 1))
-    const openButton = Box({ key: 'ob-' + id, flexShrink: 0, ...(stacked ? { alignSelf: 'flex-start' } : {}), children: [Button({ key: 'open-' + i, label: openLabel, onPress: open })] })
+    const openButton = Box({ key: 'ob-' + id, flexShrink: 0, ...(stacked ? { alignSelf: 'flex-start' } : {}), children: [Button({ key: 'open-' + i, label: openLabel, onPress: open, ...(i === 0 && !ui.claiming ? { autoFocus: true } : {}) })] })
     const identity = Box({
       key: 'nv-' + id,
       flexDirection: 'column',

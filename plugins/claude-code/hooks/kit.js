@@ -227,11 +227,13 @@ export function kit(els, e) {
     // button is a Button that reads as a key on the terminal ("1: catch up")
     // and as a real button elsewhere. `primary` marks the main action.
     // `dismiss` marks the one that closes its site (a desktop draws its own
-    // close control for it).
-    button({ key, label, hotkey, onPress, primary, dim, dismiss }) {
+    // close control for it). `autoFocus` starts the focus ring on it when the pane takes the
+    // keyboard, so Enter acts on it at once (console.js, THE FOCUS RING).
+    button({ key, label, hotkey, onPress, primary, dim, dismiss, autoFocus }) {
       // The desktop draws `Label`, the terminal `k: label` (spec §7): one capital, whatever the caller said.
       const props = { key, label: terminal ? label : cap(label), onPress }
       if (hotkey) props.hotkey = hotkey
+      if (autoFocus) props.autoFocus = true
       if (terminal) {
         props.plain = true
         if (dim) props.dimColor = true

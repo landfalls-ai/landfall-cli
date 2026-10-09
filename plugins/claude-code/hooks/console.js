@@ -8,6 +8,22 @@
 // element in view and in `consoleState.focus`, which every tab reads (the incident `b` acts on,
 // the artifact Context previews).
 //
+// THE KEYBOARD. Two separate things decide whether a key works the moment the person opens the
+// pane, and each had its own bug (0.5.4).
+//   Taking it. `$.ui.open({ focus: true })` is a request, not a grant: the engine honours it only
+//   while the composer is empty, and it decides once, when the request lands. A command the person
+//   typed (`/landfall vote`) runs while their text is still in the composer, so the request was
+//   refused, the pane drew without the keyboard and `c`, `x`, `l` went into the prompt. The console
+//   therefore asks again (`askForKeys`) a few times in the next two seconds while `$.ui.panes()`
+//   says the pane does not hold the keyboard; once the composer is empty the engine grants it. A
+//   person who has started typing again is refused every time, which is right.
+//   Where the ring starts. Once the pane holds the keyboard the ring starts on nothing, and Enter on
+//   nothing is the engine's own close mark. Each tab with rows therefore draws `autoFocus` on its
+//   selected row (Incidents: Join, People: the first person, Timeline: the first event, Context:
+//   the selected artifact). The engine lands the ring on the first `autoFocus` Button drawn, as soon
+//   as the pane holds the keyboard with the ring empty (a row that arrives later is taken then), so
+//   Enter acts on that row and only Esc closes. A ring the person has moved is not touched.
+//
 // THE TABS. Each component exports `tab(k, io, nowMs, args)`, `badge()` and `warm(io)`, called
 // here by name. The console draws every footer and keys row itself, so a tab is always asked for
 // its body alone (`args.chrome === false`) and answers either the body's rows (an array) or
@@ -92,6 +108,9 @@ export const TWO_COLUMNS = 150
 // height and the keys drawn in it, and how many rows the body window shows.
 const view = { rows: [], keys: [], visible: 20, openedAt: 0 }
 
+// Where the console asks again for the keyboard: ms after the command.
+export const KEYS_AGAIN_MS = [120, 300, 600, 1000, 1600]
+
 // The commands the console replaced (§1.3): register.js no longer registers them.
 export const REMOVED = ['room', 'vote', 'incidents', 'who', 'wall', 'lb', 'timeline', 'topology', 'lines', 'comms', 'brain', 'landfall-sound', 'chart']
 
@@ -125,6 +144,7 @@ export function install(on) {
       await io.toast(NOT_PLACED, 6000)
       return { text: await tabText(io, tab, asked.args) }
     }
+    askForKeys(io, 0)
     warmShown(io)
     // A successful open leaves no row in the person's transcript (round 2 review, decision 2): the
     // pane opening is the answer, and a row that tells them nothing is read again by the model.
@@ -179,6 +199,35 @@ export function install(on) {
     if (!view.openedAt && nowMs) view.openedAt = nowMs
     return drawConsole(k, io, nowMs, e)
   })
+}
+
+// askForKeys asks again for the keyboard after the person's own command (see THE KEYBOARD): while
+// the pane is open and `$.ui.panes()` says it does not hold the keyboard, open it again with
+// `focus` on the next beat. Stops at the first beat that finds it held, or when the beats run out.
+// It opens the same id, so the pane is never doubled, and it starts nothing: no turn, no MCP call.
+function askForKeys(io, step) {
+  if (step >= KEYS_AGAIN_MS.length) return
+  const wait = KEYS_AGAIN_MS[step] - (step > 0 ? KEYS_AGAIN_MS[step - 1] : 0)
+  try {
+    io.after(wait, async () => {
+      if (!consoleState.open || consoleState.closed) return
+      let mine
+      try {
+        mine = (await io.panes()).find((p) => p.id === CONSOLE)
+      } catch {
+        return
+      }
+      if (!mine || mine.isFocused) return
+      try {
+        await io.open(CONSOLE, consoleTitle(consoleState.tab), { columns: CONSOLE_COLUMNS, closeOnEscape: true, focus: true })
+      } catch {
+        return
+      }
+      askForKeys(io, step + 1)
+    })
+  } catch {
+    // No clock: the first request stands, and one Tab still gives the pane the keys.
+  }
 }
 
 export async function band(io, e, k) {
@@ -1466,6 +1515,8 @@ function consoleIo($, surface) {
     toast: (text, ms) => $.ui.toast(text, ms ? { timeoutMs: ms } : undefined),
     status: (text) => $.ui.status(text),
     open: (id, title, opts) => $.ui.open({ id, title, ...(opts || {}) }),
+    panes: () => $.ui.panes(),
+    after: (ms, fn) => $.clock.after(ms, fn),
     close: (id) => $.ui.close({ id }),
     invalidate: () => $.ui.invalidate('ui.render'),
     process: (args, opts) => $.process.run(args, opts),

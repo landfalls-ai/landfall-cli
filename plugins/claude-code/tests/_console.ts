@@ -60,6 +60,8 @@ type Opts = {
   placed?: boolean
   login?: { pieces: Array<{ stream: 'stdout' | 'stderr'; text: string }>; code?: number; gate?: Promise<void> }
   surface?: Surface
+  // What `$.ui.panes()` answers, read at each call (the pane holding the keyboard or not).
+  panes?: () => unknown[]
 }
 
 export async function world($: any, on: any, opts: Opts = {}) {
@@ -122,6 +124,7 @@ export async function world($: any, on: any, opts: Opts = {}) {
     return { value: undefined }
   })
   on('ui.focus', () => ({ value: {} }))
+  if (opts.panes) on('ui.panes', () => ({ value: opts.panes!() }))
   on('ui.copy', ($: any, e: any) => {
     copied.push(e.text)
     return { value: { isCopied: true } }

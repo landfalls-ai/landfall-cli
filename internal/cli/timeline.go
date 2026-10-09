@@ -225,6 +225,11 @@ func timelineRow(e foldedEvent) map[string]any {
 	if text == "" {
 		text = eventFallbackText(e.timelineEvent)
 	}
+	// A refused signal read carries the server's reason code ("no-live-grant")
+	// as its only text; that code is not a sentence a person should read.
+	if e.Type == "edge.signals.denied" {
+		text = "a signal read was refused"
+	}
 	who := narrate.EventActor(e.Payload)
 	if who == "" {
 		who = eventSource(e.timelineEvent)

@@ -113,11 +113,17 @@ export function badge() {
   return n > 0 ? n : null
 }
 
-// The newest rows of the unfiltered timeline, oldest first, for Home's Latest block.
+// The newest rows of the unfiltered timeline, oldest first, for Home's Latest block. Latest is
+// room news: rows the tab files under `other` (plumbing such as a refused signal read or a memory
+// run starting) are skipped, and only when nothing else exists are they shown.
 export function latestRows(n) {
   forRoom(currentRoom())
-  return tl.latest.slice(-n)
+  const news = tl.latest.filter((e) => e && e.kind !== 'other')
+  return (news.length > 0 ? news : tl.latest).slice(-n)
 }
+
+// How many unfiltered rows are kept for Latest: enough that dropping `other` still leaves three.
+const LATEST_KEPT = 12
 
 // The desktop's time slot: `00:00` and a cell, in cells (the time is proportional text off the terminal).
 export const TIME_SLOT = Math.ceil(textCells('00:00')) + 1
@@ -264,7 +270,7 @@ async function loadTimeline(io, more, live) {
     if (!more) {
       tl.seenSeq = seenSeq
       keep(lp, answer, startedAt)
-      if (kind === 'all') tl.latest = tl.events.slice(-5)
+      if (kind === 'all') tl.latest = tl.events.slice(-LATEST_KEPT)
     }
     if (!(live && tl.loaded)) {
       tl.hasMore = !!answer.hasMore
@@ -278,10 +284,10 @@ async function loadTimeline(io, more, live) {
   if (tl.again) await loadTimeline(io, false, true)
 }
 
-// loadLatest keeps Home's Latest block current while a chip filters the tab: the five newest
+// loadLatest keeps Home's Latest block current while a chip filters the tab: the newest
 // unfiltered rows, read on their own.
 async function loadLatest(io, r) {
-  const answer = await io.run(timelineArgs(r, 'all', undefined, 5), { timeoutMs: 30000 })
+  const answer = await io.run(timelineArgs(r, 'all', undefined, LATEST_KEPT), { timeoutMs: 30000 })
   if (answer.ok) tl.latest = (answer.events || []).slice().sort((x, y) => x.seq - y.seq)
 }
 

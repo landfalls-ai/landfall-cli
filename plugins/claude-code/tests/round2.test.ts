@@ -38,8 +38,8 @@ test('bug 2: off the terminal the label set is chosen by measured width and alwa
     expect(items).toHaveLength(9)
     expect(width).toBeLessThanOrEqual(cells)
   }
-  // Roomy: full names and every count, the Incidents count included.
-  expect(rowCells(130).items.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context 1', 'Wall', 'People 4', 'Timeline 3', 'Load balancers', 'Incidents 4', 'More'])
+  // Roomy: full names, and still only Vote carries a count.
+  expect(rowCells(130).items.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context', 'Wall', 'People', 'Timeline', 'Load balancers', 'Incidents', 'More'])
 })
 
 // Round 3, decision 1: the ladder, rung by rung (REVIEW.md round 2). A label is the full word or

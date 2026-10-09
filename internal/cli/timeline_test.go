@@ -142,3 +142,20 @@ func TestEventKindBuckets(t *testing.T) {
 		}
 	}
 }
+
+// A refused signal read must not show the server's reason code as its text.
+func TestTimelineRefusedSignalReadHasAPlainSentence(t *testing.T) {
+	f := newFakeLandfall(t)
+	f.serveEvents(eventsPath, []map[string]any{
+		{"seq": 0, "type": "edge.signals.denied", "actorType": "system", "payload": map[string]any{"reason": "no-live-grant", "source": "cloudwatch", "operation": "listLoadBalancers"}},
+	})
+	ans := roundTrip(t, RunTimeline(context.Background(), TimelineOptions{Before: -1, Limit: 50, Kind: "all"}, f.deps(true)))
+	rows := ans["events"].([]any)
+	if len(rows) != 1 {
+		t.Fatalf("answer: %v", ans)
+	}
+	row := rows[0].(map[string]any)
+	if row["text"] != "a signal read was refused" || row["kind"] != "other" || strings.Contains(row["text"].(string), "no-live-grant") {
+		t.Fatalf("row: %v", row)
+	}
+}

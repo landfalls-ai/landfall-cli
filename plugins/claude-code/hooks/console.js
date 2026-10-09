@@ -495,15 +495,15 @@ function homeFeedOf(ns) {
 export const LABELS = { home: 'Home', vote: 'Vote', context: 'Context', wall: 'Wall', people: 'People', timeline: 'Timeline', lb: 'Load balancers', incidents: 'Incidents', more: 'More' }
 
 // segmentLabels is the switcher's labels for a width (chosen from the width alone, so the row
-// never flips as counts come and go): the full set from 98 cells, else `LB` and no Incidents
-// count; an inactive count drops only when a two-digit one would overflow the row.
+// never flips as counts come and go): the full set from 98 cells, else `LB`. Only Vote keeps a
+// count (what is waiting on the person); no other segment shows one, on any surface.
 export function segmentLabels(tabs, active, counts, cells, rich = false) {
   if (rich) return richSegmentLabels(tabs, active, counts, cells)
   const full = cells >= FULL_CELLS
   const name = (t) => (t === 'lb' && !full ? 'LB' : LABELS[t])
   const countOf = (t) => {
     const n = counts[t]
-    if (t === 'incidents' && !full) return null
+    if (t !== 'vote') return null
     return typeof n === 'number' && n > 0 ? n : null
   }
   const width = (withCounts) =>
@@ -527,8 +527,8 @@ export function segmentLabels(tabs, active, counts, cells, rich = false) {
 // the first rung of a ladder whose row fits the pane's body columns (round 2 review, decision 1):
 //   - never an invented word: a label is the full word or the word cut to its start;
 //   - the active segment keeps its fill and its `▸` at every rung;
-//   - counts go first: below the full set the row draws Vote's count and no other, and Vote's
-//     count is reserved (one digit) in every fit, so the row never flips as a vote comes and goes;
+//   - only Vote has a count, and it is reserved (one digit) in every fit, so the row never flips
+//     as a vote comes and goes;
 //   - the estimate under-reads the real pane by about 4 percent (SWITCHER_SLACK, the capture where
 //     the fully shortened row filled all 613 px), so a rung fits when its estimate times that fits.
 // The full word is named in the pane's title (`Landfall · People`). The row never wraps.
@@ -543,9 +543,9 @@ const NAMES_B = { ...NAMES_DOCKED, context: 'Ctx' }
 const NAMES_C = { ...NAMES_B, timeline: 'Time' }
 const NAMES_D = { ...NAMES_C, incidents: 'Inc' }
 const NAMES_E = { ...NAMES_D, people: 'Ppl' }
-// The rung before A is the roomy one: full names and every count.
+// The rung before A is the roomy one: full names.
 export const RUNGS = [
-  { id: 'full', names: LABELS, all: true },
+  { id: 'full', names: LABELS },
   { id: 'A', names: NAMES_DOCKED },
   { id: 'B', names: NAMES_B },
   { id: 'C', names: NAMES_C },
@@ -556,7 +556,7 @@ function richSegmentLabels(tabs, active, counts, cells) {
   const build = (r, reserve) =>
     tabs.map((t) => {
       const n = counts[t]
-      let shown = typeof n === 'number' && n > 0 && (r.all || t === 'vote')
+      const shown = t === 'vote' && typeof n === 'number' && n > 0
       const count = shown ? ' ' + n : reserve && t === 'vote' ? ' 1' : ''
       return { id: t, label: r.names[t] + count, active: t === active, shown }
     })

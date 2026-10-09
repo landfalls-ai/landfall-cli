@@ -118,24 +118,29 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('the switcher label set comes from the width alone: LB and no Incidents count when docked', () => {
+test('the switcher label set comes from the width alone: LB when docked; only Vote carries a count', () => {
   const counts = { vote: 1, context: 2, people: 4, timeline: 3, incidents: 4 }
   const docked = segmentLabels(TABS, 'home', counts, 84)
-  expect(docked.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context 2', 'Wall', 'People 4', 'Timeline 3', 'LB', 'Incidents', 'More'])
+  expect(docked.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context', 'Wall', 'People', 'Timeline', 'LB', 'Incidents', 'More'])
   const full = segmentLabels(TABS, 'home', counts, 110)
-  expect(full.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context 2', 'Wall', 'People 4', 'Timeline 3', 'Load balancers', 'Incidents 4', 'More'])
+  expect(full.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context', 'Wall', 'People', 'Timeline', 'Load balancers', 'Incidents', 'More'])
+  // The active segment shows no count either, whichever tab it is.
+  for (const tab of TABS.filter((t) => t !== 'vote')) {
+    expect(segmentLabels(TABS, tab, counts, 110).filter((s) => s.id !== 'vote').some((s) => /\d/.test(s.label))).toBe(false)
+  }
   // With no counts at all the docked set is still docked: the row never flips.
   expect(segmentLabels(TABS, 'incidents', {}, 84).map((s) => s.label)).toContain('LB')
-  // A two-digit count overflows 84 cells: the inactive counts drop, the active one keeps its own.
+  // A two-digit count on another tab changes nothing; only Vote's own count is drawn.
   const busy = segmentLabels(TABS, 'timeline', { vote: 1, context: 2, people: 14, timeline: 23 }, 84)
-  expect(busy.map((s) => s.label)).toEqual(['Home', 'Vote', 'Context', 'Wall', 'People', 'Timeline 23', 'LB', 'Incidents', 'More'])
+  expect(busy.map((s) => s.label)).toEqual(['Home', 'Vote 1', 'Context', 'Wall', 'People', 'Timeline', 'LB', 'Incidents', 'More'])
 })
 
-test('the docked row with four one-digit counts is exactly 84 cells', () => {
+test('the docked row with Vote counted fits 84 cells', () => {
   const s = segmentLabels(TABS, 'home', { vote: 1, context: 1, people: 4, timeline: 3 }, 84)
   // Each segment pads one cell each side, 8 separators, 2 for the `▸`.
   const width = s.reduce((n, x) => n + x.label.length + 2, 0) + 8 + 2
-  expect(width).toBe(84)
+  expect(width).toBe(78)
+  expect(width).toBeLessThanOrEqual(84)
 })
 
 // ---------- §2.2 pinned: the console's own offset ----------
@@ -300,6 +305,19 @@ test('desktop: Home people rows clip a very long name, (you) kept', async ($, on
   expect(you.length).toBeLessThanOrEqual(28)
   expect(you).toContain('…')
   expect(words).toContain('collab-carol')
+})
+
+test('Home\'s Latest is room news: plumbing rows are skipped unless nothing else exists', async ($, on) => {
+  const ev = (seq: number, kind: string, text: string, who = 'Landfall') => ({ seq, at: '2026-10-08T16:0' + (seq % 10) + ':00Z', glyph: '·', kind, text, who })
+  const news = [ev(301, 'findings', 'origin pool is exhausted', 'bob'), ev(302, 'people', 'joined the room', 'carol'), ev(303, 'status', 'severity SEV2')]
+  const plumbing = [ev(304, 'other', 'a signal read was refused'), ev(305, 'other', 'memory extraction started')]
+  const w = await world($, on, { rooms: [roomOf()], answers: { ...ANSWERS, timeline: { ok: true, events: [...news, ...plumbing] } } })
+  await $.command.run({ command: 'landfall', args: '' })
+  await w.clock.settle()
+  const words = await texts(await $.ui.mount(consolePane('terminal', 60) as never))
+  expect(words.some((t) => t.includes('origin pool is exhausted'))).toBe(true)
+  expect(words.some((t) => t.includes('severity SEV2'))).toBe(true)
+  expect(words.some((t) => t.includes('a signal read was refused') || t.includes('memory extraction started') || t.includes('no-live-grant'))).toBe(false)
 })
 
 test('Home with no room points at Incidents above', async ($, on) => {

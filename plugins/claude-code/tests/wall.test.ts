@@ -3,6 +3,7 @@ import { Drawn, fakeIo, kitFor, openConsoleOn, setRooms, settle } from './_tab'
 import { consoleState } from '../hooks/core.js'
 import * as wallTab from '../hooks/components/wall.js'
 import * as rosterTab from '../hooks/components/roster.js'
+import { bandNews } from '../hooks/components/room.js'
 import { labelIn, tonedIn } from './_label'
 
 // `landfall wall` as the Go CLI prints it (internal/cli/wall.go
@@ -783,7 +784,7 @@ test('a new widget is told once per 10 s, and the wall hint offers w for a minut
   io.clock.t += 5000
   await wallTab.tick(io as never, io.clock.t)
   expect(io.toasts).toEqual(['New on the wall: p99 latency · by dana', 'New on the wall: Replica lag'])
-  expect(wallTab.wallHint(io.clock.t)).toEqual({ title: 'Replica lag' })
+  expect(wallTab.wallHint(io.clock.t)).toEqual({ title: 'Replica lag', words: 'New on the wall: Replica lag' })
   // w opens the console on the Wall, and spends the hint.
   await wallTab.openWall(io as never)
   expect(io.opened).toEqual(['landfall'])
@@ -791,4 +792,186 @@ test('a new widget is told once per 10 s, and the wall hint offers w for a minut
   expect((io.openedWith[0] as any).focus).toBe(true)
   expect(consoleState.tab).toBe('wall')
   expect(wallTab.wallHint(io.clock.t)).toBeNull()
+})
+
+// ---------------------------------------------------------------------------
+// Edge widget fixes (live demo, 2026-10-09).
+
+const statW = (id: string, title: string, seq: number, extra: Record<string, unknown> = {}) => ({ id, type: 'stat', title, value: String(seq), seq, ...extra })
+const feedNewest = async (io: ReturnType<typeof fakeIo>, newest: Record<string, unknown>, over: Record<string, unknown> = {}) => {
+  const rooms = [{ ...ROOM, ...over, widgetSeq: newest.seq, newestWidget: { type: 'stat', ...newest } }]
+  setRooms(rooms)
+  wallTab.onSnapshot(io as never, { line: '', rooms } as never, null as never)
+  await settle()
+}
+
+test('the newest widget stays in the six the wall draws, and n walks to it', async () => {
+  const eight = { ok: true, sharedBy: 'carol', widgets: Array.from({ length: 8 }, (_, i) => statW('e' + i, 'Stat ' + i, 100 + i)) }
+  for (const surface of SURFACES) {
+    begin()
+    const io = fakeIo(() => eight)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw(surface, io)
+    // Stat 6 was cut; the newest, Stat 7, takes the sixth place, the arrangement holds for the rest.
+    expect(pane.all({ type: 'Button', text: /^(▸ )?Stat \d$/ }).map((b) => b.props.label.replace('▸ ', ''))).toEqual(['Stat 0', 'Stat 1', 'Stat 2', 'Stat 3', 'Stat 4', 'Stat 7'])
+    expect(pane.find({ type: 'Text', text: 'Showing 6 of 8 widgets. Open the war room in the browser for the rest.' })).toBeDefined()
+    const keys = new Drawn(wallTab.keys(kitFor(surface), io as never))
+    for (let i = 0; i < 5; i++) await keys.press('wall-next')
+    expect((await draw(surface, io)).find({ type: 'Button', text: '▸ Stat 7' })).toBeDefined()
+  }
+  // An older CLI puts no seq on a widget: the first six, as before.
+  begin()
+  const old = { ...eight, widgets: eight.widgets.map(({ seq, ...w }) => w) }
+  const io = fakeIo(() => old)
+  wallTab.warm(io as never)
+  await settle()
+  expect((await draw('terminal', io)).all({ type: 'Button', text: /^(▸ )?Stat \d$/ }).map((b) => b.props.label.replace('▸ ', ''))).toEqual(['Stat 0', 'Stat 1', 'Stat 2', 'Stat 3', 'Stat 4', 'Stat 5'])
+})
+
+test('a terminal pane too short for every card still draws the newest', async () => {
+  const chart = (id: string, title: string, seq: number) => ({ id, type: 'chart', title, seq, series: [{ label: 's', points: [[1, 1], [2, 2], [3, 1]] }] })
+  const charts = { ok: true, sharedBy: 'carol', widgets: [chart('a', 'Chart A', 10), chart('b', 'Chart B', 20), chart('c', 'Chart C', 30)] }
+  try {
+    begin()
+    consoleState.bodyRows = 22
+    const io = fakeIo(() => charts)
+    wallTab.warm(io as never)
+    await settle()
+    const pane = await draw('terminal', io)
+    const names = pane.all({ type: 'Button', text: /^(▸ )?Chart \w$/ }).map((b) => b.props.label.replace('▸ ', ''))
+    // Not all three fit; the newest, Chart C, is drawn, and what fits before it is the arrangement's.
+    expect(names).toContain('Chart C')
+    expect(names.length).toBeLessThan(3)
+    expect(names[0]).toBe('Chart A')
+    const more = pane.find({ type: 'Text', text: /^Showing \d of 3 widgets/ })
+    expect(more).toBeDefined()
+    // n walks what is drawn, the newest included.
+    const keys = new Drawn(wallTab.keys(kitFor('terminal'), io as never))
+    expect(keys.find({ type: 'Button', key: 'wall-next' })).toBeDefined()
+  } finally {
+    consoleState.bodyRows = 0
+  }
+})
+
+test('w opens the console on the widget the band offered', async () => {
+  const six = { ok: true, sharedBy: 'carol', widgets: Array.from({ length: 4 }, (_, i) => statW('s' + i, 'Stat ' + i, 100 + i)) }
+  begin()
+  const io = fakeIo(() => six)
+  wallTab.warm(io as never)
+  await settle()
+  await feedNewest(io, { seq: 100, title: 'Stat 0' })
+  await feedNewest(io, { seq: 102, title: 'Stat 2', by: 'dana' })
+  await wallTab.tick(io as never, io.clock.t)
+  await wallTab.openWall(io as never)
+  const pane = await draw('terminal', io)
+  expect(pane.find({ type: 'Button', text: '▸ Stat 2' })).toBeDefined()
+  // Spent: the person moves on from there.
+  const keys = new Drawn(wallTab.keys(kitFor('terminal'), io as never))
+  await keys.press('wall-next')
+  expect((await draw('terminal', io)).find({ type: 'Button', text: '▸ Stat 3' })).toBeDefined()
+})
+
+test('a widget on a person\'s own dashboard is told as theirs, and w opens their dashboard on it', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  wallTab.warm(io as never)
+  await settle()
+  const mineW = { seq: 205, title: 'Pool connections by zone', by: 'alice', scope: 'person', humanActorId: 'h-alice' }
+  await feedNewest(io, { seq: 190, title: 'old', by: 'carol' }, { status: WITH_PEOPLE.status })
+  await feedNewest(io, mineW, { status: WITH_PEOPLE.status })
+  await wallTab.tick(io as never, io.clock.t)
+  expect(io.toasts).toEqual(["New in alice's investigation: Pool connections by zone · by alice"])
+  expect(wallTab.wallHint(io.clock.t)).toEqual({ title: 'Pool connections by zone', words: "New in alice's investigation: Pool connections by zone · by alice" })
+  // The band says the same, not "New on the wall".
+  const band = await bandNews(io as never, {} as never, kitFor('terminal', 120))
+  expect(JSON.stringify(band)).toContain("New in alice's investigation: Pool connections by zone · by alice")
+  expect(JSON.stringify(band)).not.toContain('New on the wall')
+  await wallTab.openWall(io as never)
+  let pane = await draw('terminal', io)
+  await settle()
+  pane = await draw('terminal', io)
+  expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168', '--person', 'h-alice'])
+  expect(pane.find({ type: 'Button', text: '▸ alice 2' })).toBeDefined()
+  expect(pane.find({ type: 'Button', text: '▸ Pool connections by zone' })).toBeDefined()
+})
+
+test('a widget on your own dashboard says your investigation, and w opens mine', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  wallTab.warm(io as never)
+  await settle()
+  await feedNewest(io, { seq: 190, title: 'old' }, { status: WITH_PEOPLE.status })
+  await feedNewest(io, { seq: 210, title: 'Second', by: 'dave', scope: 'person', humanActorId: 'h-dave' }, { status: WITH_PEOPLE.status })
+  await wallTab.tick(io as never, io.clock.t)
+  expect(io.toasts).toEqual(['New in your investigation: Second · by dave'])
+  await wallTab.openWall(io as never)
+  await draw('terminal', io)
+  await settle()
+  const pane = await draw('terminal', io)
+  expect(io.runs.at(-1)).toEqual(['wall', '--host', 'claude-code', '--room', 'k168', '--person', 'me'])
+  expect(pane.find({ type: 'Button', text: '▸ mine 2' })).toBeDefined()
+  expect(pane.find({ type: 'Button', text: '▸ Second' })).toBeDefined()
+})
+
+test('a shared widget opened from the band brings the wall back from a person\'s dashboard', async () => {
+  begin([WITH_PEOPLE])
+  const io = fakeIo(personAnswers())
+  wallTab.warm(io as never)
+  await settle()
+  let pane = await draw('terminal', io)
+  await pane.press('sel-h-alice')
+  await settle()
+  await feedNewest(io, { seq: 190, title: 'old' }, { status: WITH_PEOPLE.status })
+  await feedNewest(io, { seq: 300, title: 'Healthy origins', by: 'dana' }, { status: WITH_PEOPLE.status })
+  await wallTab.tick(io as never, io.clock.t)
+  expect(io.toasts.at(-1)).toBe('New on the wall: Healthy origins · by dana')
+  await wallTab.openWall(io as never)
+  pane = await draw('terminal', io)
+  expect(pane.find({ type: 'Button', text: '▸ Shared wall' })).toBeDefined()
+})
+
+// The dashboard picker: names share a prefix, and clipping never makes two chips alike.
+
+test('sharedPrefix drops what every name starts with, up to a boundary', () => {
+  expect(wallTab.sharedPrefix(['collab-alice', 'collab-bob', 'collab-carol'])).toBe('collab-')
+  expect(wallTab.sharedPrefix(['qa.team.ann', 'qa.team.raj'])).toBe('qa.team.')
+  expect(wallTab.sharedPrefix(['team a', 'team b'])).toBe('team ')
+  // Not on a boundary, a single name, or a name that would be left empty: nothing.
+  expect(wallTab.sharedPrefix(['alexander', 'alexandra'])).toBe('')
+  expect(wallTab.sharedPrefix(['collab-alice'])).toBe('')
+  expect(wallTab.sharedPrefix(['collab-', 'collab-bob'])).toBe('')
+  expect(wallTab.sharedPrefix(['alice', 'bob'])).toBe('')
+})
+
+test('distinctClips cuts the end, and tells apart names the cut leaves alike', () => {
+  expect(wallTab.distinctClips(['alice', 'bartholomew'], 8)).toEqual(['alice', 'barthol…'])
+  const out = wallTab.distinctClips(['alexander', 'alexandra', 'alexandre'], 8)
+  expect(new Set(out).size).toBe(3)
+  expect(out.every((l) => l.length <= 8)).toBe(true)
+  expect(out[0].startsWith('alex')).toBe(true)
+})
+
+test('people named collab-alice, collab-bob and collab-carol read as alice, bob and carol, never collab-… alike', async () => {
+  const names = ['collab-alice', 'collab-bob', 'collab-carol']
+  const people = [DAVE, ...names.map((n, i) => ({ name: n, here: true, humanActorId: 'h-' + i }))]
+  const rows = names.map((n, i) => ({ humanActorId: 'h-' + i, displayName: n, widgets: i === 0 ? 2 : i === 2 ? 1 : 0 }))
+  for (const surface of SURFACES) {
+    begin([{ ...ROOM, status: { ...ROOM.status, people } }])
+    const io = fakeIo(() => ({ ...SHARED, people: rows }))
+    wallTab.warm(io as never)
+    await settle()
+    // Wide: whole names. Narrow: the shared prefix goes, then counts if they must.
+    const wide = await draw(surface, io, null, 120)
+    expect(new Drawn(wide.find({ key: 'wall-sel' })).all({ type: 'Button' }).map((c) => c.props.label.trim())).toContain('collab-alice 2')
+    for (const width of [48, 40, 30]) {
+      const pane = await draw(surface, io, null, width)
+      const labels = new Drawn(pane.find({ key: 'wall-sel' })).all({ type: 'Button' }).map((c) => c.props.label.trim().replace(/^▸ /, ''))
+      expect(new Set(labels).size).toBe(labels.length)
+      expect(labels.some((l) => l.startsWith('collab'))).toBe(false)
+    }
+    const pane = await draw(surface, io, null, 48)
+    const labels = new Drawn(pane.find({ key: 'wall-sel' })).all({ type: 'Button' }).map((c) => c.props.label.trim())
+    expect(labels).toEqual(['▸ Shared wall', 'alice 2', 'bob', 'carol 1', 'mine'])
+  }
 })

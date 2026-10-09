@@ -85,9 +85,10 @@ export function tab(k, io, nowMs, args) {
     if (!r) rows.push(Text({ key: 'inc-again', dimColor: true, children: ['This list reads again every 30 s.'] }))
   }
 
-  list.forEach((inc, i) => {
-    if (k.terminal) rows.push(...termRow(k, io, inc, i === 0))
-    else rows.push(card(k, io, inc, focused && focused.incidentId === inc.incidentId))
+  list.forEach((inc) => {
+    const isFocused = !!focused && focused.incidentId === inc.incidentId
+    if (k.terminal) rows.push(...termRow(k, io, inc, isFocused))
+    else rows.push(card(k, io, inc, isFocused))
   })
   if (answer && answer.ok && answer.truncated) rows.push(Text({ key: 'inc-cut', dimColor: true, children: [TRUNCATED] }))
   if (list.length > 0) {
@@ -179,7 +180,7 @@ function card(k, io, inc, focused) {
       : null
   const actions = k.row(
     [
-      k.button({ key: 'inc-' + id, label: joining ? 'Joining…' : isMine(inc) ? 'Open the room' : 'Join', primary: !isMine(inc), onPress: () => join(io, inc) }),
+      k.button({ key: 'inc-' + id, label: joining ? 'Joining…' : isMine(inc) ? 'Open the room' : 'Join', primary: !isMine(inc), autoFocus: focused, onPress: () => join(io, inc) }),
       k.button({ key: 'brief-' + id, label: 'Brief only', ...(focused ? { hotkey: 'b' } : {}), onPress: () => brief(io, inc) }),
       k.button({ key: 'open-' + id, label: 'Open in browser', ...(focused ? { hotkey: 'o' } : {}), onPress: () => openIt(io, inc) }),
     ],

@@ -170,7 +170,7 @@ export function tab(k, io, nowMs, args) {
     // event's text starts at the same x (round 2 review, issue 13).
     const glyph = k.terminal ? mark : Box({ key: 'gs', width: 2, flexShrink: 0, justifyContent: 'center', children: [mark] })
     const label = clipText(eventWords(ev), space)
-    const press = k.els.Button({ key: 'ev-' + ev.seq, label, plain: true, onPress: () => quote(io, ev) })
+    const press = k.els.Button({ key: 'ev-' + ev.seq, label, plain: true, onPress: () => quote(io, ev), ...(ev === tl.events[0] ? { autoFocus: true } : {}) })
     // The time is proportional text, so its width moves with its digits and so did the text after it
     // (1447 to 1456 px, round 3 review, issue 2): off the terminal it sits in a box of one fixed width
     // (`00:00` and a cell), then the glyph slot, then the text in the box that takes the rest.

@@ -711,7 +711,7 @@ export function artifactRow(k, a, opts = {}) {
       key,
       flexDirection: 'row',
       columnGap: 1,
-      children: [k.els.Button({ key, label: text, plain: true, onPress: press }), busy ? null : Text({ key: key + '-m', dimColor: true, wrap: 'truncate-end', children: [meta] })].filter(Boolean),
+      children: [k.els.Button({ key, label: text, plain: true, onPress: press, ...(opts.selected ? { autoFocus: true } : {}) }), busy ? null : Text({ key: key + '-m', dimColor: true, wrap: 'truncate-end', children: [meta] })].filter(Boolean),
     })
   }
   // Two lines on every row, so the button beside it centres on both and every row is as tall as
@@ -734,7 +734,7 @@ export function artifactRow(k, a, opts = {}) {
       Box({ key: key + '-mr', paddingLeft: 2, children: [Text({ key: key + '-m', dimColor: true, wrap: 'truncate-end', children: [meta] })] }),
     ],
   })
-  const button = k.button({ key: 'art-add-' + a.artifactId, label: busy ? 'adding…' : 'Add to my context', onPress: press })
+  const button = k.button({ key: 'art-add-' + a.artifactId, label: busy ? 'adding…' : 'Add to my context', autoFocus: !!opts.selected, onPress: press })
   return Box({ key, flexDirection: 'row', columnGap: 1, alignItems: 'center', children: [head, Box({ key: key + '-bb', flexShrink: 0, children: [button] })] })
 }
 

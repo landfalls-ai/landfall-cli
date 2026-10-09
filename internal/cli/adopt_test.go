@@ -311,3 +311,37 @@ func TestALinkJoinIsNotOfferedToANewSession(t *testing.T) {
 		t.Fatalf("the second session joined:\n%s", b.errBuf.String())
 	}
 }
+
+// The person's agent has a custom label (LANDFALL_AGENT_LABEL). Adopting the
+// room the person put this folder in from the mod must still end in the SAME
+// seat the terminal join created: one /edge/join, one presence. A second seat
+// under the custom label left the first one idle, and it was reaped 60 s later
+// as the person leaving the room, while the console's reads still named it.
+func TestAdoptingWithACustomLabelJoinsTheTerminalsSeat(t *testing.T) {
+	t.Setenv("LANDFALL_AGENT_LABEL", "")
+	ws := liveWorkspace(t, "claude-code")
+	joins := startTestDaemon(t, ws)
+	f := modLandfall(t)
+	var serveRedeems int32
+	fe := launchServe(t, ws, true, &serveRedeems)
+	fe.initialize(t, "claude-code")
+	joinFromMod(t, f, ws) // the mod's picker: no custom label in its environment
+	t.Setenv("LANDFALL_AGENT_LABEL", "alice-claude-code")
+
+	brief := fe.callTool(t, 2, "get_brief", nil) // the first call adopts
+	if brief["isError"] == true || !strings.Contains(resultText(brief), "Acme 7") {
+		t.Fatalf("get_brief after adoption: %v", brief)
+	}
+	labels, _ := joins.snapshot()
+	if strings.Join(labels, ",") != "Claude Code" {
+		t.Fatalf("one /edge/join, the terminal's seat, got %v", labels)
+	}
+	res, err := daemon.Send(hooks.DaemonSocketPath(ws), daemon.Request{Op: "rooms"}, time.Second)
+	if err != nil || len(res.Rooms) != 1 || len(res.Rooms[0].Seats) != 1 || res.Rooms[0].Seats[0].Label != "Claude Code" {
+		t.Fatalf("one seat in the room: %v %+v", err, res)
+	}
+	got := agentReaders(t, ws)
+	if len(got) != 1 || got[0].Seat != "Claude Code" {
+		t.Fatalf("the agent reader speaks for the terminal's seat: %+v", got)
+	}
+}

@@ -408,19 +408,26 @@ func (d *Daemon) adoptableRoom(workspaceKey, harness string) (*Room, client.Conf
 	name := TerminalReaderNameFor(workspaceKey, harness)
 	var best *Room
 	var bestAt time.Time
+	var bestSeat string
 	for _, room := range d.rooms() {
 		rd, ok := room.Reader(name)
 		if !ok || rd.Kind != KindTerminal || !rd.PersonJoined {
 			continue
 		}
 		if best == nil || rd.LastSeenAt.After(bestAt) {
-			best, bestAt = room, rd.LastSeenAt
+			best, bestAt, bestSeat = room, rd.LastSeenAt, rd.Seat
 		}
 	}
 	if best == nil {
 		return nil, client.Config{}
 	}
-	return best, best.SessionConfig()
+	// The offer names the seat the terminal join holds, so the adopting agent
+	// joins that seat and not a second one under its own label (seats are
+	// keyed by label). Empty when the reader predates seats: the agent then
+	// uses its own label, as before.
+	cfg := best.SessionConfig()
+	cfg.AgentLabel = bestSeat
+	return best, cfg
 }
 
 // adoptable answers `adoptable`: the room on offer to an agent of this

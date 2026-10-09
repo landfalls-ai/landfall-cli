@@ -213,7 +213,9 @@ func TestARoomIsOnOfferOnlyAfterThePersonJoinsFromTheMod(t *testing.T) {
 	attachFromMod(t, d, "ws-mod", "claude-code")
 	r := d.handler.Handle(ctx, Request{Op: "adoptable", WorkspaceKey: "ws-mod", Harness: "claude-code"})
 	// The room was opened by the link join above, so its session is that one.
-	if !r.OK || r.Room == nil || r.Room.Token != "t" || r.Room.IncidentID != "inc-1" || r.Room.AgentLabel != "" || r.RoomKey == "" {
+	// The offer names the seat the person's terminal join holds, so the
+	// adopting agent joins it instead of making a second one.
+	if !r.OK || r.Room == nil || r.Room.Token != "t" || r.Room.IncidentID != "inc-1" || r.Room.AgentLabel != "Claude Code" || r.RoomKey == "" {
 		t.Fatalf("the person's join is on offer with the room's own session: %+v", r)
 	}
 	for _, other := range []Request{

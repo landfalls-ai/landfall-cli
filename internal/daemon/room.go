@@ -1149,13 +1149,45 @@ func (r *Room) Client() session.EdgeClient {
 	return r.client
 }
 
-// ClientAndInstance is Client plus the primary seat's agent instance id, read
-// together: a `query` answers both, so `landfall chart` can queue what it built
-// under the seat the room knows.
+// ClientAndInstance is the client and agent instance id a console read
+// (`query`: landfall lb, chart, ...) goes out under, read together so
+// `landfall chart` can queue what it built under the seat the room knows.
+//
+// It prefers a LIVE seat: the server grants a signal read per tenant,
+// incident, person and agent instance, so a read under a seat nobody is in
+// any more is refused (`no-live-grant`) even though a sibling seat of the same
+// person is in the room. The primary seat is the answer while it is in use or
+// when no seat is (a room with only a terminal reader); otherwise the first
+// seat, by label, with a connected agent reader.
 func (r *Room) ClientAndInstance() (session.EdgeClient, string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if s := r.liveSeatLocked(); s != nil {
+		return s.client, s.InstanceID
+	}
 	return r.client, r.AgentInstanceID
+}
+
+// liveSeatLocked is the seat a read should use when the primary is not in use
+// but another seat is; nil means "use the primary".
+func (r *Room) liveSeatLocked() *Seat {
+	inUse := map[string]bool{}
+	for _, rd := range r.readers {
+		if rd.Connected && rd.Kind == KindAgent {
+			if s := r.seatForLocked(rd); s != nil {
+				inUse[s.Label] = true
+			}
+		}
+	}
+	if len(inUse) == 0 || inUse[r.primary] {
+		return nil
+	}
+	labels := make([]string, 0, len(inUse))
+	for l := range inUse {
+		labels = append(labels, l)
+	}
+	sort.Strings(labels)
+	return r.seats[labels[0]]
 }
 
 // Close stops presence and live watch and leaves the room.

@@ -17,7 +17,12 @@ package cli
 //     the daemon exactly as a link join does after its redeem: the session's
 //     client factory attaches an AGENT reader for this process, which
 //     re-uses the seat the daemon already holds for this harness (EnsureSeat),
-//     so there is no second /edge/join and no second redeem;
+//     so there is no second /edge/join and no second redeem. The offer names
+//     that seat's label, and the attach uses it even when the person's agent
+//     has a custom LANDFALL_AGENT_LABEL: seats are keyed by label, so any
+//     other label would be a second seat, and the first (terminal-only) seat
+//     would be reaped 60 s later and announced to the room as the person
+//     leaving, while the console's reads still named it;
 //  2. asks once more (`adoptable`) before any tool call while it is still in
 //     no room, in case the connection above was down (a daemon restart).
 //     Asking costs one local socket round trip and only happens while the
@@ -104,6 +109,9 @@ func (a *adopter) adoptLocked(ctx context.Context, cfg client.Config) bool {
 	if a.sess.Client() != nil || a.pending() {
 		return false
 	}
+	// Join under the seat the person's terminal join holds (cfg.AgentLabel on
+	// an offer), never the agent's own label: see frontEnd.seatLabel.
+	defer a.fe.pinSeat(cfg.AgentLabel)()
 	jctx, cancel := context.WithTimeout(ctx, daemon.AttachTimeout)
 	defer cancel()
 	joined, err := a.sess.AdoptRoom(jctx, cfg)

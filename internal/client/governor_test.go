@@ -165,8 +165,10 @@ func TestGovernorsAreIsolatedPerHost(t *testing.T) {
 		_ = res.Body.Close()
 		return res.StatusCode
 	}
-	if get(a.URL) != 429 || get(a.URL) != 429 {
-		t.Fatal("host A should be refusing")
+	for i := 0; i < 2; i++ {
+		if get(a.URL) != 429 {
+			t.Fatal("host A should be refusing")
+		}
 	}
 	if get(b.URL) != 200 {
 		t.Fatal("host B must be unaffected by host A's cool-down")

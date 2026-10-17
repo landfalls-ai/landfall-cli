@@ -55,8 +55,10 @@ type Client struct {
 // same client.
 const RequestTimeout = 60 * time.Second
 
-// defaultHTTP is the transport a client gets when the caller supplies none.
-var defaultHTTP = &http.Client{Timeout: RequestTimeout}
+// defaultHTTP is the transport a client gets when the caller supplies none:
+// bounded by RequestTimeout, and governed (governor.go) so a 429 from the edge
+// slows every request this process makes instead of being retried at full rate.
+var defaultHTTP Doer = &governedDoer{inner: &http.Client{Timeout: RequestTimeout}, g: processGovernor}
 
 // New builds a client. A nil Doer falls back to an http.Client bounded by
 // RequestTimeout.

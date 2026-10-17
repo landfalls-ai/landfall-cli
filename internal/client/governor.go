@@ -31,8 +31,8 @@ import (
 // ends it. Callers need no change: they already treat a 429 as "not now"
 // (see Refusal), and the one the governor makes up is indistinguishable.
 //
-// One governor serves the whole process because the allowance is per address,
-// not per room or per session.
+// One governor per edge host, shared by the whole process, because the
+// allowance is per address and host, not per room or per session.
 const (
 	govBase = 2 * time.Second
 	govMax  = 30 * time.Second
@@ -90,18 +90,41 @@ func (g *governor) ok() {
 	g.until = time.Time{}
 }
 
-// processGovernor is shared by every client this process builds with the
-// default transport.
-var processGovernor = newGovernor()
+// governors holds one governor per edge host, so a refusal from one Landfall
+// never slows requests to another (and a test server never slows the next
+// test's).
+type governors struct {
+	mu     sync.Mutex
+	byHost map[string]*governor
+}
 
-// governedDoer wraps a transport with the governor.
+func (gs *governors) forHost(host string) *governor {
+	gs.mu.Lock()
+	defer gs.mu.Unlock()
+	if gs.byHost == nil {
+		gs.byHost = map[string]*governor{}
+	}
+	g, ok := gs.byHost[host]
+	if !ok {
+		g = newGovernor()
+		gs.byHost[host] = g
+	}
+	return g
+}
+
+// processGovernors is shared by every client this process builds with the
+// default transport.
+var processGovernors = &governors{}
+
+// governedDoer wraps a transport with a per-host governor.
 type governedDoer struct {
 	inner Doer
-	g     *governor
+	gs    *governors
 }
 
 func (d *governedDoer) Do(req *http.Request) (*http.Response, error) {
-	if left := d.g.cooldown(); left > 0 {
+	g := d.gs.forHost(req.URL.Host)
+	if left := g.cooldown(); left > 0 {
 		return localRefusal(req, left), nil
 	}
 	res, err := d.inner.Do(req)
@@ -109,9 +132,9 @@ func (d *governedDoer) Do(req *http.Request) (*http.Response, error) {
 		return res, err
 	}
 	if res.StatusCode == http.StatusTooManyRequests {
-		d.g.refused(parseRetryAfter(res.Header.Get("Retry-After")))
+		g.refused(parseRetryAfter(res.Header.Get("Retry-After")))
 	} else {
-		d.g.ok()
+		g.ok()
 	}
 	return res, nil
 }

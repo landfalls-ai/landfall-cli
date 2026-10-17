@@ -78,7 +78,9 @@ func TestGovernedDoerStopsSendingAfter429AndResumesAfterCooldown(t *testing.T) {
 	defer srv.Close()
 
 	g, c := testGov()
-	d := &governedDoer{inner: srv.Client(), g: g}
+	gs := &governors{byHost: map[string]*governor{}}
+	d := &governedDoer{inner: srv.Client(), gs: gs}
+	gs.byHost[strings.TrimPrefix(srv.URL, "http://")] = g
 	do := func() *http.Response {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 		res, err := d.Do(req)
@@ -138,3 +140,38 @@ func (a *atomic32) set(b bool) {
 	}
 }
 func (a *atomic32) get() bool { return atomic.LoadInt32(&a.v) == 1 }
+
+func TestGovernorsAreIsolatedPerHost(t *testing.T) {
+	// A refusal from one Landfall (or one test server) must not slow another.
+	var refusing, fine int32
+	a := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&refusing, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	defer a.Close()
+	b := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&fine, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer b.Close()
+
+	d := &governedDoer{inner: http.DefaultClient, gs: &governors{}}
+	get := func(url string) int {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		res, err := d.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = res.Body.Close()
+		return res.StatusCode
+	}
+	if get(a.URL) != 429 || get(a.URL) != 429 {
+		t.Fatal("host A should be refusing")
+	}
+	if get(b.URL) != 200 {
+		t.Fatal("host B must be unaffected by host A's cool-down")
+	}
+	if atomic.LoadInt32(&refusing) != 1 {
+		t.Fatalf("host A saw %d requests, want 1", atomic.LoadInt32(&refusing))
+	}
+}

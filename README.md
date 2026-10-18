@@ -642,7 +642,7 @@ landfall hooks policy [--init]                         # print (or scaffold) the
 landfall whoami [--json]                               # are you signed in, to which organization
 landfall login --json                                  # sign in; JSON lines for the Claude Code mod
 landfall join --incident <incidentId>                  # join a room picked from the list (no link)
-landfall incidents [--all]                             # open incidents, your rooms first (JSON)
+landfall incidents [--status open|closed|all] [--q "<text>"]   # incidents, open by default, your rooms first (JSON)
 landfall brief                                         # the room's shared context (JSON)
 landfall artifacts                                     # files shared in the room (JSON)
 landfall artifact <id> [--max-chars <n>] [--bytes]     # read one shared file (JSON)

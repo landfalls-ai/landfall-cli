@@ -78,8 +78,10 @@ Commands:
                                                           network call
   login --json                                           sign in, printing the sign-in URL and the outcome as
                                                           JSON lines (used by the Claude Code mod)
-  incidents [--all]                                      open incidents, your rooms first (--all adds those resolved
-                                                          in the last 24h); one JSON line
+  incidents [--status open|closed|all] [--q "<text>"]    incidents, your rooms first; open ones unless --status says
+                                                          otherwise (--closed and --all are shorthands); --q keeps
+                                                          those whose title has the text, or whose number it is;
+                                                          one JSON line
   brief [--room <room>]                                  the room's shared context (established, open, who is
                                                           here, scope, focus); one JSON line
   artifacts [--room <room>]                              the files shared in the room; one JSON line

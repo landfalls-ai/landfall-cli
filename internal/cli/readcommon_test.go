@@ -259,6 +259,9 @@ func TestReadCommandsAnswerOneJSONLineAndExitZero(t *testing.T) {
 
 	for _, args := range [][]string{
 		{"incidents", "--all", "--host", "claude-code"},
+		{"incidents", "--status", "closed", "--q", "dns", "--host", "claude-code"},
+		{"incidents", "--closed", "--all"},
+		{"incidents", "--status", "pending"},
 		{"timeline", "--room", "rk1", "--kind", "findings", "--limit", "5", "--surprise"},
 		{"wall", "--room", "rk1"},
 		{"lb", "--minutes", "30"},

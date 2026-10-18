@@ -103,9 +103,25 @@ type IncidentPage struct {
 	NextCursor *string           `json:"nextCursor"`
 }
 
-// ListIncidents reads one page of the organization's incidents. limit is
-// clamped to the route's 1..200.
-func (o *OrgReader) ListIncidents(ctx context.Context, limit int, cursor string) (*IncidentPage, error) {
+// IncidentListQuery is one read of GET /o/:slug/incidents.
+type IncidentListQuery struct {
+	// Limit is clamped to the route's 1..200.
+	Limit int
+	// Cursor is the previous page's nextCursor, or "" for the first page.
+	Cursor string
+	// Status is "open", "closed" or "all". "" sends nothing, and the server
+	// then answers as if it were "all". A server that predates the parameter
+	// ignores it and answers every incident, so a caller filters again.
+	Status string
+	// Q is search text: a title, or an incident number when it is all digits
+	// (the route allows 120 characters). "" sends nothing.
+	Q string
+}
+
+// ListIncidents reads one page of the organization's incidents, newest number
+// first, filtered by the server when the query asks it to.
+func (o *OrgReader) ListIncidents(ctx context.Context, q IncidentListQuery) (*IncidentPage, error) {
+	limit := q.Limit
 	if limit < 1 {
 		limit = 1
 	}
@@ -113,8 +129,14 @@ func (o *OrgReader) ListIncidents(ctx context.Context, limit int, cursor string)
 		limit = 200
 	}
 	path := "/incidents?limit=" + strconv.Itoa(limit)
-	if cursor != "" {
-		path += "&cursor=" + encodeURIComponent(cursor)
+	if q.Cursor != "" {
+		path += "&cursor=" + encodeURIComponent(q.Cursor)
+	}
+	if q.Status != "" {
+		path += "&status=" + encodeURIComponent(q.Status)
+	}
+	if q.Q != "" {
+		path += "&q=" + encodeURIComponent(q.Q)
 	}
 	var page IncidentPage
 	if err := o.do(ctx, http.MethodGet, path, nil, &page); err != nil {

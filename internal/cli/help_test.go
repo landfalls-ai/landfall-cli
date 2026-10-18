@@ -101,7 +101,7 @@ func TestHelpListsTheConsoleCommands(t *testing.T) {
 		"join --incident <incidentId>",
 		"whoami [--json]",
 		"login --json",
-		"incidents [--all]",
+		"incidents [--status open|closed|all]",
 		"brief [--room <room>]",
 		"artifacts [--room <room>]",
 		"artifact <id> [--max-chars <n>] [--bytes]",

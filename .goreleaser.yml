@@ -105,9 +105,19 @@ homebrew_casks:
     # any time -- the durable fix is real code signing + notarization, which
     # needs a paid Apple Developer account. Tracked as a follow-up rather than
     # silently accepted as permanent.
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/landfall"]
-          end
+    #
+    # Written as a declarative `postflight_steps` stanza, not goreleaser's
+    # `hooks.post.install` (which emits a Ruby `postflight do` block).
+    # Homebrew 7 deprecated Ruby flight blocks: every `brew info` and
+    # `brew install` of v0.10.6 printed "Calling `postflight` is deprecated",
+    # and official taps already reject them. `{{staged_path}}` is Homebrew's
+    # own install-time token; the outer {{ "..." }} only keeps goreleaser's
+    # template engine from reading it. Verified 2026-10-19 on Homebrew 7.0.9
+    # by installing the cask with and without this stanza: without it the
+    # staged binary keeps com.apple.quarantine, with it the flag is gone.
+    custom_block: |
+      postflight_steps do
+        on_macos do
+          run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{ "{{staged_path}}" }}/landfall"]
+        end
+      end

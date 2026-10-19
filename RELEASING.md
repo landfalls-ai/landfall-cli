@@ -60,12 +60,16 @@ entry was added; existing users pick up the Cask on a fresh `brew install landfa
 in-place `brew upgrade` across the Formula→Cask boundary does not carry over, because the
 Cellar install receipt still records the old Formula).
 
-**macOS quarantine — why the cask carries a `postflight` hook.** `v0.6.0` shipped without one
+**macOS quarantine — why the cask carries a `postflight_steps` stanza.** `v0.6.0` shipped without one
 and every macOS `brew install landfall` produced a **broken symlink**: Homebrew staged
 `LICENSE`/`README.md` into the Caskroom but the unsigned, un-notarized `landfall` executable
 never landed, leaving `/opt/homebrew/bin/landfall` pointing at nothing. `.goreleaser.yml`'s
-`homebrew_casks[].hooks.post.install` now strips `com.apple.quarantine` from the staged
+`homebrew_casks[].custom_block` now strips `com.apple.quarantine` from the staged
 binary, which was verified to fix it against a genuinely quarantined download before shipping.
+Until 2026-10-19 this was `hooks.post.install`, which emits a Ruby `postflight do` block;
+Homebrew 7 deprecated those, so every install printed a warning. The stanza is now the
+declarative `postflight_steps`. A hand-written cask must use the same block (copy it from the
+last generated `Casks/landfall.rb`, never the old `postflight do`).
 This is goreleaser's documented workaround for unsigned binaries and Apple can disable it at
 any time — **the durable fix is real code signing + notarization** (needs a paid Apple
 Developer account). Treat that as open follow-up work, not a settled question. If a future

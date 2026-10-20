@@ -176,7 +176,7 @@ func (o *OrgReader) WidgetsData(ctx context.Context, incidentID string, widgetID
 	return out, nil
 }
 
-// MemoryEntries reads every visible company second brain entry, verbatim.
+// MemoryEntries reads every visible incident memory entry, verbatim.
 func (o *OrgReader) MemoryEntries(ctx context.Context) (json.RawMessage, error) {
 	var out json.RawMessage
 	if err := o.do(ctx, http.MethodGet, "/memory/entries", nil, &out); err != nil {

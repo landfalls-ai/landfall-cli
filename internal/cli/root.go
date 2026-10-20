@@ -94,7 +94,7 @@ Commands:
   lb [--lb <name|arn>] [--minutes <n>]                   load balancers: targets by zone and health, 5xx per
                                                           target group (CloudWatch); one JSON line
   comms [--room <room>]                                  stakeholder updates (read only); one JSON line
-  brain [--q "<words>"]                                  search the company second brain; one JSON line
+  brain [--q "<words>"]                                  search incident memory; one JSON line
   vote --claim <seq> --position corroborate|contest      take your own position on a finding, as you and never
               [--reason "<why>"] [--room <room>]          as an agent (used by the Claude Code mod)
   lines claim --label "<text>" | release --claim <id>    claim or hand back a line of investigation (used by the

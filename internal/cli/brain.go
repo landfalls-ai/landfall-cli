@@ -1,7 +1,7 @@
 package cli
 
 // brain.go — `landfall brain --room <k> [--q "<text>"]` (contract §9, review
-// #10): what the company second brain holds that bears on this room.
+// #10): what incident memory holds that bears on this room.
 //
 //   - No --q: GET …/incidents/:id/memory with the room's own session through
 //     the daemon. The server picks the entries relevant to the incident's
@@ -30,7 +30,7 @@ import (
 const (
 	brainMatchesMax = 10
 	brainSummaryMax = 400
-	msgBrainMissing = "The company second brain is not available to the CLI yet."
+	msgBrainMissing = "Incident memory is not available to the CLI yet."
 )
 
 func newBrainCommand(ui *UI) *cobra.Command {
@@ -56,13 +56,13 @@ func RunBrain(ctx context.Context, roomSel, q string, d ReadDeps) map[string]any
 			if errors.As(err, &he) && (he.Status == http.StatusNotFound || he.Status == http.StatusForbidden) {
 				return failure(msgBrainMissing)
 			}
-			return failure(roomRefusal(err, "the company second brain"))
+			return failure(roomRefusal(err, "incident memory"))
 		}
 		var body struct {
 			Entries []map[string]any `json:"entries"`
 		}
 		if err := json.Unmarshal(raw, &body); err != nil {
-			return failure("Landfall sent second brain entries this CLI could not read.")
+			return failure("Landfall sent incident memory entries this CLI could not read.")
 		}
 		matches := make([]map[string]any, 0, len(body.Entries))
 		for _, e := range body.Entries {
@@ -82,7 +82,7 @@ func RunBrain(ctx context.Context, roomSel, q string, d ReadDeps) map[string]any
 
 	org, err := d.Org(ctx)
 	if err != nil || org == nil {
-		return failure("Sign in to search the company second brain: run landfall login.")
+		return failure("Sign in to search incident memory: run landfall login.")
 	}
 	raw, err := org.MemoryEntries(ctx)
 	if err != nil {
@@ -90,13 +90,13 @@ func RunBrain(ctx context.Context, roomSel, q string, d ReadDeps) map[string]any
 		if errors.As(err, &he) && (he.Status == http.StatusNotFound || he.Status == http.StatusForbidden) {
 			return failure(msgBrainMissing)
 		}
-		return failure(personRefusal(err, "the company second brain"))
+		return failure(personRefusal(err, "incident memory"))
 	}
 	var body struct {
 		Entries []map[string]any `json:"entries"`
 	}
 	if err := json.Unmarshal(raw, &body); err != nil {
-		return failure("Landfall sent second brain entries this CLI could not read.")
+		return failure("Landfall sent incident memory entries this CLI could not read.")
 	}
 	words := queryWords(q)
 	type scored struct {

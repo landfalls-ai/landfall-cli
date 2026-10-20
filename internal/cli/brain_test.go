@@ -65,7 +65,7 @@ func TestBrainErrors(t *testing.T) {
 	wantFailure(t, RunBrain(ctx, "", "", noRoomDeps()), msgNoRoom)
 
 	f := newFakeLandfall(t)
-	wantFailure(t, RunBrain(ctx, "", "pool", f.deps(false)), "Sign in to search the company second brain: run landfall login.")
+	wantFailure(t, RunBrain(ctx, "", "pool", f.deps(false)), "Sign in to search incident memory: run landfall login.")
 
 	f.status("GET "+incidentMemoryPath, http.StatusNotFound)
 	wantFailure(t, RunBrain(ctx, "", "", f.deps(true)), msgBrainMissing)

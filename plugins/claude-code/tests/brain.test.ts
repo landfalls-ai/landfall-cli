@@ -45,7 +45,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await brainMod.warm(io)
     hookTab(on, 'd-brain', (k, i, now, args) => chromed(brainMod, k, i, now, args))
     const p = await $.ui.mount({ ...paneProps('d-brain'), surface } as never)
-    expect((await p.find({ type: 'Text', text: 'Company second brain' }))?.props.bold).toBe(true)
+    expect((await p.find({ type: 'Text', text: 'Incident memory' }))?.props.bold).toBe(true)
     expect(await p.find({ type: 'Text', text: 'like Acme 168' })).toBeDefined()
     expect((await p.find({ type: 'Text', text: 'Origin pool exhaustion after edge deploys' }))?.props.bold).toBe(true)
     expect(labelIn(await p.drawn(), 'high confidence')?.tone).toBe('#0ca30c')
@@ -84,7 +84,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await brainMod.warm(io)
     await buttonOf(chromed(brainMod, fakeKit(surface), io, NOW, null), 'quote-0')!.props.onPress()
     expect(log.filled).toEqual([
-      { text: '> From the company second brain: cdn origin pool exhaustion\n> Rolled back web-edge and raised the pool to 64.\n> From Acme 91, Acme 95\n> lesson · settled · confidence established\n\n', mode: undefined },
+      { text: '> From incident memory: cdn origin pool exhaustion\n> Rolled back web-edge and raised the pool to 64.\n> From Acme 91, Acme 95\n> lesson · settled · confidence established\n\n', mode: undefined },
     ])
     expect(log.opened).toEqual([])
   })
@@ -95,7 +95,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(log.runs[0]).toEqual(['brain', '--room', room.roomKey, '--host', 'claude-code'])
     const field = nodes(chromed(brainMod, fakeKit(surface), io, NOW, null), 'Input')[0]
     const pending = field.props.onSubmit('cert renewal')
-    expect(textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))).toContain('Asking the company second brain…')
+    expect(textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))).toContain('Asking incident memory…')
     await pending
     expect(log.runs[1]).toEqual(['brain', '--room', room.roomKey, '--q', 'cert renewal', '--host', 'claude-code'])
     expect(textsOf(chromed(brainMod, fakeKit(surface), io, NOW, null))).toContain('for "cert renewal"')
@@ -103,17 +103,17 @@ for (const surface of ['terminal', 'desktop'] as const) {
 }
 
 test('the CLI sentence shows when it cannot reach the brain', async () => {
-  const { io } = setup({ ok: false, error: 'The company second brain is not available to the CLI yet.' })
+  const { io } = setup({ ok: false, error: 'Incident memory is not available to the CLI yet.' })
   await brainMod.warm(io)
-  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('The company second brain is not available to the CLI yet.')
+  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('Incident memory is not available to the CLI yet.')
 })
 
 test('nothing found says so, for the incident and for a text', async () => {
   const { io } = setup({ ok: true, matches: [] })
   await brainMod.warm(io)
-  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('The company second brain holds nothing on this incident yet.')
+  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('Incident memory holds nothing on this incident yet.')
   await brainMod.search(io, 'origin pool')
-  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('The company second brain has nothing on "origin pool" yet.')
+  expect(textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))).toContain('Incident memory has nothing on "origin pool" yet.')
 })
 
 test('on mobile there is no search field but a match still quotes', async () => {
@@ -122,7 +122,7 @@ test('on mobile there is no search field but a match still quotes', async () => 
   const tree = chromed(brainMod, fakeKit('mobile'), io, NOW, null)
   expect(nodes(tree, 'Input')).toEqual([])
   await buttonOf(tree, 'quote-1')!.props.onPress()
-  expect(log.filled[0].text).toBe('> From the company second brain: dns ttl too long\n> From 1 past incident\n> confidence unconfirmed · conflicted\n\n')
+  expect(log.filled[0].text).toBe('> From incident memory: dns ttl too long\n> From 1 past incident\n> confidence unconfirmed · conflicted\n\n')
 })
 
 test('text answers in words, searching for the text, and works outside a room', async () => {
@@ -141,7 +141,7 @@ test('a different room starts the brain over; the tab has no badge, no letters a
   await brainMod.search(io, 'pool')
   setRoom([watchRoom()])
   const texts = textsOf(chromed(brainMod, fakeKit('terminal'), io, NOW, null))
-  expect(texts).toContain('Asking the company second brain…')
+  expect(texts).toContain('Asking incident memory…')
   expect(texts).toContain('like Acme 168')
   expect(brainMod.badge()).toBeNull()
   expect(brainMod.keys(fakeKit('terminal'), io, NOW, null)).toEqual([])

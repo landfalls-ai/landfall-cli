@@ -650,7 +650,7 @@ landfall timeline [--kind <k>] [--limit <n>] [--before <seq>]   # the room's eve
 landfall wall [--person <id|me>]                       # the room's dashboard, or a person's (JSON)
 landfall lb [--lb <name|arn>] [--minutes <n>]          # load balancers, targets and 5xx (JSON)
 landfall comms                                         # stakeholder updates, read only (JSON)
-landfall brain --q "<words>"                           # search the company second brain (JSON)
+landfall brain --q "<words>"                           # search incident memory (JSON)
 landfall vote --claim <seq> --position corroborate|contest [--reason "<why>"]   # your own position
 landfall lines claim --label "<text>"                  # claim a line of investigation
 landfall lines release --claim <id>                    # hand it back

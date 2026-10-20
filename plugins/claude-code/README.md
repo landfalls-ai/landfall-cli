@@ -51,7 +51,7 @@ looking at keeps its count on the switcher. Closing the console (Esc, the mark) 
 | Timeline | the room oldest first, kind chips, Enter quotes a row | `timeline [findings\|status\|beacon\|people\|other]` | `landfall timeline`, on each new event |
 | Load balancers | targets by zone and health, 5xx per target group; **s** share as a widget, **a** ask | `lb [name]` | `landfall lb`, every 60 s |
 | Incidents | open incidents, your rooms first; Enter joins (the shared context is added to your conversation), **b** brief only, **o** open in browser | `incidents` | `landfall incidents`, every 30 s |
-| More | Comms (stakeholder updates, read only) and Brain (the company second brain) | `more`, `comms`, `brain [text]` | `landfall comms`, `landfall brain` |
+| More | Comms (stakeholder updates, read only) and Brain (incident memory) | `more`, `comms`, `brain [text]` | `landfall comms`, `landfall brain` |
 
 Three words act without opening a tab: `/landfall lines <label>` claims a line, `/landfall chart` adds
 your agent's latest metric read to the room as a chart, `/landfall sound` says whether the chime is on.

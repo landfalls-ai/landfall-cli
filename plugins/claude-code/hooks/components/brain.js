@@ -1,4 +1,4 @@
-// Company second brain lookup (proposal item 15, FR-15): the Brain chip inside the console's More
+// Incident memory lookup (proposal item 15, FR-15): the Brain chip inside the console's More
 // tab (spec 4.8, 4.11) shows what the brain holds that bears on the live room: each entry's title,
 // its summary, how sure the brain is and how settled the entry is (two labels at most), the kind
 // and the past incidents it came from on one dim line. A press quotes a match into the prompt as a
@@ -81,10 +81,10 @@ export function tab(k, io, nowMs, args) {
   const answer = lp.answer
   const matches = answer && answer.ok ? answer.matches || [] : []
   const asked = view.q ? 'for "' + clip(view.q, 40) + '"' : r ? 'like ' + (r.displayId || 'this incident') : ''
-  const rows = [k.row([Text({ key: 'br-h', bold: true, children: ['Company second brain'] }), asked ? Text({ key: 'br-d', dimColor: true, children: [asked] }) : null], 'br-hdr', 1)]
-  if (!answer) rows.push(Text({ key: 'br-wait', dimColor: true, children: ['Asking the company second brain…'] }))
-  else if (!answer.ok) rows.push(Text({ key: 'br-err', children: [String(answer.error || 'The company second brain did not answer.')] }))
-  else if (matches.length === 0) rows.push(Text({ key: 'br-none', dimColor: true, children: [view.q ? 'The company second brain has nothing on "' + clip(view.q, 40) + '" yet.' : 'The company second brain holds nothing on this incident yet.'] }))
+  const rows = [k.row([Text({ key: 'br-h', bold: true, children: ['Incident memory'] }), asked ? Text({ key: 'br-d', dimColor: true, children: [asked] }) : null], 'br-hdr', 1)]
+  if (!answer) rows.push(Text({ key: 'br-wait', dimColor: true, children: ['Asking incident memory…'] }))
+  else if (!answer.ok) rows.push(Text({ key: 'br-err', children: [String(answer.error || 'Incident memory did not answer.')] }))
+  else if (matches.length === 0) rows.push(Text({ key: 'br-none', dimColor: true, children: [view.q ? 'Incident memory has nothing on "' + clip(view.q, 40) + '" yet.' : 'Incident memory holds nothing on this incident yet.'] }))
 
   matches.forEach((m, i) => {
     const id = 'm' + i
@@ -206,7 +206,7 @@ export function sourceLine(m) {
 
 // matchQuote is a match as the person's draft quotes it.
 export function matchQuote(m) {
-  const out = ['From the company second brain: ' + (m.title || 'untitled')]
+  const out = ['From incident memory: ' + (m.title || 'untitled')]
   if (m.summary) out.push(m.summary)
   const from = fromWords(m)
   if (from) out.push(from)
@@ -217,10 +217,10 @@ export function matchQuote(m) {
 
 // brainText is the Brain answer where no pane can be drawn.
 export function brainText(answer, q) {
-  if (!answer) return 'The company second brain did not answer.'
-  if (!answer.ok) return String(answer.error || 'The company second brain did not answer.')
+  if (!answer) return 'Incident memory did not answer.'
+  if (!answer.ok) return String(answer.error || 'Incident memory did not answer.')
   const matches = answer.matches || []
-  if (matches.length === 0) return q ? 'The company second brain has nothing on "' + q + '" yet.' : 'The company second brain holds nothing on this incident yet.'
+  if (matches.length === 0) return q ? 'Incident memory has nothing on "' + q + '" yet.' : 'Incident memory holds nothing on this incident yet.'
   const out = []
   for (const m of matches) {
     out.push([m.title || 'past incident', kindWords(m), m.confidence, m.status].filter(Boolean).join(' · '))

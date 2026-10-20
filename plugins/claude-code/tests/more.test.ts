@@ -62,7 +62,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(f.log.runs.map((a) => a[0])).toEqual(['brain'])
     const tree = moreMod.tab(k, f.io, NOW, null)
     expect(buttonOf(tree, 'more-brain')!.props.label).toBe(surface === 'terminal' ? '▸ brain' : '▸ Brain')
-    expect(textsOf(tree)).toContain('Company second brain')
+    expect(textsOf(tree)).toContain('Incident memory')
     expect(nodes(tree, 'Input').map((i) => i.props.key)).toEqual(['brain-q'])
     // Back and forth does not read again.
     await buttonOf(tree, 'more-comms')!.props.onPress()
